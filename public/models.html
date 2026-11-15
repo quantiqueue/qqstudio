@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings · qqstudio</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<meta name="theme-color" content="#0f1115">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#272b35; --text:#e6e8ee; --muted:#8a91a3; --accent:#6aa3ff; --green:#4fc98a; --amber:#e3b04b; --red:#e06c75; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  .layout { flex:1; min-height:0; display:flex; }
+  aside.tabs { width:220px; flex:none; background:#12151b; border-right:1px solid var(--line); padding:12px 8px; display:flex; flex-direction:column; gap:2px; }
+  aside.tabs a { display:flex; align-items:center; gap:10px; color:#b8bdca; text-decoration:none; padding:8px 12px; border-radius:8px; font-size:14px; }
+  aside.tabs a:hover { background:var(--panel); color:var(--text); }
+  aside.tabs a.active { background:#1f2a3d; color:var(--text); }
+  aside.tabs a .ic { width:18px; text-align:center; color:var(--muted); }
+  aside.tabs a.active .ic { color:var(--accent); }
+  aside.tabs a .badge { margin-left:auto; font-size:11px; color:var(--muted); }
+  .scroll { flex:1; overflow-y:auto; }
+  section[data-tab] { display:none; }
+  section[data-tab].active { display:block; }
+  .master { display:flex; align-items:center; gap:10px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:16px; font-size:14px; }
+  .master .muted { margin-left:auto; color:var(--muted); font-size:12px; }
+  .cat { border:1px solid var(--line); border-radius:10px; overflow:hidden; margin-bottom:14px; }
+  .cat.off-all .cat-head { opacity:.75; }
+  .cat-head { display:flex; align-items:center; gap:10px; padding:10px 14px; background:#1b1f27; font-weight:600; font-size:14px; cursor:pointer; user-select:none; }
+  .cat-head .count { margin-left:auto; color:var(--muted); font-weight:400; font-size:12px; }
+  .tl { display:flex; align-items:flex-start; gap:10px; padding:9px 14px 9px 38px; border-top:1px solid var(--line); background:var(--panel); }
+  .tl .body { flex:1; min-width:0; cursor:pointer; }
+  .tl .lbl { font-size:14px; }
+  .tl .nm { font:11px ui-monospace,Consolas,monospace; color:var(--muted); margin-left:6px; }
+  .tl .ds { color:var(--muted); font-size:12px; margin-top:1px; }
+  .tl.off .lbl, .tl.off .ds { opacity:.45; }
+  .tl .ask { display:flex; align-items:center; gap:5px; color:var(--muted); font-size:12px; white-space:nowrap; padding-top:2px; }
+  .tl.off .ask { opacity:.4; }
+  .tools-disabled .cat { opacity:.45; pointer-events:none; }
+  input[type=checkbox] { accent-color:var(--accent); width:15px; height:15px; margin:0; flex:none; }
+  .tl input[type=checkbox].en { margin-top:3px; }
+  .sk { display:flex; align-items:flex-start; gap:10px; padding:11px 14px; border-top:1px solid var(--line); background:var(--panel); }
+  .sk:first-child { border-top:none; }
+  .sk.off .sk-main { opacity:.5; }
+  .sk-main { flex:1; min-width:0; }
+  .sk-name { font-family:ui-monospace,Consolas,monospace; font-size:14px; }
+  .sk-desc { color:#b8bdca; font-size:13px; margin-top:2px; }
+  .sk-sub { color:var(--muted); font-size:12px; margin-top:3px; }
+  .sk-warn { color:var(--amber); }
+  .mcp-row { padding:11px 14px; border-top:1px solid var(--line); background:var(--panel); }
+  .mcp-row:first-child { border-top:none; }
+  .mcp-head { display:flex; align-items:center; gap:10px; }
+  .mcp-head .nm { font-family:ui-monospace,Consolas,monospace; font-size:14px; }
+  .mcp-head .spacer { flex:1; }
+  .mcp-row .dot { width:9px; height:9px; border-radius:50%; background:var(--line); flex:none; }
+  .mcp-row.ready .dot { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .mcp-row.starting .dot { background:var(--amber); animation:pulse 1s infinite; }
+  .mcp-row.error .dot { background:var(--red); }
+  .mcp-row .sub { color:var(--muted); font-size:12px; margin:3px 0 0 19px; font-family:ui-monospace,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mcp-row .errt { color:#f0a3aa; font-size:12px; margin:4px 0 0 19px; }
+  .mcp-row details { margin:6px 0 0 19px; font-size:12px; }
+  .mcp-row details pre { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px; max-height:220px; overflow:auto; white-space:pre-wrap; font:11.5px/1.45 ui-monospace,Consolas,monospace; color:#b8bdca; }
+  .mcp-row .tl2 { color:#b8bdca; padding:2px 0; }
+  .mcp-row .tl2 code { color:var(--accent); }
+  .btnrow { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .lead { color:var(--muted); font-size:13px; margin:-6px 0 16px; }
+  header { flex:none; display:flex; gap:10px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1.brand { display:flex; align-items:center; gap:8px; letter-spacing:.01em; }
+  header h1.brand img { display:block; }
+  header h1 { font-size:15px; margin:0 12px 0 0; font-weight:600; }
+  nav { display:flex; gap:4px; margin-right:8px; }
+  nav a { color:var(--muted); text-decoration:none; padding:5px 10px; border-radius:8px; font-size:14px; }
+  nav a.active, nav a:hover { color:var(--text); background:var(--bg); }
+  button { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:5px 12px; cursor:pointer; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.eject { border-color:#6b2a30; color:#f0a3aa; }
+  button.eject:hover:not(:disabled) { background:#3a1a1d; }
+  button.load:hover:not(:disabled) { border-color:var(--accent); }
+  #status { color:var(--muted); font-size:13px; margin-left:auto; }
+  main { max-width:900px; margin:24px auto 60px; padding:0 24px; }
+  .summary { display:flex; gap:12px; align-items:center; margin-bottom:14px; color:var(--muted); font-size:14px; }
+  .summary .spacer { flex:1; }
+  .note { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; color:var(--muted); font-size:14px; margin-bottom:14px; }
+  .note code { color:var(--text); }
+  .list { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-top:1px solid var(--line); background:var(--panel); }
+  .row:first-child { border-top:none; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; background:var(--line); }
+  .loaded .dot { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .loading .dot { background:var(--amber); animation:pulse 1s infinite; }
+  .failed .dot { background:var(--red); }
+  @keyframes pulse { 50% { opacity:.3; } }
+  .name { flex:1; min-width:0; }
+  .name .id { font-family:ui-monospace,Consolas,monospace; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .name .sub { color:var(--muted); font-size:12px; }
+  .state { color:var(--muted); font-size:13px; width:80px; text-align:right; }
+  .loaded .state { color:var(--green); }
+  .loading .state { color:var(--amber); }
+  .failed .state { color:var(--red); }
+  h2 { font-size:16px; margin:36px 0 12px; font-weight:600; }
+  h2:first-child { margin-top:0; }
+  input[type=text] { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+  .field { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
+  .field label { color:var(--muted); font-size:13px; width:100px; flex:none; }
+  .field input { flex:1; }
+  .hint { color:var(--muted); font-size:12px; margin:-4px 0 12px 108px; }
+  .hint code { color:var(--text); }
+  #results { max-height:440px; overflow-y:auto; scrollbar-color:var(--line) transparent; }
+  .repo { border-top:1px solid var(--line); background:var(--panel); }
+  .repo:first-child { border-top:none; }
+  .repo-head { display:flex; align-items:center; gap:12px; padding:10px 14px; cursor:pointer; }
+  .repo-head:hover { background:#1b1f27; }
+  .repo-head .id { flex:1; font-family:ui-monospace,Consolas,monospace; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .stats { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .caret { color:var(--muted); width:12px; }
+  .files { padding:4px 14px 12px 38px; }
+  .file { display:flex; align-items:center; gap:10px; padding:5px 0; font-size:13px; border-top:1px dashed var(--line); }
+  .file:first-child { border-top:none; }
+  .file .fname { flex:1; font-family:ui-monospace,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:5px; background:#232836; color:#b8bdca; white-space:nowrap; }
+  .tag.q { background:#1d2b45; color:#9cc0ff; }
+  .tag.ok { background:#173326; color:var(--green); }
+  .tag.vis { background:#33291a; color:var(--amber); }
+  .size { color:var(--muted); width:72px; text-align:right; white-space:nowrap; }
+  .job { display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--line); background:var(--panel); font-size:13px; }
+  .job:first-child { border-top:none; }
+  .job .info { flex:1; min-width:0; }
+  .job .fname { font-family:ui-monospace,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bar { height:5px; background:var(--bg); border-radius:3px; margin-top:5px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--accent); transition:width .5s; }
+  .job.done .bar > div { background:var(--green); }
+  .job.error .bar > div, .job.cancelled .bar > div { background:var(--red); }
+  .job .sub { color:var(--muted); font-size:12px; margin-top:3px; }
+  .preset { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:13px; color:var(--muted); margin-bottom:18px; }
+  .preset .row2 { display:flex; gap:10px; align-items:center; }
+  .preset .row2 .spacer { flex:1; }
+  .cmd { display:flex; gap:8px; margin-top:10px; }
+  .cmd code { flex:1; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:7px 10px; color:var(--text); font:12px ui-monospace,Consolas,monospace; overflow-x:auto; white-space:nowrap; }
+  .srv { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:24px; }
+  .srv .row2 { display:flex; gap:10px; align-items:center; }
+  .srv .row2 .spacer { flex:1; }
+  .srv .st { display:flex; align-items:center; gap:8px; font-size:14px; }
+  .srv.ready .dot { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .srv.loading .dot { background:var(--amber); animation:pulse 1s infinite; }
+  .srv.err .dot { background:var(--red); }
+  .srv .err-text { color:#f0a3aa; font-size:13px; margin-top:8px; }
+  .srv .muted { color:var(--muted); font-size:12px; }
+  .srv details { margin-top:10px; }
+  .srv textarea { width:100%; font:12px/1.5 ui-monospace,Consolas,monospace; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; resize:vertical; min-height:56px; }
+  .srv .field label { width:90px; }
+  .srv .checks { display:flex; gap:18px; margin:6px 0 10px 98px; font-size:13px; color:var(--muted); }
+  #srvLog { margin:8px 0 0; height:320px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:11.5px/1.45 ui-monospace,Consolas,monospace; color:#b8bdca; white-space:pre-wrap; word-break:break-all; }
+  .empty { padding:30px; text-align:center; color:var(--muted); background:var(--panel); }
+</style>
+</head>
+<body>
+<header>
+  <h1 class="brand"><img src="/icon-64.png" alt="" width="22" height="22">qqstudio</h1>
+  <nav><a href="/">Chat</a><a href="/settings" class="active">Settings</a></nav>
+  <span id="status"></span>
+</header>
+<div class="layout">
+<aside class="tabs">
+  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engine<span class="badge" id="tabEngine"></span></a>
+  <a href="#models" data-tab="models"><span class="ic">▤</span>Models<span class="badge" id="tabModels"></span></a>
+  <a href="#install" data-tab="install"><span class="ic">⇩</span>Install Models<span class="badge" id="tabInstall"></span></a>
+  <a href="#tools" data-tab="tools"><span class="ic">🔧</span>Tools<span class="badge" id="tabTools"></span></a>
+  <a href="#skills" data-tab="skills"><span class="ic">🧩</span>Skills<span class="badge" id="tabSkills"></span></a>
+  <a href="#mcp" data-tab="mcp"><span class="ic">🔌</span>MCP Servers<span class="badge" id="tabMcp"></span></a>
+</aside>
+<div class="scroll">
+<main>
+  <section data-tab="engine">
+    <h2>Engine</h2>
+    <div class="lead">The llama-server process the harness runs for you.</div>
+    <div class="srv" id="srv">
+    <div class="row2">
+      <span class="st"><span class="dot"></span><span id="srvState">checking…</span></span>
+      <span class="muted" id="srvSub"></span>
+      <span class="spacer"></span>
+      <button id="srvStart" class="load">▶ Start</button>
+      <button id="srvRestart">↻ Restart</button>
+      <button id="srvStop" class="eject">■ Stop</button>
+    </div>
+    <div class="err-text" id="srvErr" style="display:none"></div>
+    <div id="srvSettings" style="margin-top:14px; border-top:1px solid var(--line); padding-top:14px">
+      <div>
+        <div class="field"><label for="srvExe">Executable</label><input type="text" id="srvExe" spellcheck="false" placeholder="C:\path\to\llama.exe"></div>
+        <div class="field" style="align-items:flex-start"><label for="srvArgs" style="padding-top:6px">Arguments</label><textarea id="srvArgs" spellcheck="false"></textarea></div>
+        <div class="checks">
+          <label><input type="checkbox" id="srvAuto"> start with the harness</label>
+          <label><input type="checkbox" id="srvRestartOn"> restart when models.ini changes</label>
+        </div>
+        <div class="muted" style="margin:0 0 10px 98px"><code>{presets}</code> = the generated models.ini. With <code>llama.exe</code> the <code>serve</code> subcommand is added automatically if missing; older builds use <code>llama-server.exe</code> without it. Useful extras: <code>-ngl 99</code>, <code>-c 32768</code>, <code>--models-max 1</code>, <code>-fa on</code>.</div>
+        <div style="margin-left:98px"><button id="srvSave" class="load">Save &amp; restart</button></div>
+      </div>
+    </div>
+    <details id="srvLogBox" open>
+      <summary>Log</summary>
+      <pre id="srvLog"></pre>
+    </details>
+  </div>
+  
+    <h2 style="margin-top:28px">Thinking</h2>
+    <div class="lead">Token caps for the 🧠 Low / Medium / High levels in the chat. Max has no cap; Off disables thinking. Needs llama.cpp b9982+ for per-request budgets.</div>
+    <div class="srv">
+      <div class="field"><label for="tbLow">Low</label><input type="text" id="tbLow" inputmode="numeric" style="max-width:120px"><span class="muted">tokens</span></div>
+      <div class="field"><label for="tbMed">Medium</label><input type="text" id="tbMed" inputmode="numeric" style="max-width:120px"><span class="muted">tokens</span></div>
+      <div class="field"><label for="tbHigh">High</label><input type="text" id="tbHigh" inputmode="numeric" style="max-width:120px"><span class="muted">tokens</span></div>
+      <div class="field"><label for="tbMsg">Cut-off note</label><input type="text" id="tbMsg" placeholder="optional, e.g. Time is up, answer now." spellcheck="false"></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Inserted into the model's thinking when the budget runs out, to nudge it to answer.</div>
+      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
+    </div>
+  </section>
+
+  <section data-tab="models">
+    <h2>Models</h2>
+    <div class="lead">Models llama-server knows about. Load ahead of time or eject to free memory.</div>
+    <div id="note"></div>
+  <div class="summary">
+    <span id="counts"></span>
+    <span class="spacer"></span>
+    <button id="ejectAll" class="eject" disabled>Eject all</button>
+    <button id="refresh">↻ Refresh</button>
+  </div>
+  <div class="list" id="list"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section data-tab="install">
+    <h2>Install Models</h2>
+    <div class="lead">Search Hugging Face for GGUF models and download them into your models folder. Your settings and chats are stored in <code id="dataDir"></code>.</div>
+    <div class="field"><label for="folder">Models folder</label><input type="text" id="folder" spellcheck="false"></div>
+  <div class="hint">Files are saved as <code id="layout"></code></div>
+  <div class="preset">
+    <div class="row2"><span id="presetInfo">models.ini: …</span><span class="spacer"></span><button id="genPreset">Regenerate models.ini</button></div>
+    <div class="cmd"><code id="cmdLine"></code><button id="copyCmd">Copy</button></div>
+    <div style="margin-top:8px">llama-server's <code>--models-dir</code> only scans one folder level, so this file lists every model in the folder above (any depth) with its vision projector.
+      Restart llama-server after it changes: it reads presets once at startup.</div>
+  </div>
+  <form class="field" id="searchForm">
+    <label for="q">Search</label>
+    <input type="text" id="q" placeholder="e.g. qwen3 4b, gemma 3, llama 3.2 instruct" spellcheck="false">
+    <button type="submit" id="searchBtn">Search</button>
+  </form>
+  <div class="list" id="results" style="display:none"></div>
+
+  <div id="dlSection" style="display:none">
+    <div class="summary" style="margin-top:28px"><h2 style="margin:0">Downloads</h2><span class="spacer"></span><button id="clearDl">Clear finished</button></div>
+    <div class="list" id="downloads"></div>
+  </div>
+  </section>
+  <section data-tab="skills">
+    <h2>Skills</h2>
+    <div class="lead">Folders with a <code>SKILL.md</code> (Anthropic Agent Skills format) in <code id="skillsDir"></code>. Enabled skills can be pinned or auto-loaded per chat from the <b>+</b> menu.</div>
+    <div class="btnrow">
+      <button id="skOpen">📂 Open skills folder</button>
+      <button id="skExample">＋ Add example skill</button>
+      <button id="skRefresh">↻ Refresh</button>
+    </div>
+    <div class="list" id="skList"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section data-tab="mcp">
+    <h2>MCP Servers</h2>
+    <div class="lead">Model Context Protocol servers add tools from other programs. Same format as Claude Desktop's <code>claude_desktop_config.json</code>. Their tools appear in <a href="#tools">Tools</a> (Ask first is on by default) and can be switched per chat from the <b>+</b> menu.</div>
+    <div class="list" id="mcpList"><div class="empty">Loading…</div></div>
+    <h2 style="font-size:14px">Configuration <span class="muted" style="font-weight:400" id="mcpPath"></span></h2>
+    <textarea id="mcpJson" spellcheck="false" style="width:100%; min-height:220px; font:12px/1.5 ui-monospace,Consolas,monospace; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px;"></textarea>
+    <div class="btnrow" style="margin-top:8px; align-items:center">
+      <button id="mcpSave" class="load">Save &amp; reconnect</button>
+      <button id="mcpExample">Insert example</button>
+      <span class="muted" id="mcpMsg"></span>
+    </div>
+  </section>
+
+  <section data-tab="tools">
+    <h2>Tools</h2>
+    <div class="lead">Choose what the model may do. "Ask first" shows an Allow / Deny prompt in the chat before the tool runs.</div>
+    <label class="master"><input type="checkbox" id="toolsMaster"> Allow the model to use tools <span class="muted" id="toolsSaved"></span></label>
+    <div id="toolCats"></div>
+  </section>
+</main>
+</div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+let models = [], router = true, busy = new Set();
+
+function el(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/router/models");
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    models = j.models; router = j.router;
+    $("status").textContent = "updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("status").textContent = e.message;
+    models = [];
+  }
+  render();
+}
+
+function render() {
+  $("note").innerHTML = router ? "" :
+    `<div class="note">llama-server is running in <b>single-model mode</b>, so models can't be ejected from here.
+     Start it in router mode (without <code>-m</code>, e.g. <code>llama-server --models-dir C:\\models --jinja --port 9931</code>) to manage models.</div>`;
+  const loaded = models.filter((m) => m.status === "loaded" || m.status === "loading");
+  $("counts").textContent = models.length ? `${models.length} available · ${loaded.length} loaded` : "";
+  $("tabModels").textContent = loaded.length ? `${loaded.length} loaded` : "";
+  $("ejectAll").disabled = !router || !loaded.length;
+
+  const list = $("list");
+  list.innerHTML = "";
+  if (!models.length) { list.appendChild(el("div", "empty", "No models reported by llama-server.")); return; }
+
+  const order = { loaded: 0, loading: 1 };
+  for (const m of [...models].sort((a, b) => (order[a.status] ?? 2) - (order[b.status] ?? 2) || a.id.localeCompare(b.id))) {
+    const state = m.failed ? "failed" : m.status;
+    const row = el("div", "row " + state);
+    row.appendChild(el("span", "dot"));
+    const name = row.appendChild(el("div", "name"));
+    name.appendChild(el("div", "id", m.id)).title = m.id;
+    if (m.path) name.appendChild(el("div", "sub", m.path));
+    row.appendChild(el("span", "state", busy.has(m.id) ? "working…" : state));
+
+    if (router) {
+      const isUp = m.status === "loaded" || m.status === "loading";
+      const btn = row.appendChild(el("button", isUp ? "eject" : "load", isUp ? "⏏ Eject" : "Load"));
+      btn.disabled = busy.has(m.id);
+      btn.onclick = () => act(isUp ? "unload" : "load", m.id);
+    }
+    list.appendChild(row);
+  }
+}
+
+async function act(action, id) {
+  busy.add(id); render();
+  try {
+    const r = await fetch("/api/router/" + action, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: id }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+  } catch (e) {
+    $("status").textContent = `${action} ${id} failed: ${e.message}`;
+  }
+  busy.delete(id);
+  await refresh();
+}
+
+// ---------- tabs ----------
+function showTab() {
+  const tab = ["engine", "models", "install", "tools", "skills", "mcp"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
+  document.querySelectorAll("[data-tab]").forEach((n) => n.classList.toggle("active", n.dataset.tab === tab));
+}
+window.addEventListener("hashchange", showTab);
+showTab();
+
+// ---------- thinking budgets ----------
+fetch("/api/config").then((r) => r.json()).then((c) => {
+  const t = c.thinking || { budgets: {} };
+  $("tbLow").value = t.budgets.low; $("tbMed").value = t.budgets.medium; $("tbHigh").value = t.budgets.high; $("tbMsg").value = t.message || "";
+}).catch(() => {});
+$("tbSave").onclick = async () => {
+  const thinking = { budgets: { low: +$("tbLow").value, medium: +$("tbMed").value, high: +$("tbHigh").value }, message: $("tbMsg").value };
+  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thinking }) });
+  const c = await r.json();
+  $("tbLow").value = c.thinking.budgets.low; $("tbMed").value = c.thinking.budgets.medium; $("tbHigh").value = c.thinking.budgets.high;
+  $("tbMsgOut").textContent = r.ok ? "Saved" : "Error";
+  setTimeout(() => ($("tbMsgOut").textContent = ""), 1500);
+};
+
+// ---------- tools ----------
+let toolCfg = null;
+async function loadToolCfg() {
+  try { toolCfg = await (await fetch("/api/tools/settings")).json(); } catch { return; }
+  renderTools();
+}
+async function saveTools(patch) {
+  try {
+    toolCfg = await (await fetch("/api/tools/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) })).json();
+    $("toolsSaved").textContent = "saved";
+    clearTimeout(saveTools.t); saveTools.t = setTimeout(() => ($("toolsSaved").textContent = ""), 1500);
+  } catch (e) { $("toolsSaved").textContent = "save failed: " + e.message; }
+  renderTools();
+}
+function renderTools() {
+  if (!toolCfg) return;
+  const on = toolCfg.tools.filter((t) => t.enabled).length;
+  $("tabTools").textContent = toolCfg.enabled ? `${on}/${toolCfg.tools.length}` : "off";
+  $("toolsMaster").checked = toolCfg.enabled;
+  $("toolsMaster").onchange = (e) => saveTools({ enabled: e.target.checked });
+  const wrap = $("toolCats");
+  wrap.className = toolCfg.enabled ? "" : "tools-disabled";
+  wrap.innerHTML = "";
+  for (const cat of toolCfg.categories) {
+    const tools = toolCfg.tools.filter((t) => t.category === cat);
+    if (!tools.length) continue;
+    const n = tools.filter((t) => t.enabled).length;
+    const box = wrap.appendChild(el("div", "cat" + (n ? "" : " off-all")));
+    const head = box.appendChild(el("label", "cat-head"));
+    const cb = head.appendChild(el("input")); cb.type = "checkbox";
+    cb.checked = n === tools.length; cb.indeterminate = n > 0 && n < tools.length;
+    cb.onchange = () => saveTools({ tools: Object.fromEntries(tools.map((t) => [t.name, { enabled: cb.checked }])) });
+    head.appendChild(el("span", null, cat));
+    head.appendChild(el("span", "count", `${n}/${tools.length} on`));
+    for (const t of tools) {
+      const row = box.appendChild(el("div", "tl" + (t.enabled ? "" : " off")));
+      const en = row.appendChild(el("input", "en")); en.type = "checkbox"; en.checked = t.enabled;
+      en.onchange = () => saveTools({ tools: { [t.name]: { enabled: en.checked } } });
+      const body = row.appendChild(el("div", "body"));
+      body.onclick = () => en.click();
+      const top = body.appendChild(el("div"));
+      top.appendChild(el("span", "lbl", t.label));
+      top.appendChild(el("span", "nm", t.name));
+      body.appendChild(el("div", "ds", t.description.replace(/ The user must approve\.?/, "")));
+      const ask = row.appendChild(el("label", "ask"));
+      const ac = ask.appendChild(el("input")); ac.type = "checkbox"; ac.checked = t.approval; ac.disabled = !t.enabled;
+      ac.onchange = () => saveTools({ tools: { [t.name]: { approval: ac.checked } } });
+      ask.appendChild(document.createTextNode("Ask first"));
+      ask.title = t.defaultApproval ? "Recommended: this tool changes things on your computer" : "This tool only reads or displays";
+    }
+  }
+}
+loadToolCfg();
+
+// ---------- skills ----------
+async function skLoad(data) {
+  try { data = data || (await (await fetch("/api/skills")).json()); } catch { return; }
+  $("skillsDir").textContent = data.dir || "";
+  const list = $("skList");
+  list.innerHTML = "";
+  const runOn = toolCfg ? toolCfg.enabled && toolCfg.tools.find((t) => t.name === "run_command")?.enabled : true;
+  $("tabSkills").textContent = data.skills.length ? `${data.skills.filter((s) => s.enabled).length}/${data.skills.length}` : "";
+  if (!data.skills.length) { list.appendChild(el("div", "empty", "No skills yet. Add the example or drop skill folders into the skills folder.")); return; }
+  for (const s of data.skills) {
+    const row = list.appendChild(el("div", "sk" + (s.enabled ? "" : " off")));
+    const cb = row.appendChild(el("input")); cb.type = "checkbox"; cb.checked = s.enabled; cb.style.marginTop = "3px";
+    cb.onchange = async () => skLoad(await (await fetch("/api/skills/enabled", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: s.name, enabled: cb.checked }) })).json().then((j) => ({ dir: data.dir, skills: j.skills })));
+    const main = row.appendChild(el("div", "sk-main"));
+    main.appendChild(el("div", "sk-name", s.name));
+    main.appendChild(el("div", "sk-desc", s.description || "(no description: add one to SKILL.md so the model knows when to use it)"));
+    const sub = main.appendChild(el("div", "sk-sub", `${s.files.length} extra file(s) · ${s.dir}`));
+    if (s.hasScripts && !runOn) sub.appendChild(el("span", "sk-warn", " · has scripts, but Run commands is off in Tools"));
+    const open = row.appendChild(el("button", null, "📂")); open.title = "Open folder";
+    open.onclick = () => fetch("/api/skills/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: s.name }) });
+  }
+}
+$("skOpen").onclick = () => fetch("/api/skills/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+$("skExample").onclick = async () => { await fetch("/api/skills/example", { method: "POST" }); skLoad(); };
+$("skRefresh").onclick = () => skLoad();
+skLoad();
+
+// ---------- MCP servers ----------
+let mcpData = null, mcpOpenLogs = new Set();
+async function mcpLoad(withRaw) {
+  try { mcpData = await (await fetch("/api/mcp")).json(); } catch { return; }
+  $("mcpPath").textContent = mcpData.path;
+  if (withRaw) $("mcpJson").value = mcpData.raw;
+  mcpRender();
+}
+function mcpRender() {
+  const list = $("mcpList");
+  const servers = mcpData.servers;
+  const ready = servers.filter((x) => x.status === "ready").length;
+  $("tabMcp").textContent = servers.length ? `${ready}/${servers.length}` : "";
+  $("tabMcp").style.color = servers.some((x) => x.status === "error") ? "var(--red)" : "";
+  list.innerHTML = "";
+  if (!servers.length) { list.appendChild(el("div", "empty", "No MCP servers configured. Add them in the configuration below.")); return; }
+  for (const sv of servers) {
+    const row = list.appendChild(el("div", "mcp-row " + sv.status));
+    const head = row.appendChild(el("div", "mcp-head"));
+    head.appendChild(el("span", "dot"));
+    head.appendChild(el("span", "nm", sv.name));
+    head.appendChild(el("span", "muted", sv.status === "ready" ? `${sv.tools.length} tool(s)` : sv.status)).style.fontSize = "12px";
+    head.appendChild(el("span", "spacer"));
+    const lab = head.appendChild(el("label", "muted")); lab.style.fontSize = "12px"; lab.style.display = "flex"; lab.style.gap = "5px"; lab.style.alignItems = "center";
+    const cb = lab.appendChild(el("input")); cb.type = "checkbox"; cb.checked = !sv.disabled;
+    lab.appendChild(document.createTextNode("enabled"));
+    cb.onchange = async () => { $("mcpMsg").textContent = "…"; await fetch("/api/mcp/enabled", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sv.name, enabled: cb.checked }) }); $("mcpMsg").textContent = ""; mcpLoad(true); loadToolCfg(); };
+    const rs = head.appendChild(el("button", null, "↻")); rs.title = "Reconnect"; rs.disabled = sv.disabled;
+    rs.onclick = async () => { rs.disabled = true; await fetch("/api/mcp/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sv.name }) }); mcpLoad(); loadToolCfg(); };
+    row.appendChild(el("div", "sub", `${sv.transport} · ${sv.summary}`)).title = sv.summary;
+    if (sv.error) row.appendChild(el("div", "errt", sv.error));
+    if (sv.tools.length) {
+      const d = row.appendChild(el("details"));
+      d.appendChild(el("summary", null, `Tools (${sv.tools.length})`));
+      for (const t of sv.tools) { const l = d.appendChild(el("div", "tl2")); l.appendChild(el("code", null, t.name)); l.appendChild(document.createTextNode(" " + t.description.slice(0, 140))); }
+    }
+    const lg = row.appendChild(el("details"));
+    lg.open = mcpOpenLogs.has(sv.name);
+    lg.appendChild(el("summary", null, "Log"));
+    const pre = lg.appendChild(el("pre", null, "…"));
+    const loadLog = async () => { pre.textContent = (await (await fetch("/api/mcp/log?name=" + encodeURIComponent(sv.name))).text()) || "(empty)"; pre.scrollTop = pre.scrollHeight; };
+    lg.addEventListener("toggle", () => { lg.open ? (mcpOpenLogs.add(sv.name), loadLog()) : mcpOpenLogs.delete(sv.name); });
+    if (lg.open) loadLog();
+  }
+}
+$("mcpSave").onclick = async () => {
+  const raw = $("mcpJson").value;
+  try { JSON.parse(raw); } catch (e) { $("mcpMsg").textContent = "Invalid JSON: " + e.message; return; }
+  $("mcpMsg").textContent = "Saving and connecting…";
+  const r = await fetch("/api/mcp", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ raw }) });
+  const j = await r.json();
+  $("mcpMsg").textContent = r.ok ? "Saved." : "Error: " + j.error;
+  await mcpLoad(r.ok);
+  loadToolCfg();
+};
+$("mcpExample").onclick = () => {
+  let cur = {};
+  try { cur = JSON.parse($("mcpJson").value || "{}"); } catch {}
+  cur.mcpServers = { ...(cur.mcpServers || {}), ...mcpData.example.mcpServers };
+  $("mcpJson").value = JSON.stringify(cur, null, 2);
+  $("mcpMsg").textContent = "Example inserted: review, then Save & reconnect.";
+};
+mcpLoad(true);
+setInterval(() => { if (!document.hidden && location.hash === "#mcp") mcpLoad(); }, 3000);
+
+// ---------- llama-server process ----------
+let srvStatus = {};
+async function srvRefresh() {
+  try { srvStatus = await (await fetch("/api/llama/status")).json(); } catch { srvStatus = { state: "error", error: "harness unreachable" }; }
+  const s = srvStatus, box = $("srv");
+  const managed = !!s.pid;
+  let label, cls = "";
+  if (managed && s.health === "ready") { label = "Running"; cls = "ready"; }
+  else if (managed && s.health === "loading") { label = "Starting… (loading)"; cls = "loading"; }
+  else if (managed) { label = "Starting…"; cls = "loading"; }
+  else if (s.health === "external") { label = "Running (not started by the harness)"; cls = "ready"; }
+  else if (s.state === "error") { label = "Error"; cls = "err"; }
+  else label = "Stopped";
+  box.className = "srv " + cls;
+  $("srvState").textContent = label;
+  $("tabEngine").textContent = cls === "ready" ? "●" : cls === "err" ? "!" : "";
+  $("tabEngine").style.color = cls === "ready" ? "var(--green)" : cls === "err" ? "var(--red)" : "";
+  $("srvSub").textContent = (s.url || "") + (managed ? ` · pid ${s.pid}` : "") + (s.startedAt && managed ? ` · since ${new Date(s.startedAt).toLocaleTimeString()}` : "");
+  $("srvErr").style.display = s.error ? "" : "none";
+  $("srvErr").textContent = s.error || "";
+  $("srvStart").disabled = managed || s.health === "external";
+  $("srvStop").disabled = $("srvRestart").disabled = !managed;
+  if ($("srvLogBox").open) srvLoadLog();
+}
+async function srvLoadLog() {
+  const pre = $("srvLog");
+  const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
+  try { pre.textContent = (await (await fetch("/api/llama/log")).text()) || "(no log yet)"; } catch {}
+  if (atBottom) pre.scrollTop = pre.scrollHeight;
+}
+async function srvAction(a) {
+  for (const id of ["srvStart", "srvStop", "srvRestart"]) $(id).disabled = true;
+  $("srvState").textContent = a === "stop" ? "Stopping…" : "Starting…";
+  try { await fetch("/api/llama/" + a, { method: "POST" }); } catch {}
+  await srvRefresh();
+  setTimeout(refresh, 1500);
+}
+async function srvLoadSettings() {
+  try {
+    const st = await (await fetch("/api/llama/settings")).json();
+    $("srvExe").value = st.exe; $("srvArgs").value = st.args;
+    $("srvAuto").checked = st.autostart; $("srvRestartOn").checked = st.restartOnModelsChange;
+  } catch {}
+}
+$("srvStart").onclick = () => srvAction("start");
+$("srvStop").onclick = () => srvAction("stop");
+$("srvRestart").onclick = () => srvAction("restart");
+$("srvSave").onclick = async () => {
+  await fetch("/api/llama/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    exe: $("srvExe").value.trim(), args: $("srvArgs").value.trim(), autostart: $("srvAuto").checked, restartOnModelsChange: $("srvRestartOn").checked }) });
+  await srvAction(srvStatus.pid ? "restart" : "start");
+};
+$("srvLogBox").addEventListener("toggle", () => { if ($("srvLogBox").open) srvLoadLog(); });
+srvLoadSettings();
+srvRefresh();
+setInterval(() => { if (!document.hidden) srvRefresh(); }, 2000);
+
+// ---------- Hugging Face search / install ----------
+// Models folder is stored server-side in %USERPROFILE%\.qqstudio\config.json
+const folderIn = $("folder");
+function folder() { return folderIn.value.trim(); }
+function showLayout() { $("layout").textContent = folder().replace(/[\\/]+$/, "") + "\\<vendor>\\<model-name>\\<model-file>.gguf"; }
+let folderSaveT = null;
+folderIn.oninput = () => {
+  showLayout();
+  clearTimeout(folderSaveT);
+  folderSaveT = setTimeout(() => fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modelsFolder: folder() }) }), 400);
+};
+const configReady = (async () => {
+  try {
+    const cfg = await (await fetch("/api/config")).json();
+    let legacy = null;
+    try { legacy = localStorage.getItem("modelsFolder"); localStorage.removeItem("modelsFolder"); } catch {}
+    folderIn.value = legacy && legacy !== cfg.modelsFolder ? legacy : cfg.modelsFolder;
+    if (legacy && legacy !== cfg.modelsFolder) folderIn.oninput();
+    $("dataDir").textContent = cfg.dataDir;
+  } catch {}
+  showLayout();
+})();
+
+const fmtBytes = (n) => !n ? "?" : n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : n >= 1e6 ? (n / 1e6).toFixed(0) + " MB" : (n / 1e3).toFixed(0) + " KB";
+const fmtNum = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
+function ago(t) {
+  if (!t) return "";
+  const d = (Date.now() - new Date(t)) / 864e5;
+  return d < 1 ? "today" : d < 30 ? Math.floor(d) + "d ago" : d < 365 ? Math.floor(d / 30) + "mo ago" : Math.floor(d / 365) + "y ago";
+}
+
+$("searchForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const q = $("q").value.trim();
+  const box = $("results");
+  box.style.display = "";
+  box.innerHTML = "<div class='empty'>Searching…</div>";
+  try {
+    const r = await fetch("/api/hf/search?q=" + encodeURIComponent(q));
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    box.innerHTML = "";
+    if (!j.models.length) { box.appendChild(el("div", "empty", "No GGUF models found.")); return; }
+    for (const m of j.models) box.appendChild(repoRow(m));
+    // Show about 10 listings, scroll for the rest.
+    const rowH = box.querySelector(".repo-head")?.offsetHeight;
+    if (rowH) box.style.maxHeight = rowH * 10 + 9 + "px";
+    box.scrollTop = 0;
+  } catch (err) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "empty", "Search failed: " + err.message));
+  }
+};
+
+function repoRow(m) {
+  const row = el("div", "repo");
+  const head = row.appendChild(el("div", "repo-head"));
+  const caret = head.appendChild(el("span", "caret", "▸"));
+  head.appendChild(el("span", "id", m.id)).title = m.id;
+  if (m.gated) head.appendChild(el("span", "tag vis", "gated"));
+  head.appendChild(el("span", "stats", `↓ ${fmtNum(m.downloads)} · ♥ ${fmtNum(m.likes)}${m.updated ? " · " + ago(m.updated) : ""}`));
+  const a = head.appendChild(el("a", "stats", "↗")); a.href = "https://huggingface.co/" + m.id; a.target = "_blank"; a.title = "Open on Hugging Face";
+  a.onclick = (e) => e.stopPropagation();
+  let filesEl = null;
+  head.onclick = async () => {
+    if (filesEl) { filesEl.remove(); filesEl = null; caret.textContent = "▸"; return; }
+    caret.textContent = "▾";
+    filesEl = row.appendChild(el("div", "files", "Loading files…"));
+    await loadFiles(m.id, filesEl);
+  };
+  return row;
+}
+
+async function loadFiles(repo, box) {
+  try {
+    const r = await fetch(`/api/hf/files?repo=${encodeURIComponent(repo)}&folder=${encodeURIComponent(folder())}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    box.textContent = "";
+    if (!j.files.length) { box.textContent = "No .gguf files in this repo."; return; }
+    for (const f of j.files) {
+      const line = box.appendChild(el("div", "file"));
+      line.appendChild(el("span", "fname", f.name)).title = f.paths.join("\n");
+      if (f.quant) line.appendChild(el("span", "tag q", f.quant));
+      if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
+      if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
+      line.appendChild(el("span", "size", fmtBytes(f.size)));
+      if (f.installed) { line.appendChild(el("span", "tag ok", "installed")); continue; }
+      const btn = line.appendChild(el("button", "load", "Download"));
+      btn.onclick = async () => {
+        btn.disabled = true; btn.textContent = "Starting…";
+        try {
+          const r = await fetch("/api/hf/download", { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ repo, paths: f.paths, folder: folder() }) });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error);
+          btn.textContent = "Queued";
+          pollDownloads();
+        } catch (err) { btn.disabled = false; btn.textContent = "Download"; $("status").textContent = err.message; }
+      };
+    }
+  } catch (err) {
+    box.textContent = "Could not load files: " + err.message;
+  }
+}
+
+let dlTimer = null;
+async function pollDownloads() {
+  clearTimeout(dlTimer);
+  let jobs = [];
+  try { jobs = (await (await fetch("/api/hf/downloads")).json()).jobs; } catch {}
+  $("dlSection").style.display = jobs.length ? "" : "none";
+  const active = jobs.filter((j) => j.status === "downloading").length;
+  $("tabInstall").textContent = active ? `${active} ↓` : "";
+  const box = $("downloads");
+  box.innerHTML = "";
+  for (const j of jobs) {
+    const row = box.appendChild(el("div", "job " + j.status));
+    const info = row.appendChild(el("div", "info"));
+    info.appendChild(el("div", "fname", `${j.repo} / ${j.file}`)).title = j.dest;
+    const pct = j.total ? Math.min(100, (j.done / j.total) * 100) : 0;
+    info.appendChild(el("div", "bar")).appendChild(el("div")).style.width = (j.status === "done" ? 100 : pct) + "%";
+    let sub;
+    if (j.status === "downloading") {
+      const eta = j.speed && j.total ? Math.round((j.total - j.done) / j.speed) : null;
+      sub = `${fmtBytes(j.done)} / ${fmtBytes(j.total)} · ${pct.toFixed(1)}%` + (j.speed ? ` · ${(j.speed / 1e6).toFixed(1)} MB/s` : "") +
+        (eta != null ? ` · ${eta > 90 ? Math.round(eta / 60) + " min" : eta + " s"} left` : "");
+    } else if (j.status === "done") sub = "Installed → " + j.dest;
+    else if (j.status === "cancelled") sub = "Cancelled (click Download again to resume)";
+    else sub = "Error: " + j.error + " (click Download again to retry/resume)";
+    info.appendChild(el("div", "sub", sub));
+    if (j.status === "downloading") {
+      const c = row.appendChild(el("button", "eject", "Cancel"));
+      c.onclick = () => fetch("/api/hf/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: j.id }) }).then(pollDownloads);
+    }
+  }
+  if (jobs.some((j) => j.status === "downloading")) dlTimer = setTimeout(pollDownloads, 1000);
+  else if (jobs.some((j) => j.status === "done") && !pollDownloads.regenerated) { pollDownloads.regenerated = true; genPreset(); refresh(); }
+  if (jobs.some((j) => j.status === "downloading")) pollDownloads.regenerated = false;
+}
+// ---------- models.ini (presets for llama-server router) ----------
+async function genPreset() {
+  $("presetInfo").textContent = "models.ini: generating…";
+  try {
+    const r = await fetch("/api/hf/presets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: folder() }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    $("presetInfo").textContent = `models.ini: ${j.models.length} model(s)` +
+      (j.restarted ? " · changed, llama-server restarted" : j.changed ? " · changed, restart llama-server to apply" : " · up to date");
+    if (j.restarted) { srvRefresh(); setTimeout(refresh, 2000); }
+    $("cmdLine").textContent = `llama serve --models-preset "${j.file}" --jinja --port 9931`;
+  } catch (err) { $("presetInfo").textContent = "models.ini: " + err.message; }
+}
+$("genPreset").onclick = genPreset;
+$("copyCmd").onclick = () => navigator.clipboard.writeText($("cmdLine").textContent).then(() => { $("copyCmd").textContent = "Copied"; setTimeout(() => ($("copyCmd").textContent = "Copy"), 1500); });
+folderIn.addEventListener("change", genPreset);
+configReady.then(genPreset);
+
+$("clearDl").onclick = () => fetch("/api/hf/clear", { method: "POST" }).then(pollDownloads);
+pollDownloads();
+
+$("ejectAll").onclick = async () => {
+  const loaded = models.filter((m) => m.status === "loaded" || m.status === "loading");
+  for (const m of loaded) await act("unload", m.id);
+};
+$("refresh").onclick = refresh;
+refresh();
+setInterval(() => { if (!busy.size && !document.hidden) refresh(); }, 3000);
+</script>
+</body>
+</html>

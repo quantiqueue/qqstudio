@@ -1,0 +1,10 @@
+# dependencies / local leftovers
+node_modules/
+_to_delete/
+*.log
+*.tmp
+.env
+# user data lives in %USERPROFILE%\.qqstudio, never in the repo
+chats/
+models.ini
+*.pid
