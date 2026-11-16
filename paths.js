@@ -16,6 +16,7 @@ const P = {
   tools: path.join(HOME, "tools.json"),          // tool enable / ask-first
   llama: path.join(HOME, "llama-server.json"),   // engine executable, args, autostart
   presets: path.join(HOME, "models.ini"),        // generated llama-server presets
+  uploads: path.join(HOME, "uploads"),          // images pasted or dropped into the chat
   pid: path.join(HOME, "llama-server.pid"),
   log: path.join(HOME, "logs", "llama-server.log"),
 };

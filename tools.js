@@ -9,6 +9,7 @@ const ROOTS = (process.env.ALLOWED_ROOTS || "C:\\claude-tools")
   .split(";").map((r) => r.trim()).filter(Boolean).map((r) => path.resolve(r));
 const skills = require("./skills");
 ROOTS.push(skills.dir); // skill folders are readable (scripts, templates)
+ROOTS.push(require("./paths").uploads); // pasted images, so tools can open the files the model is told about
 const MAX_OUT = 20000; // chars returned to the model per tool call
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i;
 const SKIP_DIRS = new Set(["node_modules", ".git", "__pycache__", ".venv"]);

@@ -7,11 +7,12 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <meta name="theme-color" content="#0f1115">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <style>
   :root { --bg:#0f1115; --panel:#171a21; --side:#12151b; --line:#272b35; --text:#e6e8ee; --muted:#8a91a3; --accent:#6aa3ff; --user:#1f2a3d; }
   * { box-sizing: border-box; }
-  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; height:100dvh; display:flex; flex-direction:column; overflow:hidden; }
+  @media (pointer:coarse) { textarea, input, select { font-size:16px; } } /* iOS zooms into fields smaller than 16px */
   .layout { flex:1; min-height:0; display:flex; }
   select, button, textarea, input { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; }
   button { padding:6px 14px; cursor:pointer; }
@@ -28,6 +29,11 @@
   .chat-item { display:flex; align-items:center; gap:2px; padding:6px 6px 6px 10px; border-radius:8px; cursor:pointer; color:#b8bdca; font-size:14px; }
   .chat-item:hover { background:var(--panel); color:var(--text); }
   .chat-item.active { background:var(--user); color:var(--text); }
+  .chat-item .run-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; margin-right:6px; }
+  .chat-item .run-dot.running { animation:pulse 1.2s ease-in-out infinite; }
+  .chat-item .run-dot.waiting { background:#e3b04b; }
+  .chat-item .run-dot.unread { background:#4fc98a; }
+  @keyframes pulse { 50% { opacity:.3; } }
   .chat-item .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chat-item .act { visibility:hidden; background:none; border:none; padding:1px 5px; color:var(--muted); font-size:13px; }
   .chat-item:hover .act, .chat-item .act.armed { visibility:visible; }
@@ -50,7 +56,12 @@
   a.toolslink:hover { color:var(--text); border-color:var(--accent); }
   label.opt, a.opt { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:4px; white-space:nowrap; }
   #status { color:var(--muted); font-size:13px; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  #log { flex:1; overflow-y:auto; padding:20px 16px; }
+  .logwrap { flex:1; min-height:0; position:relative; display:flex; flex-direction:column; }
+  #log { flex:1; min-height:0; overflow-y:auto; padding:20px 16px; }
+  .jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); z-index:5; width:32px; height:32px; padding:0; border-radius:50%; background:var(--panel); border:1px solid var(--line); color:var(--text); font-size:16px; line-height:1; box-shadow:0 2px 10px rgba(0,0,0,.45); }
+  .jump:hover { border-color:var(--accent); }
+  .jump[hidden] { display:none; }
+  @media (hover:none) { .jump { width:40px; height:40px; } }
   #log > * { max-width:900px; margin-left:auto; margin-right:auto; }
   #log > * + * { margin-top:14px; }
   .welcome { color:var(--muted); text-align:center; margin-top:18vh !important; }
@@ -58,6 +69,34 @@
   .user { background:var(--user); width:fit-content; max-width:min(80%, 720px); margin-right:max(0px, calc((100% - 900px) / 2)) !important; }
   .assistant { background:var(--panel); border:1px solid var(--line); }
   .error { background:#3a1a1d; border:1px solid #6b2a30; }
+  .md { white-space:normal; line-height:1.55; overflow-wrap:anywhere; }
+  .md > :first-child { margin-top:0; } .md > :last-child { margin-bottom:0; }
+  .md p { margin:0 0 .75em; }
+  .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin:1.1em 0 .45em; line-height:1.3; font-weight:600; }
+  .md h1 { font-size:1.45em; } .md h2 { font-size:1.25em; } .md h3 { font-size:1.1em; } .md h4, .md h5, .md h6 { font-size:1em; }
+  .md h2 { padding-bottom:.25em; border-bottom:1px solid var(--line); }
+  .md ul, .md ol { margin:0 0 .75em; padding-left:1.5em; }
+  .md li { margin:.2em 0; } .md li > ul, .md li > ol { margin:.2em 0 0; } .md li > p { margin:0 0 .4em; }
+  .md li.task { list-style:none; margin-left:-1.3em; } .md li.task input { margin:0 .35em 0 0; vertical-align:-1px; }
+  .md a { color:var(--accent); text-decoration:none; } .md a:hover { text-decoration:underline; }
+  .md strong { font-weight:600; color:#f3f4f8; }
+  .md hr { border:none; border-top:1px solid var(--line); margin:1em 0; }
+  .md blockquote { margin:0 0 .75em; padding:2px 0 2px 12px; border-left:3px solid var(--line); color:#b8bdca; }
+  .md code { font:.9em ui-monospace,Consolas,monospace; background:#0b0d11; border:1px solid var(--line); border-radius:4px; padding:.05em .35em; }
+  .md .code { margin:0 0 .75em; border:1px solid var(--line); border-radius:8px; background:#0b0d11; overflow:hidden; }
+  .md .code-h { display:flex; align-items:center; justify-content:space-between; padding:3px 6px 3px 12px; font-size:12px; color:var(--muted); border-bottom:1px solid var(--line); background:#12151b; }
+  .md .code-copy { background:none; border:none; padding:2px 8px; font-size:12px; color:var(--muted); border-radius:6px; cursor:pointer; }
+  .md .code-copy:hover { color:var(--text); background:var(--panel); }
+  .md pre { margin:0; padding:10px 12px; overflow:auto; max-height:520px; }
+  .md pre code { font:12.5px/1.5 ui-monospace,Consolas,monospace; background:none; border:none; padding:0; white-space:pre; color:#c9cede; }
+  .md .tbl { margin:0 0 .75em; overflow-x:auto; }
+  .md table { border-collapse:collapse; font-size:.95em; }
+  .md th, .md td { border:1px solid var(--line); padding:5px 10px; text-align:left; vertical-align:top; }
+  .md th { background:#12151b; font-weight:600; }
+  .md img { max-width:100%; max-height:420px; border-radius:8px; border:1px solid var(--line); cursor:zoom-in; vertical-align:middle; }
+  .hl-kw { color:#ff7b72; } .hl-str { color:#a5d6ff; } .hl-num, .hl-lit { color:#79c0ff; } .hl-com { color:#8b949e; font-style:italic; }
+  .hl-fn { color:#d2a8ff; } .hl-ty, .hl-var { color:#ffa657; } .hl-bi { color:#79c0ff; } .hl-meta { color:#d2a8ff; } .hl-tag { color:#7ee787; } .hl-attr { color:#79c0ff; }
+  .hl-ins { color:#aff5b4; background:rgba(46,160,67,.15); display:inline-block; min-width:100%; } .hl-del { color:#ffdcd7; background:rgba(248,81,73,.15); display:inline-block; min-width:100%; }
   .think { color:var(--muted); font-size:13px; border-left:2px solid var(--line); padding-left:10px; margin-bottom:8px; white-space:pre-wrap; }
   .meta { color:var(--muted); font-size:12px; margin-top:6px; display:flex; align-items:center; gap:8px; min-height:22px; }
   .uwrap { display:flex; flex-direction:column; align-items:flex-end; }
@@ -69,6 +108,13 @@
   .acts button { background:none; border:none; padding:2px 8px; font-size:12px; color:var(--muted); border-radius:6px; }
   .acts button:hover { color:var(--text); background:var(--panel); }
   .assistant .acts button:hover { background:var(--bg); }
+  /* Touch screens have no hover: always show message actions and chat delete buttons, with bigger tap targets. */
+  @media (hover:none) {
+    .acts { opacity:1; }
+    .acts button { padding:6px 10px; font-size:13px; }
+    .chat-item .act { visibility:visible; }
+    .md .code-copy { padding:5px 10px; }
+  }
   .phase { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
   .phase + * { margin-top:6px; }
   .phase .spin { width:12px; height:12px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; flex:none; }
@@ -102,6 +148,14 @@
   form { display:flex; gap:10px; padding:12px 16px; border-top:1px solid var(--line); background:var(--panel); }
   form .inner { display:flex; flex-direction:column; gap:8px; max-width:900px; width:100%; margin:0 auto; }
   .compose { display:flex; gap:10px; }
+  .attachments { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .attachments .att { position:relative; width:56px; height:56px; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#0b0d11; }
+  .attachments .att img { width:100%; height:100%; object-fit:cover; display:block; }
+  .attachments .att.busy img { opacity:.4; }
+  .attachments .att button { position:absolute; top:2px; right:2px; width:18px; height:18px; padding:0; line-height:16px; font-size:12px; border-radius:50%; background:rgba(0,0,0,.7); border:none; color:#fff; cursor:pointer; }
+  .attachments .att-note { font-size:12px; color:#e3b04b; }
+  form.drop .compose textarea { border-color:var(--accent); background:#141a26; }
+  .uwrap .imgs { width:min(80%, 420px); }
   .compose #send { min-width:76px; }
   .toolbar { display:flex; gap:8px; align-items:center; font-size:13px; }
   .toolbar select { font-size:13px; padding:4px 8px; min-width:0; max-width:320px; }
@@ -114,8 +168,7 @@
   .toolbar .toolslink { font-size:13px; padding:4px 10px; color:var(--muted); }
   .plus-wrap { position:relative; }
   .toolbar button.plus { font-size:15px; padding:2px 10px; line-height:1.3; }
-  .toolbar button.plus.open { border-color:var(--accent); color:var(--accent); }
-  .plus-menu { position:absolute; bottom:calc(100% + 8px); left:0; width:380px; max-height:60vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:6px 0; z-index:20; font-size:13px; }
+  .plus-menu { white-space:normal; overflow-x:hidden; position:absolute; bottom:calc(100% + 8px); left:0; width:380px; max-height:60vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:6px 0; z-index:20; font-size:13px; }
   .plus-menu h4 { margin:8px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; }
   .pm-row { display:flex; align-items:center; gap:8px; padding:6px 14px; }
   .pm-row:hover { background:#1b1f27; }
@@ -127,6 +180,19 @@
   .pm-empty { color:var(--muted); padding:4px 14px 8px; }
   .pm-empty a, .pm-foot a { color:var(--accent); }
   .pm-foot { border-top:1px solid var(--line); margin-top:6px; padding:8px 14px 4px; color:var(--muted); }
+  .mode-menu { width:300px; left:auto; right:0; } /* opens leftwards so it stays inside the window */
+  .mm-row { display:flex; align-items:flex-start; gap:10px; width:100%; padding:8px 14px; border:none; border-radius:0; background:none; color:var(--text); text-align:left; font-size:13px; }
+  .mm-row:hover { background:#1b1f27; }
+  .mm-row.on { background:#1f2a3d; }
+  .mm-row .ic { font-size:15px; line-height:1.2; }
+  .mm-row small { display:block; color:var(--muted); margin-top:2px; line-height:1.35; }
+  /* flat controls: no border or fill until hovered */
+  .toolbar #plus, .toolbar #model, .toolbar #think, .toolbar #modeBtn { background:transparent; border-color:transparent; color:var(--muted); transition:background .12s, color .12s; }
+  .toolbar #plus:hover, .toolbar #model:hover, .toolbar #think:hover, .toolbar #modeBtn:hover,
+  .toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #model:focus-visible, .toolbar #think:focus-visible { background:#252a35; color:var(--text); outline:none; }
+  .toolbar #modeBtn { font-size:13px; padding:0 10px; }
+  .toolbar #modeBtn.auto { color:#f0c674; }
+  .toolbar select option { background:var(--panel); color:var(--text); }
   .seg.sm button { padding:2px 8px; font-size:12px; }
   .seg.sm button.on[data-v="pinned"] { background:#1d2b45; color:#9cc0ff; }
   .seg.sm button.on[data-v="off"] { background:#2a1d20; color:#d9a0a6; }
@@ -147,8 +213,6 @@
   .toolbar select#model { flex:0 1 280px; min-width:120px; text-overflow:ellipsis; }
   .toolbar .chips { flex:1 1 0; min-width:0; }
   .toolbar .ctx { margin-left:auto; }
-  @container (max-width: 820px) { .toolbar .chips { display:none; } }
-  @container (max-width: 700px) { .toolbar .seg .t, .toolbar .toolslink .t { display:none; } .toolbar .seg button { padding:0 9px; } }
   @container (max-width: 520px) { .toolbar .ctx { display:none; } }
   .chips { display:flex; gap:6px; flex-wrap:nowrap; overflow:hidden; min-width:0; flex:1; }
   .chip { font-size:12px; padding:2px 8px; border-radius:20px; background:#1b1f27; border:1px solid var(--line); color:#b8bdca; white-space:nowrap; cursor:pointer; }
@@ -170,10 +234,11 @@
   <div id="chatList"></div>
 </aside>
 <div class="main">
-  <div id="log"></div>
+  <div class="logwrap"><div id="log"></div><button type="button" id="jump" class="jump" title="Jump to latest" hidden>↓</button></div>
   <form id="form"><div class="inner">
+    <div id="attachments" class="attachments" hidden></div>
     <div class="compose">
-      <textarea id="input" placeholder="Message (Enter to send, Shift+Enter for newline)"></textarea>
+      <textarea id="input" placeholder="Message (Enter to send, Shift+Enter for newline, paste or drop images)"></textarea>
       <button type="submit" class="primary" id="send">Send</button>
     </div>
     <div class="toolbar">
@@ -182,22 +247,19 @@
         <div id="plusMenu" class="plus-menu" hidden></div>
       </div>
       <select id="model" title="Model for this chat"><option>loading…</option></select>
-      <button type="button" id="refresh" class="icon" title="Reload model list">↻</button>
-      <div class="seg" id="mode" title="Tool approval for this chat">
-        <button type="button" data-mode="manual" title="Manual: ask before running tools marked &quot;Ask first&quot; in Settings">✋<span class="t">Manual</span></button>
-        <button type="button" data-mode="auto" title="Auto: run all enabled tools without asking">⚡<span class="t">Auto</span></button>
-      </div>
-      <select id="think" class="think-sel" title="Thinking for this chat">
-        <option value="default">🧠 Default</option>
-        <option value="off">🧠 Off</option>
-        <option value="low">🧠 Low</option>
-        <option value="medium">🧠 Medium</option>
-        <option value="high">🧠 High</option>
-        <option value="max">🧠 Max</option>
+      <select id="think" class="think-sel" title="Thinking effort for this chat">
+        <option value="default">Default</option>
+        <option value="off">Off</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+        <option value="max">Max</option>
       </select>
-      <div id="chips" class="chips"></div>
+      <div class="plus-wrap">
+        <button type="button" id="modeBtn" class="icon mode-btn" title="Tool approval for this chat"></button>
+        <div id="modeMenu" class="plus-menu mode-menu" hidden></div>
+      </div>
       <span id="ctxMeter" class="ctx" title="Estimated context use"></span>
-      <a class="toolslink" id="toolsLink" href="/settings#tools" title="Configure tools">🔧 tools</a>
     </div>
   </div></form>
 </div>
@@ -214,13 +276,37 @@ const MAX_STEPS = 25;
 let chat = blankChat();
 let chatList = [];
 let renaming = false;
-let controller = null, stopped = false, running = false, pendingApproval = null;
+let running = false, pendingApproval = null, listTimer = null;
 let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
 function blankChat() { return { id: null, title: "New chat", mode: "manual", think: "default", skills: {}, mcp: {}, cats: {}, messages: [] }; }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function el(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
-function add(node) { log.querySelector(".welcome")?.remove(); log.appendChild(node); log.scrollTop = log.scrollHeight; return node; }
+function add(node) { log.querySelector(".welcome")?.remove(); log.appendChild(node); follow(); return node; }
+// ---------- scroll: follow new output only while the user is at the bottom ----------
+// Scrolling up (wheel, touch, scrollbar, keys) stops following; getting back to the bottom, or the ↓ button, resumes it.
+// Only a *decrease* in scrollTop counts as the user leaving, so content growing under a programmatic scroll can't unstick it.
+let stick = true, lastTop = 0;
+const jumpBtn = document.getElementById("jump");
+const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+function updJump() { jumpBtn.hidden = stick || nearBottom(); }
+function follow() {
+  if (!stick) { updJump(); return; }
+  log.scrollTop = log.scrollHeight;
+  requestAnimationFrame(() => { if (stick) log.scrollTop = log.scrollHeight; updJump(); }); // markdown renders on the next frame
+}
+function toBottom() { stick = true; follow(); }
+log.addEventListener("scroll", () => {
+  const t = log.scrollTop;
+  if (t < lastTop - 1) stick = false; else if (nearBottom()) stick = true;
+  lastTop = t; updJump();
+}, { passive: true });
+log.addEventListener("wheel", (e) => { // reacts before a streaming delta can scroll back down
+  if (e.deltaY >= 0 || log.scrollTop <= 0) return;
+  for (let n = e.target; n && n !== log; n = n.parentElement) if (n.scrollTop > 0 && n.scrollHeight > n.clientHeight) return; // an inner box scrolls instead
+  stick = false; updJump();
+}, { passive: true });
+jumpBtn.addEventListener("click", () => { stick = true; log.scrollTo({ top: log.scrollHeight, behavior: "smooth" }); jumpBtn.hidden = true; });
 function setHash(id) { window.history.replaceState(null, "", id ? "#" + id : location.pathname); }
 function stripUi(m) { return Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_"))); }
 function prettyArgs(s) { try { return JSON.stringify(JSON.parse(s || "{}"), null, 2); } catch { return s; } }
@@ -249,9 +335,39 @@ $("think").onchange = () => {
 };
 
 // ---------- per-chat mode (manual = ask per Settings, auto = never ask) ----------
+const MODES = [
+  ["manual", "⚠️", "Manual", "Ask before running tools marked \u201cAsk first\u201d in Settings"],
+  ["auto", "⏩", "Auto", "Run all enabled tools without asking"],
+];
 function renderMode() {
   const m = chat.mode === "auto" ? "auto" : "manual";
-  document.querySelectorAll("#mode button").forEach((b) => b.classList.toggle("on", b.dataset.mode === m));
+  const [, ic, name, desc] = MODES.find((x) => x[0] === m);
+  const b = $("modeBtn");
+  b.textContent = name; b.title = `Tool approval: ${name}. ${desc}`;
+  b.classList.toggle("auto", m === "auto");
+  renderModeMenu();
+}
+function renderModeMenu() {
+  const menu = $("modeMenu");
+  if (menu.hidden) return;
+  const cur = chat.mode === "auto" ? "auto" : "manual";
+  menu.innerHTML = "";
+  menu.appendChild(el("h4", null, "Tool approval"));
+  for (const [v, ic, name, desc] of MODES) {
+    const r = menu.appendChild(el("button", "mm-row" + (v === cur ? " on" : "")));
+    r.type = "button";
+    r.appendChild(el("span", "ic", ic));
+    const t = r.appendChild(el("span", null, name)); t.appendChild(el("small", null, desc));
+    r.onclick = (e) => { e.stopPropagation(); toggleMode(false); if (v !== cur) setMode(v); };
+  }
+}
+function toggleMode(force) {
+  const menu = $("modeMenu");
+  const open = force ?? menu.hidden;
+  if (open) togglePlus(false);
+  menu.hidden = !open;
+  $("modeBtn").classList.toggle("open", open);
+  renderModeMenu();
 }
 async function setMode(m) {
   chat.mode = m;
@@ -259,7 +375,8 @@ async function setMode(m) {
   if (m === "auto" && pendingApproval) pendingApproval(true); // switching to Auto approves a waiting prompt
   if (chat.id) fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: m }) }).catch(() => {});
 }
-document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+$("modeBtn").onclick = (e) => { e.stopPropagation(); toggleMode(); };
+$("modeMenu").onclick = (e) => e.stopPropagation();
 
 // ---------- models / tools ----------
 async function loadModels() {
@@ -270,8 +387,11 @@ async function loadModels() {
     if (!r.ok) throw new Error(j.error || r.statusText);
     const prev = chat.model || modelSel.value;
     modelSel.innerHTML = "";
+    modelVision = {};
     for (const m of j.models) {
-      const o = el("option", null, m.status ? `${m.id}  (${m.status})` : m.id);
+      modelVision[m.id] = !!m.vision;
+      const o = el("option", null, (m.vision ? "👁 " : "") + (m.status ? `${m.id}  (${m.status})` : m.id));
+      if (m.vision) o.title = "Can see images";
       o.value = m.id;
       modelSel.appendChild(o);
     }
@@ -282,6 +402,55 @@ async function loadModels() {
     status.textContent = e.message;
   }
 }
+let modelVision = {};
+
+// ---------- pasted / dropped images ----------
+let attachments = []; // [{src, busy, preview}]
+function renderAttachments() {
+  const box = $("attachments");
+  box.hidden = !attachments.length;
+  box.innerHTML = "";
+  for (const a of attachments) {
+    const d = box.appendChild(el("div", "att" + (a.busy ? " busy" : "")));
+    const img = d.appendChild(el("img")); img.src = a.preview || a.src; img.alt = "";
+    const x = d.appendChild(el("button", null, "×")); x.type = "button"; x.title = "Remove";
+    x.onclick = () => { attachments = attachments.filter((b) => b !== a); renderAttachments(); };
+  }
+  if (attachments.length && !modelVision[modelSel.value])
+    box.appendChild(el("div", "att-note", "This model can't see images; only the text will be used."));
+}
+async function attachImage(blob) {
+  if (!/^image\/(png|jpeg|gif|webp|bmp)$/.test(blob.type)) { status.textContent = "Only PNG, JPEG, GIF, WebP or BMP images can be attached."; return; }
+  const a = { busy: true, preview: URL.createObjectURL(blob) };
+  attachments.push(a); renderAttachments();
+  try {
+    const r = await fetch("/api/uploads", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    a.src = j.src; a.busy = false;
+  } catch (e) {
+    attachments = attachments.filter((b) => b !== a);
+    status.textContent = "Could not attach image: " + e.message;
+  }
+  renderAttachments();
+}
+input.addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file" && i.type.startsWith("image/")).map((i) => i.getAsFile()).filter(Boolean);
+  if (!files.length) return; // plain text paste
+  e.preventDefault();
+  files.forEach(attachImage);
+});
+const formEl = $("form");
+formEl.addEventListener("dragover", (e) => { if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); formEl.classList.add("drop"); } });
+formEl.addEventListener("dragleave", (e) => { if (!formEl.contains(e.relatedTarget)) formEl.classList.remove("drop"); });
+formEl.addEventListener("drop", (e) => {
+  formEl.classList.remove("drop");
+  const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/"));
+  if (!files.length) return;
+  e.preventDefault();
+  files.forEach(attachImage);
+});
+
 let skillList = [], mcpServers = [];
 async function loadTools() {
   const [t, sk, mc] = await Promise.all([
@@ -309,18 +478,8 @@ function activeTools() {
   });
 }
 function renderToolbarState() {
-  const n = activeTools().length;
-  $("toolsLink").innerHTML = "🔧<span class='t'>" + (toolInfo.enabled === false ? "tools off" : `${n} tools`) + "</span>";
-  $("toolsLink").title = toolInfo.enabled === false ? "Tools are off" : `${n} tools active in this chat`;
-  const chips = $("chips");
-  chips.innerHTML = "";
-  const add = (text, title) => { const c = chips.appendChild(el("span", "chip", text)); c.title = title; c.onclick = () => togglePlus(true); };
-  for (const s of skillList) if (skillMode(s.name) === "pinned") add("📌 " + s.name, "Pinned skill: always in the instructions");
-  const auto = skillList.filter((s) => skillMode(s.name) === "auto").length;
-  if (auto) add(`🧩 ${auto} skill${auto > 1 ? "s" : ""}`, "Skills the model can load when relevant");
-  for (const m of mcpServers) if (mcpOn(m.name) && m.status === "ready") add("🔌 " + m.name, `MCP server: ${m.tools.length} tool(s)`);
-  const off = ["File Access", "Web", "Images", "System"].filter((c) => !catOn(c));
-  if (off.length) add("⊘ " + off.join(", "), "Tool categories turned off for this chat");
+  const n = toolInfo.enabled === false ? 0 : activeTools().length;
+  $("plus").title = `Skills, MCP servers and tools for this chat (${n} tool${n === 1 ? "" : "s"} active)`;
   updateCtx();
 }
 
@@ -380,16 +539,230 @@ function renderImages(images, big) {
   }
   return grid;
 }
-function mdImages(text) {
-  return [...(text || "").matchAll(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g)].map((m) => ({ src: m[2], full: m[2], caption: m[1] }));
+// ---------- code highlighting (small regex tokenizer; first matching rule wins at each position) ----------
+const HL = (() => {
+  const S = (re) => new RegExp(re.source, "y" + re.flags.replace(/[gy]/g, ""));
+  const W = (words, f = "") => new RegExp("\\b(?:" + words.trim().split(/\s+/).join("|") + ")\\b", "y" + f);
+  const dq = /"(?:[^"\\\n]|\\.)*"?/, sq = /'(?:[^'\\\n]|\\.)*'?/, num = /\b(?:0[xX][\da-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*\.?[\d_]*(?:[eE][+-]?\d+)?)[a-zA-Z]*\b|\B\.\d+\b/;
+  const ident = /[A-Za-z_$][\w$]*/, call = /[A-Za-z_$][\w$]*(?=\s*\()/, cap = /\b[A-Z][\w$]*\b/;
+  const lang = (rules) => rules.map(([c, re]) => [c, S(re)]);
+  const cLike = (kw, extra = [], lit = "true false null") => lang([
+    ["com", /\/\/.*|\/\*[\s\S]*?(?:\*\/|$)/], ...extra, ["str", dq], ["str", sq],
+    ["kw", W(kw)], ["lit", W(lit)], ["num", num], ["fn", call], ["ty", cap], [null, ident],
+  ]);
+  const js = lang([
+    ["com", /\/\/.*|\/\*[\s\S]*?(?:\*\/|$)/], ["str", dq], ["str", sq], ["str", /`(?:[^`\\]|\\[\s\S])*`?/],
+    ["kw", W("abstract as async await break case catch class const continue debugger declare default delete do else enum export extends finally for from function get if implements import in instanceof interface let new of private protected public readonly return set static super switch this throw try type typeof var void while with yield")],
+    ["lit", W("true false null undefined NaN Infinity")], ["meta", /@[\w$]+/], ["num", num],
+    ["fn", /(?<=\bfunction\s+)[\w$]+/], ["ty", /(?<=\b(?:class|extends|new|interface|type)\s+)[\w$]+/],
+    ["bi", W("console window document JSON Math Object Array Promise require module process")],
+    ["fn", call], ["ty", cap], [null, ident],
+  ]);
+  const py = lang([
+    ["com", /#.*/], ["str", /[rRbBuUfF]{0,2}(?:"""[\s\S]*?(?:"""|$)|'''[\s\S]*?(?:'''|$))/], ["str", /[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"?/], ["str", /[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'?/],
+    ["meta", /@[\w.]+/],
+    ["kw", W("and as assert async await break case class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try while with yield")],
+    ["lit", W("True False None")], ["bi", W("self cls print len range open int str float bool list dict set tuple type isinstance super enumerate zip map filter sorted sum min max abs input repr iter next any all")],
+    ["num", num], ["fn", /(?<=\bdef\s+)\w+/], ["ty", /(?<=\bclass\s+)\w+/], ["fn", call], ["ty", cap], [null, ident],
+  ]);
+  const sh = lang([
+    ["com", /(?<=^|\s)#.*/m], ["str", /"(?:[^"\\]|\\[\s\S])*"?/], ["str", /'[^']*'?/], ["var", /\$(?:\{[^}\n]*\}?|[\w@#?*!$-]+)/],
+    ["kw", W("if then else elif fi for while until do done case esac in function return export local readonly declare unset shift exit break continue source sudo")],
+    ["bi", W("echo printf cd ls cat grep sed awk find mkdir rm cp mv chmod chown curl wget git npm npx node python pip set test read")],
+    ["attr", /(?<=\s)--?[\w-]+/], ["num", /\b\d+\b/], [null, /[\w.\/-]+/],
+  ]);
+  const ps = lang([
+    ["com", /<#[\s\S]*?(?:#>|$)|#.*/], ["str", /"(?:[^"`]|`[\s\S])*"?/], ["str", sq], ["var", /\$(?:\{[^}]*\}|[\w:]+)/],
+    ["kw", W("begin break catch class continue data do dynamicparam else elseif end exit filter finally for foreach from function if in param process return switch throw trap try until using while", "i")],
+    ["fn", /\b[A-Z][a-z]+-[A-Z]\w+/], ["attr", /(?<=\s)-[A-Za-z]\w*/], ["num", num], [null, ident],
+  ]);
+  const json = lang([["attr", /"(?:[^"\\\n]|\\.)*"(?=\s*:)/], ["str", dq], ["lit", W("true false null")], ["num", /-?\d+\.?\d*(?:[eE][+-]?\d+)?/]]);
+  const css = lang([
+    ["com", /\/\*[\s\S]*?(?:\*\/|$)/], ["str", dq], ["str", sq], ["kw", /@[\w-]+|!important/], ["attr", /[\w-]+(?=\s*:[^:{]*[;}\n])/],
+    ["num", /#[\da-fA-F]{3,8}\b|-?\d*\.?\d+(?:px|em|rem|%|vh|vw|s|ms|deg|fr|ch)?\b/], ["fn", /[\w-]+(?=\()/], ["ty", /[.#][\w-]+/], [null, /[\w-]+/],
+  ]);
+  const html = lang([
+    ["com", /<!--[\s\S]*?(?:-->|$)/], ["meta", /<![^>]*>?/], ["tag", /<\/?[A-Za-z][\w:.-]*|\/?>/], ["attr", /[\w:-]+(?==)/], ["str", dq], ["str", sq], ["meta", /&[#\w]+;/],
+  ]);
+  const sql = lang([
+    ["com", /--.*|\/\*[\s\S]*?(?:\*\/|$)/], ["str", sq], ["str", dq],
+    ["kw", W("select from where and or not insert into values update set delete create table alter drop index view join inner left right outer full on as group by order having limit offset union all distinct case when then else end is null like in between exists primary key foreign references default unique asc desc with returning", "i")],
+    ["lit", W("true false null", "i")], ["num", num], ["fn", call], [null, ident],
+  ]);
+  const yaml = lang([["com", /(?<=^|\s)#.*/m], ["attr", /[\w.-]+(?=:(?:\s|$))/], ["str", dq], ["str", sq], ["lit", W("true false null yes no on off")], ["num", /-?\b\d+\.?\d*\b/], ["meta", /^---$/m]]);
+  const ini = lang([["com", /^\s*[;#].*/m], ["ty", /^\s*\[[^\]\n]*\]/m], ["attr", /^\s*[\w.-]+(?=\s*=)/m], ["str", dq], ["str", sq], ["lit", W("true false")], ["num", /\b\d+\.?\d*\b/]]);
+  const diff = lang([["ins", /^\+.*/m], ["del", /^-.*/m], ["meta", /^@@.*/m], ["com", /^(?:diff|index) .*/m]]);
+  const LANGS = {
+    js, javascript: js, jsx: js, mjs: js, cjs: js, ts: js, typescript: js, tsx: js, node: js,
+    py: py, python: py, python3: py,
+    sh, bash: sh, shell: sh, zsh: sh, console: sh, shellsession: sh, cmd: sh, bat: sh, batch: sh,
+    ps: ps, ps1: ps, powershell: ps, pwsh: ps,
+    json, jsonc: json, json5: json, css, scss: css, less: css, html, xml: html, svg: html, vue: html,
+    sql, yaml, yml: yaml, ini, toml: ini, cfg: ini, conf: ini, env: ini, diff, patch: diff,
+    c: cLike("auto break case char const continue default do double else enum extern float for goto if inline int long register return short signed sizeof static struct switch typedef union unsigned void volatile while", [["meta", /#\s*\w+.*/]], "true false NULL"),
+    cpp: cLike("auto bool break case catch char class const constexpr continue default delete do double else enum explicit extern float for friend if inline int long namespace new noexcept nullptr operator override private protected public return short signed sizeof static struct switch template this throw try typedef typename union unsigned using virtual void volatile while", [["meta", /#\s*\w+.*/]], "true false NULL nullptr"),
+    cs: cLike("abstract as async await base bool break byte case catch char class const continue decimal default delegate do double else enum event explicit extern finally fixed float for foreach get if implicit in int interface internal is lock long namespace new object operator out override params private protected public readonly ref return sealed set short static string struct switch this throw try typeof uint ulong using var virtual void volatile while yield record"),
+    java: cLike("abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for if implements import instanceof int interface long native new package private protected public return short static super switch synchronized this throw throws transient try var void volatile while record", [["meta", /@\w+/]]),
+    go: cLike("break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var", [], "true false nil iota"),
+    rust: cLike("as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type unsafe use where while", [["fn", /\b\w+!/], ["meta", /#!?\[[^\]\n]*\]/]], "true false None Some Ok Err"),
+    kotlin: cLike("as break class continue do else for fun if in interface is object package return super this throw try typealias val var when while override open data sealed private public internal companion import", [["meta", /@\w+/]], "true false null"),
+    swift: cLike("as break case catch class continue default defer do else enum extension for func guard if import in init let protocol return self static struct switch throw throws try var where while", [["meta", /@\w+/]], "true false nil"),
+    php: cLike("abstract and array as break case catch class const continue declare default do echo else elseif extends final for foreach function global if implements include interface namespace new or private protected public require return static switch throw trait try use var while", [["var", /\$\w+/], ["com", /#.*/]], "true false null"),
+  };
+  Object.assign(LANGS, { h: LANGS.c, hpp: LANGS.cpp, "c++": LANGS.cpp, cc: LANGS.cpp, csharp: LANGS.cs, "c#": LANGS.cs, golang: LANGS.go, rs: LANGS.rust, kt: LANGS.kotlin });
+  const NAMES = { js: "JavaScript", javascript: "JavaScript", ts: "TypeScript", typescript: "TypeScript", py: "Python", python: "Python", sh: "Shell", bash: "Bash", ps1: "PowerShell", powershell: "PowerShell", cs: "C#", csharp: "C#", cpp: "C++", json: "JSON", html: "HTML", css: "CSS", sql: "SQL", yaml: "YAML", yml: "YAML", go: "Go", rust: "Rust", java: "Java" };
+  function guess(code) {
+    if (/^\s*[{[]/.test(code) && /"\s*:/.test(code)) return "json";
+    if (/^\s*<[!a-zA-Z]/.test(code)) return "html";
+    if (/^\s*(def|class|import|from)\s.*:?\s*$/m.test(code) && /:\s*$/m.test(code)) return "py";
+    if (/\b(const|let|function|=>|console\.)/.test(code)) return "js";
+    if (/^\s*(\$ |sudo |npm |git |cd |pip )/m.test(code)) return "sh";
+    return null;
+  }
+  function highlight(code, name) {
+    const key = (name || "").toLowerCase(), rules = LANGS[key] || LANGS[guess(code)];
+    if (!rules) return mdEsc(code);
+    let out = "", plain = "", i = 0;
+    const flush = () => { if (plain) out += mdEsc(plain); plain = ""; };
+    while (i < code.length) {
+      let hit = null;
+      for (const [cls, re] of rules) { re.lastIndex = i; const m = re.exec(code); if (m && m[0].length) { hit = [cls, m[0]]; break; } }
+      if (!hit) { plain += code[i++]; continue; }
+      if (hit[0]) { flush(); out += `<span class="hl-${hit[0]}">${mdEsc(hit[1])}</span>`; } else plain += hit[1];
+      i += hit[1].length;
+    }
+    flush();
+    return out;
+  }
+  return { highlight, label: (n) => NAMES[(n || "").toLowerCase()] || n || "" };
+})();
+
+// ---------- markdown (small, safe: everything is escaped, only http(s)/mailto/relative links) ----------
+const MD_ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+function mdEsc(s) { return String(s).replace(/[&<>"']/g, (c) => MD_ESC[c]); }
+function mdUrl(u) { u = u.trim().replace(/^<(.*)>$/, "$1"); return /^(https?:|mailto:|\/|#)/i.test(u) ? u : null; }
+function mdInline(s) {
+  const stash = [], put = (h) => "\u0000" + (stash.push(h) - 1) + "\u0000";
+  s = s.replace(/\u0000/g, "");
+  s = s.replace(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g, (m, t, c) => put("<code>" + mdEsc(c.replace(/^ ([\s\S]*) $/, "$1")) + "</code>"));
+  s = s.replace(/\\([\\`*_{}\[\]()#+\-.!|~>])/g, (m, c) => put(mdEsc(c)));
+  s = s.replace(/!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+"[^"]*")?\s*\)/g, (m, alt, u) => {
+    const url = mdUrl(u);
+    return url && !/^(mailto:|#)/i.test(url) ? put(`<img src="${mdEsc(url)}" alt="${mdEsc(alt)}" title="${mdEsc(alt)}" loading="lazy" referrerpolicy="no-referrer">`) : m;
+  });
+  s = s.replace(/\[([^\]]+)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+"[^"]*")?\s*\)/g, (m, txt, u) => {
+    const url = mdUrl(u);
+    return url ? put(`<a href="${mdEsc(url)}" target="_blank" rel="noreferrer">`) + txt + put("</a>") : m;
+  });
+  s = s.replace(/<((?:https?:\/\/|mailto:)[^\s>]+)>/g, (m, u) => put(`<a href="${mdEsc(u)}" target="_blank" rel="noreferrer">${mdEsc(u)}</a>`));
+  s = s.replace(/\bhttps?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]*_]\)*/g, (u) => {
+    let tail = ""; // keep ")" only when balanced, e.g. wiki/Foo_(bar)
+    while (u.endsWith(")") && (u.match(/\(/g) || []).length < (u.match(/\)/g) || []).length) { u = u.slice(0, -1); tail = ")" + tail; }
+    return put(`<a href="${mdEsc(u)}" target="_blank" rel="noreferrer">${mdEsc(u)}</a>`) + tail;
+  });
+  s = mdEsc(s)
+    .replace(/\*\*\*(?=\S)([\s\S]*?\S)\*\*\*/g, "<strong><em>$1</em></strong>")
+    .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, "$1<strong>$2</strong>")
+    .replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<del>$1</del>")
+    .replace(/(^|[^*\w])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![*\w])/g, "$1<em>$2</em>")
+    .replace(/(^|[^\w])_(?=[^\s_])([^_\n]*?[^\s_])_(?!\w)/g, "$1<em>$2</em>")
+    .replace(/(?: {2,}|\\)\n/g, "\n").replace(/\n/g, "<br>");
+  return s.replace(/\u0000(\d+)\u0000/g, (m, n) => stash[n]);
 }
+const MD_LI = /^( *)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/, MD_FENCE = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/, MD_HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+const MD_HEAD = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/, MD_TSEP = /^ *\|? *:?-+:? *(\| *:?-+:? *)*\|? *$/;
+function mdCells(line) { return line.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim()); }
+function mdStarts(lines, i) {
+  const l = lines[i];
+  return MD_FENCE.test(l) || MD_HEAD.test(l) || MD_HR.test(l) || /^ {0,3}>/.test(l) || MD_LI.test(l) ||
+    (l.includes("|") && i + 1 < lines.length && MD_TSEP.test(lines[i + 1]) && lines[i + 1].includes("-"));
+}
+function mdBlocks(lines) {
+  let out = "", i = 0, m;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if ((m = line.match(MD_FENCE))) {
+      const close = new RegExp("^ {0,3}" + (m[1][0] === "`" ? "`" : "~") + "{" + m[1].length + ",}\\s*$"), body = [];
+      for (i++; i < lines.length && !close.test(lines[i]); i++) body.push(lines[i]);
+      i++;
+      out += `<div class="code"><div class="code-h"><span>${mdEsc(HL.label(m[2]))}</span><button type="button" class="code-copy">⧉ Copy</button></div><pre><code>${HL.highlight(body.join("\n").replace(/\n+$/, ""), m[2])}</code></pre></div>`;
+      continue;
+    }
+    if ((m = line.match(MD_HEAD))) { const n = m[1].length; out += `<h${n}>${mdInline(m[2])}</h${n}>`; i++; continue; }
+    if (MD_HR.test(line)) { out += "<hr>"; i++; continue; }
+    if (/^ {0,3}>/.test(line)) {
+      const body = [];
+      while (i < lines.length && lines[i].trim() && (/^ {0,3}>/.test(lines[i]) || !mdStarts(lines, i))) body.push(lines[i++].replace(/^ {0,3}> ?/, ""));
+      out += `<blockquote>${mdBlocks(body)}</blockquote>`;
+      continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length && MD_TSEP.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      const head = mdCells(line), align = mdCells(lines[i + 1]).map((c) => (/^:.*:$/.test(c) ? "center" : /:$/.test(c) ? "right" : /^:/.test(c) ? "left" : ""));
+      const cell = (tag, c, k) => `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ""}>${mdInline(c)}</${tag}>`;
+      let t = "<thead><tr>" + head.map((c, k) => cell("th", c, k)).join("") + "</tr></thead><tbody>";
+      for (i += 2; i < lines.length && lines[i].trim() && lines[i].includes("|"); i++) {
+        const row = mdCells(lines[i]);
+        t += "<tr>" + head.map((_, k) => cell("td", row[k] || "", k)).join("") + "</tr>";
+      }
+      out += `<div class="tbl"><table>${t}</tbody></table></div>`;
+      continue;
+    }
+    if ((m = line.match(MD_LI))) {
+      const base = m[1].length, ordered = /\d/.test(m[2]), start = ordered ? parseInt(m[2], 10) : 1, items = [];
+      let cur = null, ind = 0;
+      while (i < lines.length) {
+        const l = lines[i], lm = l.match(MD_LI);
+        if (lm && lm[1].length <= base + 1) {
+          if (/\d/.test(lm[2]) !== ordered) break;
+          cur = [lm[3]]; items.push(cur); ind = lm[1].length + lm[2].length + 1; i++; continue;
+        }
+        if (!l.trim()) {
+          let j = i + 1; while (j < lines.length && !lines[j].trim()) j++;
+          if (j < lines.length && (/^ +/.test(lines[j]) && lines[j].match(/^ */)[0].length > base || ((m = lines[j].match(MD_LI)) && m[1].length <= base + 1 && /\d/.test(m[2]) === ordered))) { cur.push(""); i++; continue; }
+          break;
+        }
+        const sp = l.match(/^ */)[0].length;
+        if (sp > base) { cur.push(l.slice(Math.min(sp, ind))); i++; continue; }
+        if (mdStarts(lines, i)) break;
+        cur.push(l); i++; // lazy continuation
+      }
+      const tag = ordered ? "ol" : "ul";
+      out += `<${tag}${ordered && start !== 1 ? ` start="${start}"` : ""}>` + items.map((it) => {
+        while (it.length > 1 && it[it.length - 1] === "") it.pop();
+        let pre = "";
+        const tk = it[0].match(/^\[([ xX])\][ \t]+/);
+        if (tk) { pre = `<input type="checkbox" disabled${tk[1] !== " " ? " checked" : ""}> `; it[0] = it[0].slice(tk[0].length); }
+        let h = mdBlocks(it);
+        if (!it.includes("")) h = h.replace(/^<p>([\s\S]*?)<\/p>/, "$1"); // tight item: no paragraph margin
+        return `<li${tk ? ' class="task"' : ""}>${pre}${h}</li>`;
+      }).join("") + `</${tag}>`;
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && (!para.length || !mdStarts(lines, i))) para.push(lines[i++].replace(/^ +/, ""));
+    out += `<p>${mdInline(para.join("\n").replace(/[ \t]+$/, ""))}</p>`;
+  }
+  return out;
+}
+function mdRender(text) { return mdBlocks(String(text || "").replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n")); }
+log.addEventListener("click", (e) => {
+  const cp = e.target.closest(".code-copy");
+  if (cp) return copyText(cp.closest(".code").querySelector("code").textContent, cp);
+  const img = e.target.closest(".md img");
+  if (img) openLightbox(img.currentSrc || img.src);
+});
+log.addEventListener("error", (e) => { if (e.target.matches?.(".md img")) e.target.remove(); }, true);
+
 function openLightbox(src) { const lb = $("lightbox"), img = lb.querySelector("img"); img.referrerPolicy = "no-referrer"; img.src = src; lb.style.display = "flex"; }
 document.addEventListener("click", (e) => { if (e.target.closest("#lightbox")) $("lightbox").style.display = "none"; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("lightbox").style.display = "none"; });
 
 function assistantBox() {
   const box = add(el("div", "msg assistant"));
-  const contentEl = box.appendChild(el("div"));
+  const contentEl = box.appendChild(el("div", "md"));
+  let mdRaf = 0, mdText = "";
   let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false,  phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
   const drawPhase = () => {
     if (!phaseEl) return;
@@ -425,11 +798,13 @@ function assistantBox() {
       }
       thinkEl.textContent = text;
     },
-    content(text) { if (text && thinkT0 !== null && thinkT1 === null) thinkT1 = performance.now(); contentEl.textContent = text; },
+    content(text) { if (text && thinkT0 !== null && thinkT1 === null) thinkT1 = performance.now(); mdText = text;
+      if (!mdRaf) mdRaf = requestAnimationFrame(() => { mdRaf = 0; contentEl.innerHTML = mdRender(mdText); });
+    },
     setThinkSecs(secs) { thinkSecsFixed = secs; },
     setBudgetHit(v) { budgetHit = v; },
     thinkSecs() { return thinkT0 === null ? null : +(((thinkT1 ?? performance.now()) - thinkT0) / 1000).toFixed(1); },
-    error(text) { box.classList.add("error"); contentEl.textContent = text; },
+    error(text) { cancelAnimationFrame(mdRaf); mdRaf = 0; box.classList.add("error"); contentEl.classList.remove("md"); contentEl.style.whiteSpace = "pre-wrap"; contentEl.textContent = text; },
     finish(text, meta) {
       this.clearPhase();
       if (thinkEl) {
@@ -437,8 +812,7 @@ function assistantBox() {
         const secs = thinkSecsFixed !== undefined ? thinkSecsFixed : this.thinkSecs(); // saved chats without timing -> "Thought"
         thinkSum.textContent = (secs != null ? `Thought for ${secs < 60 ? secs + "s" : Math.round(secs / 60) + " min"}` : "Thought") + (budgetHit ? " · budget reached" : "");
       }
-      const imgs = mdImages(text);
-      if (imgs.length) box.insertBefore(renderImages(imgs, imgs.length === 1), contentEl.nextSibling);
+      if (text && !box.classList.contains("error")) { cancelAnimationFrame(mdRaf); mdRaf = 0; contentEl.innerHTML = mdRender(text); } // markdown images render inline
       if (meta || text) {
         const row = box.appendChild(el("div", "meta"));
         row.appendChild(el("span", null, meta || ""));
@@ -494,7 +868,7 @@ function toolCard(name, argsText) {
         const done = (ok) => { actions.remove(); det.open = false; pendingApproval = null; resolve(ok); };
         yes.onclick = () => done(true); no.onclick = () => done(false);
         pendingApproval = done;
-        log.scrollTop = log.scrollHeight;
+        follow();
       });
     },
   };
@@ -509,7 +883,8 @@ async function copyText(text, btn) {
 
 function userBubble(msg) {
   const w = add(el("div", "uwrap"));
-  w.appendChild(el("div", "msg user", msg.content));
+  if (msg._images?.length) w.appendChild(renderImages(msg._images, msg._images.length === 1));
+  if (msg.content || !msg._images?.length) w.appendChild(el("div", "msg user", msg.content));
   const acts = w.appendChild(el("div", "acts"));
   const cp = acts.appendChild(el("button", null, "⧉ Copy")); cp.type = "button"; cp.title = "Copy prompt";
   cp.onclick = () => copyText(msg.content, cp);
@@ -518,8 +893,10 @@ function userBubble(msg) {
   return w;
 }
 
-function renderChat() {
+// live = true while a run is going: tool calls still waiting for a result get a card the run events will fill in.
+function renderChat(live = false) {
   log.innerHTML = "";
+  cards = new Map();
   if (!chat.messages.length) return showWelcome();
   const results = new Map(chat.messages.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, m]));
   for (const m of chat.messages) {
@@ -534,20 +911,22 @@ function renderChat() {
       for (const tc of m.tool_calls || []) {
         const t = toolCard(tc.function.name, tc.function.arguments);
         const r = results.get(tc.id);
-        if (!r) { t.badge("no result"); continue; }
+        if (!r) { if (live) { cards.set(tc.id, t); t.badge("waiting"); } else t.badge("no result"); continue; }
         t.badge(r._status || "done");
         if (r._status !== "denied" && r._status !== "cancelled") t.result(r.content, r._images);
         if (QUIET_TOOLS.has(tc.function.name) && (r._status || "done") === "done" && r._images?.length) t.hide();
       }
     }
   }
-  log.scrollTop = log.scrollHeight;
+  toBottom();
 }
 
 // ---------- chat persistence ----------
 async function loadList() {
   try { chatList = (await (await fetch("/api/chats")).json()).chats || []; } catch { chatList = []; }
   if (!renaming) renderList();
+  clearTimeout(listTimer); // keep the sidebar's "reply in progress" dots current
+  if (chatList.some((c) => c.running)) listTimer = setTimeout(loadList, 3000);
 }
 
 async function saveChat(c = chat) {
@@ -560,10 +939,9 @@ async function saveChat(c = chat) {
   loadList();
 }
 
-async function stopAndWait() { stop(); while (running) await new Promise((r) => setTimeout(r, 30)); }
 
 async function newChat() {
-  await stopAndWait();
+  detach(); // a running reply keeps going on the server
   chat = blankChat();
   renderMode();
   renderThink();
@@ -575,7 +953,7 @@ async function newChat() {
 }
 
 async function loadChat(id) {
-  await stopAndWait();
+  detach();
   try {
     const r = await fetch(`/api/chats/${id}`);
     if (!r.ok) throw new Error("not found");
@@ -585,6 +963,7 @@ async function loadChat(id) {
     return newChat();
   }
   setHash(chat.id);
+  if (chat.unread) { delete chat.unread; fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unread: false }) }).then(loadList).catch(() => {}); }
   renderMode();
   renderThink();
   renderToolbarState();
@@ -592,10 +971,12 @@ async function loadChat(id) {
   renderChat();
   renderList();
   input.focus();
+  const { active = [] } = await fetch("/api/runs").then((r) => r.json()).catch(() => ({}));
+  if (active.includes(id) && chat.id === id) attach(id);
 }
 
 async function deleteChat(id) {
-  if (id === chat.id) await stopAndWait();
+  await stopAndWait(id);
   await fetch(`/api/chats/${id}`, { method: "DELETE" }).catch(() => {});
   if (id === chat.id) await newChat();
   loadList();
@@ -635,6 +1016,9 @@ function renderList() {
     if (g !== last) { list.appendChild(el("div", "group", g)); last = g; }
     const item = el("div", "chat-item" + (c.id === chat.id ? " active" : ""));
     const t = item.appendChild(el("span", "t", c.title || "Untitled")); t.title = c.title || "";
+    // Pulsing blue: reply in progress · yellow: waiting for you (approval) · green: finished, not read yet
+    const dot = c.waiting ? ["waiting", "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
+    if (dot) { const sp = el("span", "run-dot " + dot[0]); sp.title = dot[1]; item.insertBefore(sp, t); }
     const ren = item.appendChild(el("button", "act", "✎")); ren.title = "Rename";
     const del = item.appendChild(el("button", "act", "🗑")); del.title = "Delete";
     item.onclick = () => { if (c.id !== chat.id) loadChat(c.id); };
@@ -650,7 +1034,11 @@ function renderList() {
   }
 }
 
-// ---------- agent loop ----------
+// ---------- agent runs ----------
+// The loop runs on the server (runs.js), so a reply survives switching chats, opening Settings or closing the tab.
+// This page starts a run, watches it through an event stream (EventSource), answers approvals and can stop it.
+let es = null, live = null, cards = new Map();
+
 function setBusy(busy) {
   window.harnessBusy = busy;
   if (!busy && window.harnessReloadPending) return location.reload(); // hot reload deferred during a reply
@@ -659,138 +1047,156 @@ function setBusy(busy) {
   modelSel.disabled = busy;
 }
 
-async function streamOnce(messages, tools) {
-  const b = assistantBox();
-  let content = "", reasoning = "", timings = null, failed = false, gotChunk = false;
-  const calls = [];
-  const t0 = performance.now();
-  controller = new AbortController();
-  const model = modelSel.value;
-  b.phase("Sending request");
-  // Until the first token, poll the router to tell "loading model" apart from "reading prompt".
-  let polling = true;
-  (async () => {
-    while (polling) {
-      try {
-        const j = await (await fetch("/api/router/models")).json();
-        const m = (j.models || []).find((x) => x.id === model);
-        if (!polling) break;
-        if (m && m.status !== "loaded") b.phase(m.failed ? "Model failed to load (see llama-server log)" : "Loading model");
-        else if (!gotChunk) b.phase("Reading prompt");
-      } catch {}
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  })();
-  try {
-    const tp = thinkParams(chat.think);
-    const body = { model, messages, return_progress: true, stream_options: { include_usage: true }, ...tp.body };
-    if (tools.length) body.tools = tools;
-    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
-    if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || r.statusText); }
-    const reader = r.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split("\n"); buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") continue;
-        let j; try { j = JSON.parse(data); } catch { continue; }
-        if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
-        if (j.timings) timings = j.timings;
-        if (j.usage) lastUsage = { prompt: j.usage.prompt_tokens, completion: j.usage.completion_tokens, model };
-        if (!gotChunk) { gotChunk = true; polling = false; if (!content) b.phase("Reading prompt"); }
-        const pp = j.prompt_progress;
-        if (pp && pp.total && !content && !reasoning) {
-          const done = Math.max(0, pp.processed - (pp.cache || 0)), todo = Math.max(1, pp.total - (pp.cache || 0));
-          b.phase(`Reading prompt · ${pp.processed}/${pp.total} tokens`, Math.min(100, Math.round((done / todo) * 100)));
-        }
-        const d = j.choices && j.choices[0] && j.choices[0].delta;
-        if (!d) continue;
-        if (d.reasoning_content) { reasoning += d.reasoning_content; b.thinking(reasoning); if (!content) b.phase("Thinking"); }
-        if (d.content) { content += d.content; b.content(content); b.clearPhase(); }
-        for (const tc of d.tool_calls || []) {
-          const i = tc.index ?? calls.length;
-          calls[i] = calls[i] || { id: "", type: "function", function: { name: "", arguments: "" } };
-          if (tc.id) calls[i].id = tc.id;
-          if (tc.function?.name) calls[i].function.name += tc.function.name;
-          if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
-          b.phase("Preparing tool call" + (calls[i].function.name ? ` · ${calls[i].function.name}` : ""));
-        }
-        log.scrollTop = log.scrollHeight;
-      }
-    }
-  } catch (e) {
-    if (e.name !== "AbortError") { failed = true; b.error((content ? content + "\n\n" : "") + "Error: " + e.message); }
-  } finally {
-    polling = false;
-  }
-  const aborted = controller.signal.aborted;
-  controller = null;
-  const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
-  if (!content && !toolCalls.length && !failed && !aborted && !reasoning) b.content("(empty reply)");
-  const secs = ((performance.now() - t0) / 1000).toFixed(1);
-  const meta = `${modelSel.value} · ${secs}s` +
-    (timings?.predicted_per_second ? ` · ${timings.predicted_n} tok @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") +
-    (aborted ? " · stopped" : "");
-  const thinkSecs = b.thinkSecs();
-  const tb = thinkParams(chat.think).budget;
-  const budgetHit = !!(reasoning && tb > 0 && (reasoning.length / 3.6 >= tb * 0.9 || (thinkCfg.message && reasoning.trim().endsWith(thinkCfg.message.trim()))));
-  b.setBudgetHit(budgetHit);
-  b.finish(content, meta);
-  return { content, reasoning, toolCalls, meta, failed, thinkSecs, budgetHit };
+// Stop watching (the run itself keeps going on the server).
+function detach() {
+  if (es) { es.close(); es = null; }
+  live = null; pendingApproval = null; running = false;
+  setBusy(false);
 }
 
-async function runToolCall(tc, specs) {
-  const name = tc.function.name;
-  let args, parseErr = null;
-  try { args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {}; } catch (e) { parseErr = e.message; }
-  const t = toolCard(name, tc.function.arguments);
-  if (parseErr) {
-    t.badge("bad arguments");
-    return { status: "bad arguments", text: `ERROR: arguments were not valid JSON (${parseErr}). Call the tool again with valid JSON arguments.` };
+function attach(id) {
+  if (es) es.close();
+  const src = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
+  es = src; running = true; setBusy(true);
+  src.onmessage = (e) => {
+    if (es !== src || chat.id !== id) return;
+    let ev; try { ev = JSON.parse(e.data); } catch { return; }
+    onRunEvent(ev, id);
+  };
+  // CLOSED = no run any more (204) or the server is gone for good; show what was saved.
+  src.onerror = () => { if (es === src && src.readyState === EventSource.CLOSED) { es = null; endRun(id, true); } };
+}
+
+async function endRun(id, reload) {
+  live = null; pendingApproval = null; running = false;
+  setBusy(false);
+  loadList();
+  if (reload && chat.id === id) {
+    try { const c = await (await fetch(`/api/chats/${id}`)).json(); if (chat.id === id) { chat.messages = c.messages || []; renderChat(); } } catch {}
   }
-  const spec = specs.find((s) => s.name === name);
-  let approved = false;
-  if (spec?.approval && chat.mode !== "auto") {
+  if (chat.id === id) input.focus();
+}
+
+function liveStep() {
+  live = live || {};
+  live.box = assistantBox(); live.content = ""; live.reasoning = "";
+  return live.box;
+}
+function tcById(id) {
+  for (const m of chat.messages) for (const tc of m.tool_calls || []) if (tc.id === id) return tc;
+  return { id, function: { name: "tool", arguments: "" } };
+}
+function liveTool(tc, status) {
+  let t = cards.get(tc.id);
+  if (!t) { t = toolCard(tc.function.name, tc.function.arguments); cards.set(tc.id, t); }
+  if (status === "approval" && !t.asking) {
+    t.asking = true;
     t.badge("needs approval");
-    if (!(await t.approve())) {
-      t.badge("denied");
-      return { status: "denied", text: "The user denied this action. Do not retry it; ask the user how to proceed." };
+    const id = chat.id;
+    t.approve().then((ok) => {
+      t.asking = false;
+      if (ok) t.badge("running…");
+      fetch(`/api/runs/${encodeURIComponent(id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: tc.id, approved: ok }) }).catch(() => {});
+    });
+  } else if (status === "running") t.badge("running…");
+  return t;
+}
+
+function onRunEvent(ev, id) {
+  switch (ev.type) {
+    case "snapshot": {
+      chat.messages = ev.messages || [];
+      renderChat(true);
+      live = {};
+      if (ev.cur) {
+        const b = liveStep();
+        live.content = ev.cur.content || ""; live.reasoning = ev.cur.reasoning || "";
+        if (live.reasoning) b.thinking(live.reasoning);
+        if (live.content) b.content(live.content);
+        else if (ev.cur.phase) b.phase(ev.cur.phase, ev.cur.pct);
+      }
+      if (ev.tool) liveTool(ev.tool.tc, ev.tool.status);
+      break;
     }
-    approved = true;
+    case "step": liveStep().phase("Sending request"); break;
+    case "phase": if (live?.box && !live.content) live.box.phase(ev.text, ev.pct); break;
+    case "delta": {
+      const b = live?.box || liveStep();
+      if (ev.r) { live.reasoning += ev.r; b.thinking(live.reasoning); }
+      if (ev.c) { live.content += ev.c; b.content(live.content); b.clearPhase(); }
+      follow();
+      break;
+    }
+    case "assistant": {
+      const m = ev.msg;
+      chat.messages.push(m);
+      const b = live?.box || liveStep();
+      if (m._thinkSecs != null) b.setThinkSecs(m._thinkSecs);
+      b.setBudgetHit(!!m._budgetHit);
+      b.finish(m.content || "", m._meta);
+      live.box = null;
+      break;
+    }
+    case "failed": (live?.box || liveStep()).error(ev.text); if (live) live.box = null; break;
+    case "tool": liveTool(ev.tc, ev.status); break;
+    case "tool_result": {
+      const m = ev.msg;
+      chat.messages.push(m);
+      const t = liveTool(tcById(m.tool_call_id));
+      const st = m._status || "done";
+      t.badge(st);
+      if (st !== "denied" && st !== "cancelled") t.result(m.content, m._images);
+      if (QUIET_TOOLS.has(tcById(m.tool_call_id).function.name) && st === "done" && m._images?.length) t.hide();
+      follow();
+      break;
+    }
+    case "notice": add(el("div", "msg error", ev.text)); break;
+    case "usage": lastUsage = { prompt: ev.prompt, completion: ev.completion, model: ev.model }; updateCtx(); break;
+    case "done": if (es) { es.close(); es = null; } endRun(id, false); break;
   }
-  t.badge("running…");
-  let text, images = [];
+}
+
+async function startRun(c) {
+  running = true; setBusy(true);
   try {
-    const r = await fetch("/api/tool", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, args, chatId: chat.id, approved: approved || chat.mode === "auto" }) });
-    const j = await r.json();
-    text = j.result; images = j.images || [];
-  } catch (e) { text = "ERROR: " + e.message; }
-  const st = text.startsWith("ERROR") ? "error" : "done";
-  t.badge(st);
-  t.result(text, images);
-  if (QUIET_TOOLS.has(name) && st === "done" && images.length) t.hide();
-  return { status: st, text, images };
+    await saveChat(c);
+    await loadTools(); // pick up changes made in Settings
+    const specs = activeTools();
+    const pinned = (await Promise.all(skillList.filter((x) => skillMode(x.name) === "pinned")
+      .map((x) => fetch("/api/skills/get?name=" + encodeURIComponent(x.name)).then((r) => (r.ok ? r.json() : null)).catch(() => null)))).filter(Boolean);
+    const tp = thinkParams(c.think);
+    const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      chatId: c.id, model: modelSel.value, system: systemPrompt(specs, pinned), tools: specs.map((s) => s.spec),
+      think: { body: tp.body, budget: tp.budget, message: thinkCfg.message },
+    }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    if (chat.id === c.id) attach(c.id); else { running = false; setBusy(false); }
+    loadList();
+  } catch (e) {
+    add(el("div", "msg error", "Could not start the reply: " + e.message));
+    running = false; setBusy(false);
+  }
 }
 
 async function send() {
   const text = input.value.trim();
-  if (!text || running) return;
+  if (attachments.some((a) => a.busy)) { status.textContent = "Waiting for the image to finish attaching…"; return; }
+  const imgs = attachments.map((a) => ({ src: a.src, full: a.src }));
+  if ((!text && !imgs.length) || running) return;
   input.value = "";
+  attachments = []; renderAttachments();
   const c = chat;
-  if (!c.messages.some((m) => m.role === "user")) c.title = text.replace(/\s+/g, " ").slice(0, 60);
+  if (!c.messages.some((m) => m.role === "user")) c.title = (text || "Image").replace(/\s+/g, " ").slice(0, 60);
   const um = { role: "user", content: text };
+  if (imgs.length) um._images = imgs;
   c.messages.push(um);
   userBubble(um);
-  await runAgent(c);
+  toBottom();
+  await startRun(c);
 }
 
-// Retry: drop everything after this prompt and run the agent again from it.
+// Retry: drop everything after this prompt and run it again.
 async function retry(msg) {
   await stopAndWait();
   const c = chat;
@@ -798,47 +1204,23 @@ async function retry(msg) {
   if (i < 0) return;
   c.messages = c.messages.slice(0, i + 1);
   renderChat();
-  await runAgent(c);
-}
-
-async function runAgent(c) {
-  running = true; stopped = false; setBusy(true);
-  try {
-    await saveChat(c);
-    await loadTools(); // pick up changes made in Settings
-    const specs = activeTools();
-    const pinned = (await Promise.all(skillList.filter((x) => skillMode(x.name) === "pinned")
-      .map((x) => fetch("/api/skills/get?name=" + encodeURIComponent(x.name)).then((r) => (r.ok ? r.json() : null)).catch(() => null)))).filter(Boolean);
-    for (let step = 0; step < MAX_STEPS && !stopped; step++) {
-      const messages = [{ role: "system", content: systemPrompt(specs, pinned) }, ...c.messages.map(stripUi)];
-      const r = await streamOnce(messages, specs.map((s) => s.spec));
-      if (r.failed || (!r.content && !r.toolCalls.length)) break;
-      const msg = { role: "assistant", content: r.content, _meta: r.meta };
-      if (r.reasoning) { msg._reasoning = r.reasoning; if (r.thinkSecs != null) msg._thinkSecs = r.thinkSecs; if (r.budgetHit) msg._budgetHit = true; }
-      if (r.toolCalls.length) msg.tool_calls = r.toolCalls;
-      c.messages.push(msg);
-      await saveChat(c);
-      if (!r.toolCalls.length) break;
-      for (const tc of r.toolCalls) {   // every tool call needs a result, even if cancelled
-        const res = stopped ? { status: "cancelled", text: "Cancelled by user." } : await runToolCall(tc, specs);
-        const tm = { role: "tool", tool_call_id: tc.id, content: res.text, _status: res.status };
-        if (res.images?.length) tm._images = res.images;
-        c.messages.push(tm);
-      }
-      await saveChat(c);
-      if (step === MAX_STEPS - 1) add(el("div", "msg error", `Stopped after ${MAX_STEPS} steps.`));
-    }
-  } finally {
-    running = false;
-    setBusy(false);
-    input.focus();
-  }
+  await startRun(c);
 }
 
 function stop() {
-  stopped = true;
-  if (controller) controller.abort();
   if (pendingApproval) pendingApproval(false);
+  if (chat.id) fetch(`/api/runs/${encodeURIComponent(chat.id)}/stop`, { method: "POST" }).catch(() => {});
+}
+// Stops this chat's run on the server and waits until it has finished saving.
+async function stopAndWait(id = chat.id) {
+  if (!id) return;
+  await fetch(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST" }).catch(() => {});
+  for (let i = 0; i < 200; i++) {
+    const { active = [] } = await fetch("/api/runs").then((r) => r.json()).catch(() => ({}));
+    if (!active.includes(id)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (chat.id === id) detach();
 }
 
 // ---------- + menu (per-chat skills / MCP / tool categories) ----------
@@ -851,6 +1233,7 @@ function patchChat(fields) {
 function togglePlus(force) {
   const m = $("plusMenu");
   const open = force ?? m.hidden;
+  if (open) toggleMode(false);
   m.hidden = !open;
   $("plus").classList.toggle("open", open);
   if (open) { renderPlus(); loadTools().then(renderPlus); }
@@ -902,8 +1285,8 @@ function renderPlus() {
 }
 $("plus").onclick = (e) => { e.stopPropagation(); togglePlus(); };
 $("plusMenu").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus(false); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("plusMenu").hidden) togglePlus(false); });
+document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); });
 
 // ---------- context meter ----------
 let lastUsage = null, ctxSize = {}, ctxTimer = null;
@@ -936,10 +1319,11 @@ input.addEventListener("input", updateCtx);
 $("form").addEventListener("submit", (e) => { e.preventDefault(); if (running) stop(); else send(); });
 input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!running) send(); } });
 $("newChat").onclick = newChat;
-$("refresh").onclick = loadModels;
+window.addEventListener("focus", () => loadModels()); // no reload button: refresh the model list when the window regains focus
 modelSel.onchange = () => {
   chat.model = modelSel.value;
   updateCtx();
+  renderAttachments(); // vision note depends on the model
   if (chat.id) fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: chat.model }) }).catch(() => {});
 };
 renderMode();

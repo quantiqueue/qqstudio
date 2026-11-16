@@ -5,6 +5,14 @@ const fs = require("fs");
 const path = require("path");
 
 const PRESET_FILE = require("./paths").presets;
+// Models whose mmproj (vision projector) is switched off in Settings > Models: {"disabled": [model names]}.
+const VISION_FILE = path.join(require("./paths").home, "vision.json");
+function visionOff() { try { return new Set(JSON.parse(fs.readFileSync(VISION_FILE, "utf8")).disabled || []); } catch { return new Set(); } }
+function setVision(name, on) {
+  const off = visionOff();
+  if (on) off.delete(name); else off.add(name);
+  fs.writeFileSync(VISION_FILE, JSON.stringify({ disabled: [...off] }, null, 1));
+}
 const SHARD = /-(\d{5})-of-(\d{5})\.gguf$/i;
 
 function scan(root, depth = 0, out = []) {
@@ -64,7 +72,7 @@ function parseIni(text) {
 }
 
 function generate(folder) {
-  const models = list(folder);
+  const models = list(folder), off = visionOff();
   let old = new Map();
   try { old = parseIni(fs.readFileSync(PRESET_FILE, "utf8")); } catch {}
   const MANAGED = new Set(["model", "m", "mmproj", "mm"]);
@@ -79,7 +87,7 @@ function generate(folder) {
   for (const m of models) {
     lines.push(`[${m.name}]`);
     lines.push(`model = ${m.model}`);
-    if (m.mmproj) lines.push(`mmproj = ${m.mmproj}`);
+    if (m.mmproj && !off.has(m.name)) lines.push(`mmproj = ${m.mmproj}`);
     for (const [k, v] of old.get(m.name) || []) if (!MANAGED.has(k.toLowerCase())) lines.push(`${k} = ${v}`);
     lines.push("");
   }
@@ -97,4 +105,4 @@ function info(folder) {
   return { file: PRESET_FILE, exists: mtime !== null, mtime, models: folder ? list(folder) : [] };
 }
 
-module.exports = { generate, info, list };
+module.exports = { generate, info, list, visionOff, setVision };
