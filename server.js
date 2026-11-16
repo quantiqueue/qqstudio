@@ -139,7 +139,12 @@ function imagePathsIn(text) {
     try { const f = resolveSafe(m[0]); if (fs.statSync(f).isFile() && !out.includes(f)) out.push(f); } catch {}
     if (out.length >= 4) break;
   }
-  return out.map((f) => ({ src: "/api/file?path=" + encodeURIComponent(f), full: "/api/file?path=" + encodeURIComponent(f), caption: path.basename(f) }));
+  // &v=<modified time>: a re-exported file with the same name must not show (or reach the model as) the old version
+  return out.map((f) => {
+    let v = 0; try { v = Math.round(fs.statSync(f).mtimeMs); } catch {}
+    const src = "/api/file?path=" + encodeURIComponent(f) + "&v=" + v;
+    return { src, full: src, caption: path.basename(f) };
+  });
 }
 async function handleUploads(req, res) {
   const name = path.basename(decodeURIComponent(req.url.split("?")[0].slice("/api/uploads".length).replace(/^\//, "")));

@@ -151,8 +151,9 @@ const impl = {
     }
     const file = resolveSafe(source);
     if (!IMAGE_EXT.test(file)) throw new Error("Not an image file (supported: png, jpg, jpeg, gif, webp, bmp, svg, ico)");
-    await fs.stat(file);
-    const src = "/api/file?path=" + encodeURIComponent(file);
+    const st = await fs.stat(file);
+    // &v=<modified time>: a file re-saved under the same name gets a new link, so neither the page nor the run's image cache shows the old one
+    const src = "/api/file?path=" + encodeURIComponent(file) + "&v=" + Math.round(st.mtimeMs);
     return { text: `The image ${file} is now displayed to the user. Reply with a short sentence about it.`, images: [{ src, full: src, caption: caption || path.basename(file), big: true }] };
   },
   fetch_url: (a) => web.fetch_url(a),
