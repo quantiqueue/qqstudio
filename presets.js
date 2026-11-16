@@ -105,4 +105,4 @@ function info(folder) {
   return { file: PRESET_FILE, exists: mtime !== null, mtime, models: folder ? list(folder) : [] };
 }
 
-module.exports = { generate, info, list, visionOff, setVision };
+module.exports = { generate, info, list, visionOff, setVision, parseIni };

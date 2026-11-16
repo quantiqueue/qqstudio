@@ -15,6 +15,7 @@ ws.init(); // makes Default, moves the old chats\ folder into it
 const { ROOTS, addRoot, removeRoot, runTool, toolList, toolSettings, saveToolSettings, isEnabled, resolveSafe, IMAGE_EXT } = require("./tools");
 const hf = require("./hf");
 const presets = require("./presets");
+const loadouts = require("./loadouts");
 const createRuns = require("./runs");
 // Local only by default: the API can run commands. Settings > Server can open it to the local network
 // (other devices then need the access key once). The HOST env var overrides the setting.
@@ -86,7 +87,39 @@ function visionMap() {
   try { for (const m of presets.list(getConfig().modelsFolder)) out.set(m.name, !!m.mmproj && !off.has(m.name)); } catch {}
   return out;
 }
-const visionOf = (model) => !!visionMap().get(model);
+// A loadout can see when vision is on for it and its model has an mmproj; ids that aren't loadouts: the old rule.
+const visionOf = (model) => { const v = loadouts.visionOf(model); return v === null ? !!visionMap().get(model) : v; };
+// Regenerates every engine's models.ini from the loadouts; restarts the running engine if its file changed
+// (the router only reads presets at start). force: restart even if "restart when models.ini changes" is off.
+async function regenPresets(force = false) {
+  let out = { changed: false };
+  try { out = presets.generate(getConfig().modelsFolder); } catch {}
+  const changed = loadouts.writeAll();
+  const act = llama.active();
+  let restarted = false;
+  if (act && changed.has(act.id) && (force || llama.settings().restartOnModelsChange) && (await llama.status()).pid) {
+    console.log(`[engines] ${act.name}: presets changed -> restarting`);
+    await llama.restart();
+    restarted = true;
+  }
+  return { ...out, changed: out.changed || changed.size > 0, enginesChanged: [...changed], restarted };
+}
+// Before a request: the loadout's engine must be the one running. Switching stops the other engine first.
+async function ensureEngine(model, phase) {
+  const lo = loadouts.get(model);
+  if (!lo || !llama.byId(lo.engine) || process.env.LLAMA_URL) return;
+  if (llama.active()?.id === lo.engine && (await llama.status()).pid) return;
+  if (phase) phase("Switching engine");
+  console.log(`[engines] switching to ${llama.byId(lo.engine).name} for ${lo.name}`);
+  await llama.start(lo.engine);
+  for (let i = 0; i < 360; i++) {
+    const s = await llama.status();
+    if (s.health === "ready") return;
+    if (s.state === "error") throw new Error(s.error || "The engine failed to start");
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error("The engine didn't become ready in 3 minutes (see Settings > Engines > Log)");
+}
 const UPLOADS = DATA.uploads;
 // The file on disk behind a pasted image's /api/uploads/<name> link (null for other image refs).
 // Pasted images live in the session's workspace files (/api/workspaces/<ws>/files/<name>); older ones in uploads\.
@@ -192,6 +225,14 @@ function readBody(req) {
 }
 
 async function handleModels(res) {
+  const los = loadouts.list();
+  if (los.length) {
+    const act = llama.active();
+    let status = new Map();
+    try { const j = await (await fetch(`${llama.url()}/models`, { signal: AbortSignal.timeout(2000) })).json(); for (const m of j.data || j.models || []) status.set(m.id || m.name, statusOf(m)); } catch {}
+    return sendJson(res, 200, { models: los.map((l) => ({ id: l.id, name: l.name, engine: l.engine, engineName: llama.byId(l.engine)?.name || l.engine,
+      status: act && l.engine === act.id ? status.get(l.id) || null : null, vision: !!loadouts.visionOf(l.id) })) });
+  }
   try {
     const r = await fetch(`${llama.url()}/v1/models`);
     const body = await r.json();
@@ -277,7 +318,7 @@ function updateChat(file, fn) {
   tail.then(() => { if (chatQueues.get(file) === tail) chatQueues.delete(file); });
   return next;
 }
-const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx });
+const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, samplingFor: loadouts.samplingFor, ensureEngine });
 
 async function writeChat(file, obj) {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`; // unique: runs and the page can save at once
@@ -314,6 +355,70 @@ function openFolder(dir) {
   const { spawn } = require("child_process");
   const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
   try { spawn(cmd, [dir], { detached: true, stdio: "ignore" }).unref(); } catch {}
+}
+
+// ---- Engines ----
+// GET/POST /api/engines · PATCH/DELETE /api/engines/<id> · POST /api/engines/<id>/start|stop|restart · GET /api/engines/<id>/log
+// PUT /api/engines/options · GET /api/engines/releases · POST /api/engines/download · POST /api/engines/jobs/<id>/cancel · POST /api/engines/jobs/clear
+async function handleEngines(req, res) {
+  const parts = new URL(req.url, "http://x").pathname.split("/").slice(3).map(decodeURIComponent);
+  const [a, b, c] = parts;
+  const body = async () => JSON.parse((await readBody(req)) || "{}");
+  try {
+    if (!a) {
+      if (req.method === "GET") return sendJson(res, 200, await llama.list());
+      if (req.method === "POST") return sendJson(res, 200, { engine: llama.add(await body()) });
+    }
+    if (a === "options" && req.method === "PUT") { llama.setOptions(await body()); return sendJson(res, 200, await llama.list()); }
+    if (a === "releases" && req.method === "GET") return sendJson(res, 200, await llama.releases());
+    if (a === "download" && req.method === "POST") return sendJson(res, 200, { job: await llama.download(await body()) });
+    if (a === "jobs" && b === "clear" && req.method === "POST") { llama.clearJobs(); return sendJson(res, 200, { ok: true }); }
+    if (a === "jobs" && c === "cancel" && req.method === "POST") { llama.cancel(b); return sendJson(res, 200, { ok: true }); }
+    if (a && !llama.byId(a)) return sendJson(res, 404, { error: "No such engine" });
+    if (a && !b) {
+      if (req.method === "PATCH") return sendJson(res, 200, { engine: llama.update(a, await body()) });
+      if (req.method === "DELETE") { await llama.remove(a); return sendJson(res, 200, { ok: true }); }
+    }
+    if (a && ["start", "stop", "restart"].includes(b) && req.method === "POST") { await llama[b](a); return sendJson(res, 200, await llama.list()); }
+    if (a && b === "log" && req.method === "GET") { res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(llama.log(a)); }
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (e) {
+    sendJson(res, e.status || 500, { error: e.message });
+  }
+}
+
+// ---- Loadouts ----
+// GET/POST /api/loadouts · PUT/DELETE /api/loadouts/<id> · GET /api/loadouts/<id>/preview
+async function handleLoadouts(req, res) {
+  const id = decodeURIComponent(new URL(req.url, "http://x").pathname.split("/")[3] || "");
+  const sub = new URL(req.url, "http://x").pathname.split("/")[4];
+  try {
+    if (!id && req.method === "GET") {
+      const engs = [];
+      for (const e of llama.all()) engs.push({ id: e.id, name: e.name, active: e.id === llama.active()?.id, support: await loadouts.fieldSupport(e) });
+      return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
+        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model) })), defaultCtx: loadouts.DEFAULT_CTX });
+    }
+    if (id && sub === "preview" && req.method === "GET") { const l = loadouts.get(id); if (!l) return sendJson(res, 404, { error: "No such loadout" }); return sendJson(res, 200, { ini: loadouts.iniFor(l.engine) }); }
+    const busy = runs.anyActive(); // don't restart under a reply in progress; the page shows "restart to apply"
+    const apply = async (engineId) => {
+      if (busy) { const changed = loadouts.writeAll(); return { restarted: false, restartNeeded: changed.has(engineId) && llama.active()?.id === engineId && !!(await llama.status()).pid }; }
+      const r = await regenPresets(true);
+      return { restarted: r.restarted, restartNeeded: false };
+    };
+    if (!id && req.method === "POST") { const l = loadouts.create(JSON.parse((await readBody(req)) || "{}")); return sendJson(res, 200, { loadout: l, ...(await apply(l.engine)) }); }
+    if (id && !sub && req.method === "PUT") {
+      const prev = loadouts.get(id);
+      const l = loadouts.update(id, JSON.parse((await readBody(req)) || "{}"));
+      const a = await apply(l.engine);
+      if (prev && prev.engine !== l.engine) await apply(prev.engine);
+      return sendJson(res, 200, { loadout: l, ...a });
+    }
+    if (id && !sub && req.method === "DELETE") { const l = loadouts.get(id); loadouts.remove(id); return sendJson(res, 200, { ok: true, ...(l ? await apply(l.engine) : {}) }); }
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (e) {
+    sendJson(res, e.status || 500, { error: e.message });
+  }
 }
 
 // ---- Workspaces ----
@@ -546,9 +651,8 @@ async function handleLocalModels(req, res) {
     const m = all.find((x) => x.name === b.id);
     if (!m || !m.mmproj) return sendJson(res, 404, { error: "That model has no vision projector (mmproj) in its folder." });
     presets.setVision(m.name, b.on === true);
-    const out = presets.generate(root);
-    let restarted = false;
-    if (out.changed && (await llama.status()).pid) { await llama.restart(); restarted = true; } // the router only reads presets at start
+    for (const l of loadouts.list().filter((x) => x.model === m.name)) loadouts.update(l.id, { vision: b.on === true });
+    const { restarted } = await regenPresets(true);
     console.log(`[models] vision ${b.on ? "on" : "off"} for ${m.name}${restarted ? " (engine restarted)" : ""}`);
     return sendJson(res, 200, { vision: b.on === true, restarted });
   }
@@ -580,9 +684,8 @@ async function handleLocalModels(req, res) {
   // Remove folders the model leaves empty, up to (not including) the models folder.
   for (let d = path.dirname(m.model); insideFolder(root, d); d = path.dirname(d)) { try { fs.rmdirSync(d); } catch { break; } }
   console.log(`[models] deleted ${m.name}: ${deleted.length} file(s), ${(size / 1e9).toFixed(2)} GB`);
-  const out = presets.generate(root);
-  let restarted = false;
-  if (out.changed && llama.settings().restartOnModelsChange && (await llama.status()).pid) { await llama.restart(); restarted = true; }
+  loadouts.removeForModel(m.name); // its loadouts go with it
+  const { restarted } = await regenPresets();
   sendJson(res, 200, { deleted, size, restarted });
 }
 
@@ -599,14 +702,8 @@ async function handleHf(req, res) {
     if (req.method === "POST" && u.pathname === "/api/hf/clear") { hf.clearFinished(); return sendJson(res, 200, { ok: true }); }
     if (req.method === "GET" && u.pathname === "/api/hf/presets") return sendJson(res, 200, presets.info(u.searchParams.get("folder")));
     if (req.method === "POST" && u.pathname === "/api/hf/presets") {
-      const out = presets.generate(JSON.parse(await readBody(req)).folder);
-      out.restarted = false;
-      if (out.changed && llama.settings().restartOnModelsChange && (await llama.status()).pid) {
-        console.log("[llama] models.ini changed -> restarting llama-server");
-        await llama.restart();
-        out.restarted = true;
-      }
-      return sendJson(res, 200, out);
+      JSON.parse((await readBody(req)) || "{}");
+      return sendJson(res, 200, await regenPresets());
     }
     sendJson(res, 404, { error: "Not found" });
   } catch (e) {
@@ -827,6 +924,8 @@ const server = http.createServer((req, res) => {
     if (req.url.startsWith("/api/ctx")) return handleCtx(req, res);
     if (req.url.startsWith("/api/hf/")) return handleHf(req, res);
     if (req.url.startsWith("/api/llama/")) return handleLlama(req, res);
+    if (req.url === "/api/engines" || req.url.startsWith("/api/engines/")) return handleEngines(req, res);
+    if (req.url === "/api/loadouts" || req.url.startsWith("/api/loadouts/")) return handleLoadouts(req, res);
     if (req.method === "GET" && req.url.startsWith("/api/file?")) return handleFile(req, res);
     if (req.method === "GET" && req.url === "/api/router/models") return handleRouterModels(res);
     if (req.url === "/api/models/local" || req.url === "/api/models/delete" || req.url === "/api/models/vision") return handleLocalModels(req, res);
@@ -861,6 +960,7 @@ function rebind(host) {
 server.listen(PORT, HOST, () => {
     banner();
     console.log(`llama-server: ${llama.url()}`);
+    try { loadouts.load(); loadouts.writeAll(); } catch (e) { console.error("[loadouts] init:", e.message); }
     llama.init().catch((e) => console.error("[llama] init:", e.message));
     mcp.init().then(() => { const s = mcp.status(); if (s.length) console.log(`[mcp] ${s.map((x) => `${x.name}: ${x.status}`).join(", ")}`); });
     console.log(`Tool roots:   ${ROOTS.join(", ")}`);

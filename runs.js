@@ -29,7 +29,7 @@ const enableSpec = (names) => ({ type: "function", function: {
 } });
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, samplingFor = () => ({}), ensureEngine = async () => {} }) {
   const runs = new Map(); // chatId -> run
 
   const readChat = async (id) => JSON.parse(await fs.promises.readFile(chatFile(id), "utf8"));
@@ -219,9 +219,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
 
     run.abort = new AbortController();
     try {
+      await ensureEngine(model, (t) => phase(t)); // a loadout on another engine: stop the running one, start that one
       const body = {
         model, messages: [{ role: "system", content: run.system }, ...(await modelMessages(run))],
-        return_progress: true, stream_options: { include_usage: true }, ...run.think.body, stream: true,
+        return_progress: true, stream_options: { include_usage: true }, ...samplingFor(model), ...run.think.body, stream: true,
         max_tokens: run.maxTokens,
       };
       if (run.tools.length) body.tools = run.tools;
@@ -519,6 +520,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   return {
     handle,
     has: (id) => runs.has(id),
+    anyActive: () => runs.size > 0,
     waiting: (id) => !!runs.get(id)?.approval,
     stop: (id) => stop(runs.get(id)),
     deleted: (id) => { const r = runs.get(id); if (r) { r.deleted = true; stop(r); } },

@@ -96,8 +96,17 @@
   .row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-top:1px solid var(--line); background:var(--panel); }
   .row:first-child { border-top:none; }
   .row button.del { min-width:34px; }
-  .row button.vis-btn { color:var(--muted); }
-  .row button.vis-btn.on { color:var(--text); border-color:#2f5a8a; background:#16243a; }
+  .name .idrow { display:flex; align-items:baseline; gap:8px; min-width:0; }
+  .name .idrow .id { min-width:0; }
+  /* "vision (o  )" switch next to the model name */
+  .row button.vtag { flex:none; display:inline-flex; align-items:center; gap:6px; background:none; border:none; padding:0; font-size:12px; color:var(--muted); cursor:pointer; }
+  .row button.vtag .sw { position:relative; width:26px; height:14px; border-radius:7px; background:#2a2f3a; transition:background .15s; }
+  .row button.vtag .knob { position:absolute; top:2px; left:2px; width:10px; height:10px; border-radius:50%; background:#8a91a3; transition:left .15s, background .15s; }
+  .row button.vtag.on { color:var(--text); }
+  .row button.vtag.on .sw { background:var(--green); }
+  .row button.vtag.on .knob { left:14px; background:#fff; }
+  .row button.vtag:hover .sw { box-shadow:0 0 0 1px #3b4356; }
+  .row button.vtag:disabled { opacity:.5; cursor:default; }
   .vis-opt { display:flex; align-items:center; gap:8px; padding:8px 12px; font-size:13px; color:#b8bdca; border-bottom:1px solid var(--line); background:#151922; }
   .vis-opt .muted { color:var(--muted); }
   .row button.del.armed { background:#3a1a1d; }
@@ -161,6 +170,41 @@
   .srv.err .dot { background:var(--red); }
   .srv .err-text { color:#f0a3aa; font-size:13px; margin-top:8px; }
   .srv .muted { color:var(--muted); font-size:12px; }
+  .lo-card { display:flex; align-items:center; gap:10px; padding:10px 14px; border-top:1px solid var(--line); background:var(--panel); }
+  .lo-card:first-child { border-top:none; }
+  .lo-card .info { flex:1; min-width:0; }
+  .lo-card .nm { font-weight:600; font-size:14px; }
+  .lo-card .sub { color:var(--muted); font-size:12px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lo-card .eng-tag { font-size:11px; border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--muted); margin-left:6px; font-weight:400; }
+  .lo-card button.armed { background:#3a1a1d; border-color:#6b2a30; color:#f0a3aa; }
+  .lo-form { background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:14px 16px; margin-bottom:16px; }
+  .lo-form h3 { margin:0 0 12px; font-size:15px; }
+  .lo-form h4 { margin:16px 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; }
+  .lo-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:8px 18px; }
+  .lo-f { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .lo-f label { width:120px; flex:none; color:var(--muted); }
+  .lo-f input[type=text], .lo-f select { flex:1; min-width:0; }
+  .lo-f.unsup label { text-decoration:line-through; }
+  .lo-f .hint { font-size:11px; color:var(--muted); }
+  .lo-form pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:12px; max-height:200px; overflow:auto; margin:6px 0 0; }
+  .lo-form .err-text { color:#f0a3aa; font-size:13px; margin-top:8px; }
+  .lo-form .acts { display:flex; gap:8px; align-items:center; margin-top:14px; }
+  .used-by { font-size:12px; color:var(--muted); margin-top:2px; }
+  .used-by a { color:var(--accent); text-decoration:none; cursor:pointer; } .used-by a:hover { text-decoration:underline; }
+  .eng .flags { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:12px; color:var(--muted); }
+  .eng .flags input { flex:1; font:12px ui-monospace,Consolas,monospace; padding:3px 8px; }
+  .eng { margin-bottom:10px; }
+  .eng .nm { font-weight:600; font-size:14px; }
+  .eng .tag-active { font-size:11px; color:var(--accent); border:1px solid #2f5a8a; border-radius:6px; padding:0 6px; }
+  .eng .path { font:12px ui-monospace,Consolas,monospace; color:var(--muted); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .eng .loaded { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px; font-size:12px; color:var(--muted); }
+  .eng .loaded .lm { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:8px; padding:2px 4px 2px 8px; color:var(--text); }
+  .eng .loaded button { font-size:11px; padding:1px 8px; }
+  .eng button.armed { background:#3a1a1d; border-color:#6b2a30; color:#f0a3aa; }
+  .eng button.logsel { color:var(--muted); } .eng button.logsel.on { color:var(--text); border-color:var(--accent); }
+  .eng-opts { display:flex; gap:18px; margin:0 0 22px 2px; font-size:13px; color:var(--muted); }
+  .eng-h { font-size:14px; margin:6px 0 10px; }
+  #engJobs .job { border:1px solid var(--line); border-radius:8px; margin-top:10px; }
   .tlevels { border-collapse:collapse; margin-bottom:12px; font-size:14px; }
   .tlevels th { text-align:left; font-weight:500; color:var(--muted); font-size:12px; padding:0 14px 6px 0; }
   .tlevels td { padding:3px 14px 3px 0; white-space:nowrap; }
@@ -182,9 +226,11 @@
 </header>
 <div class="layout">
 <aside class="tabs">
-  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engine<span class="badge" id="tabEngine"></span></a>
+  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engines<span class="badge" id="tabEngine"></span></a>
+  <a href="#loadouts" data-tab="loadouts"><span class="ic">◧</span>Loadouts<span class="badge" id="tabLoadouts"></span></a>
   <a href="#models" data-tab="models"><span class="ic">▤</span>Models<span class="badge" id="tabModels"></span></a>
   <a href="#install" data-tab="install"><span class="ic">⇩</span>Install Models<span class="badge" id="tabInstall"></span></a>
+  <a href="#sessions" data-tab="sessions"><span class="ic">💬</span>Sessions<span class="badge"></span></a>
   <a href="#tools" data-tab="tools"><span class="ic">🔧</span>Tools<span class="badge" id="tabTools"></span></a>
   <a href="#skills" data-tab="skills"><span class="ic">🧩</span>Skills<span class="badge" id="tabSkills"></span></a>
   <a href="#mcp" data-tab="mcp"><span class="ic">🔌</span>MCP Servers<span class="badge" id="tabMcp"></span></a>
@@ -193,61 +239,39 @@
 <div class="scroll">
 <main>
   <section data-tab="engine">
-    <h2>Engine</h2>
-    <div class="lead">The llama-server process the harness runs for you.</div>
-    <div class="srv" id="srv">
-    <div class="row2">
-      <span class="st"><span class="dot"></span><span id="srvState">checking…</span></span>
-      <span class="muted" id="srvSub"></span>
-      <span class="spacer"></span>
-      <button id="srvStart" class="load">▶ Start</button>
-      <button id="srvRestart">↻ Restart</button>
-      <button id="srvStop" class="eject">■ Stop</button>
-    </div>
-    <div class="err-text" id="srvErr" style="display:none"></div>
-    <div id="srvSettings" style="margin-top:14px; border-top:1px solid var(--line); padding-top:14px">
-      <div>
-        <div class="field"><label for="srvExe">Executable</label><input type="text" id="srvExe" spellcheck="false" placeholder="C:\path\to\llama.exe"></div>
-        <div class="field" style="align-items:flex-start"><label for="srvArgs" style="padding-top:6px">Arguments</label><textarea id="srvArgs" spellcheck="false"></textarea></div>
-        <div class="checks">
-          <label><input type="checkbox" id="srvAuto"> start with the harness</label>
-          <label><input type="checkbox" id="srvRestartOn"> restart when models.ini changes</label>
-        </div>
-        <div class="muted" style="margin:0 0 10px 98px"><code>{presets}</code> = the generated models.ini. With <code>llama.exe</code> the <code>serve</code> subcommand is added automatically if missing; older builds use <code>llama-server.exe</code> without it. Useful extras: <code>-ngl 99</code>, <code>-c 32768</code>, <code>--models-max 1</code>, <code>-fa on</code>.</div>
-        <div style="margin-left:98px"><button id="srvSave" class="load">Save &amp; restart</button></div>
-      </div>
-    </div>
-    <details id="srvLogBox" open>
-      <summary>Log</summary>
-      <pre id="srvLog"></pre>
-    </details>
-  </div>
-  
-    <h2 style="margin-top:28px">Thinking</h2>
-    <div class="lead">Thinking token caps for the 💡 levels picked in a session. Per-request budgets need llama.cpp b9982+.</div>
-    <div class="srv">
-      <table class="tlevels">
-        <tr><td>Default</td><td class="muted">model decides</td></tr>
-        <tr><td>Off</td><td class="muted">no thinking</td></tr>
-        <tr><td>Low</td><td><input type="text" id="tbLow" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
-        <tr><td>Medium</td><td><input type="text" id="tbMed" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
-        <tr><td>High</td><td><input type="text" id="tbHigh" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
-        <tr><td>Max</td><td class="muted">no cap</td></tr>
-      </table>
-      <div class="field"><label for="replyTok">Reply tokens</label><input type="text" id="replyTok" inputmode="numeric" placeholder="no cap" style="max-width:120px"><span class="muted">per model call, on top of the thinking budget</span></div>
-      <div class="muted" style="margin:-4px 0 10px 108px">Caps the text and tool-call arguments one call can write. Default and Max thinking get 4× this. Leave blank for no cap.</div>
-      <div class="field"><label for="tbMsg">Cut-off note</label><input type="text" id="tbMsg" placeholder="optional, e.g. Time is up, answer now." spellcheck="false"></div>
-      <div class="muted" style="margin:-4px 0 10px 108px">Inserted into the model's thinking when the budget runs out, to nudge it to answer.</div>
-      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
+    <h2>Engines</h2>
+    <div class="lead">llama.cpp builds the harness can run. One runs at a time: starting another stops the running one.</div>
+    <div id="engList"><div class="srv muted">checking…</div></div>
+    <div class="eng-opts">
+      <label><input type="checkbox" id="engAuto"> start the active engine with the harness</label>
+      <label><input type="checkbox" id="engRestartOn"> restart it when models.ini changes</label>
     </div>
 
-    <h2 style="margin-top:28px">Session Compaction</h2>
+    <h3 class="eng-h">Add an engine</h3>
     <div class="srv">
-      <div class="field"><label for="compactAt">Context Window Max</label><input type="text" id="compactAt" inputmode="numeric" placeholder="off" style="max-width:70px"><span class="muted">%</span></div>
-      <div class="muted" style="margin:-4px 0 10px 108px">Sessions will compact when the context window reaches this maximum. The older part is summarized by the model and replaced by the summary in what it is sent; the full history stays in the session. Leave blank to turn it off.</div>
-      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="caSave" class="load">Save</button><span class="muted" id="caOut"></span></div>
+      <div class="row2">
+        <span>Download from llama.cpp releases</span>
+        <select id="engBackend"><option>loading…</option></select>
+        <span class="muted" id="engBuild"></span>
+        <span class="spacer"></span>
+        <button id="engDl" class="load" disabled>Download</button>
+      </div>
+      <div id="engJobs"></div>
+      <div class="row2" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px">
+        <span>Or use an executable</span>
+        <input type="text" id="engExe" spellcheck="false" placeholder="C:\path\to\llama-server.exe" style="flex:1">
+        <input type="text" id="engName" spellcheck="false" placeholder="Name" style="max-width:150px">
+        <button id="engAdd">Add</button>
+      </div>
+      <div class="err-text" id="engErr" style="display:none"></div>
     </div>
-  </section>
+
+    <details id="srvLogBox" open>
+      <summary>Log · <span id="engLogName"></span></summary>
+      <pre id="srvLog"></pre>
+    </details>
+
+</section>
 
   <section data-tab="server">
     <h2>Server</h2>
@@ -268,9 +292,46 @@
     </div>
   </section>
 
+  <section data-tab="sessions">
+    <h2>Sessions</h2>
+    <div class="lead">Settings for every session: how much a model may think and write per call, and when long sessions are compacted.</div>
+    <h2 style="margin-top:22px; font-size:15px">Thinking</h2>
+    <div class="lead">Thinking token caps for the 💡 levels picked in a session. Per-request budgets need llama.cpp b9982+.</div>
+    <div class="srv">
+      <table class="tlevels">
+        <tr><td>Default</td><td class="muted">model decides</td></tr>
+        <tr><td>Off</td><td class="muted">no thinking</td></tr>
+        <tr><td>Low</td><td><input type="text" id="tbLow" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
+        <tr><td>Medium</td><td><input type="text" id="tbMed" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
+        <tr><td>High</td><td><input type="text" id="tbHigh" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
+        <tr><td>Max</td><td class="muted">no cap</td></tr>
+      </table>
+      <div class="field"><label for="replyTok">Reply tokens</label><input type="text" id="replyTok" inputmode="numeric" placeholder="no cap" style="max-width:120px"><span class="muted">per model call, on top of the thinking budget</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Caps the text and tool-call arguments one call can write. Default and Max thinking get 4× this. Leave blank for no cap.</div>
+      <div class="field"><label for="tbMsg">Cut-off note</label><input type="text" id="tbMsg" placeholder="optional, e.g. Time is up, answer now." spellcheck="false"></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Inserted into the model's thinking when the budget runs out, to nudge it to answer.</div>
+      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
+    </div>
+
+    <h2 style="margin-top:28px; font-size:15px">Session Compaction</h2>
+    <div class="srv">
+      <div class="field"><label for="compactAt">Context Window Max</label><input type="text" id="compactAt" inputmode="numeric" placeholder="off" style="max-width:70px"><span class="muted">%</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Sessions will compact when the context window reaches this maximum. The older part is summarized by the model and replaced by the summary in what it is sent; the full history stays in the session. Leave blank to turn it off.</div>
+      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="caSave" class="load">Save</button><span class="muted" id="caOut"></span></div>
+    </div>
+  </section>
+
+  <section data-tab="loadouts">
+    <h2>Loadouts</h2>
+    <div class="lead">An engine, a model and how to run it. Sessions pick a loadout; one model can have several (e.g. a long-context one and a fast one).</div>
+    <div class="summary"><span id="loCount"></span><span class="spacer"></span><button id="loNew" class="load">＋ New loadout</button></div>
+    <div id="loEdit"></div>
+    <div class="list" id="loList"><div class="empty">Loading…</div></div>
+  </section>
+
   <section data-tab="models">
     <h2>Models</h2>
-    <div class="lead">Models llama-server knows about. Load ahead of time or eject to free memory.</div>
+    <div class="lead">Model files in the models folder. Load ahead of time, eject to free memory, delete, or create a loadout for one.</div>
     <div id="note"></div>
   <div class="summary">
     <span id="counts"></span>
@@ -356,7 +417,9 @@ async function refresh() {
   }
   try { local = new Map((await fetch("/api/models/local").then((r) => r.json())).models.map((m) => [m.id, m])); } catch { local = new Map(); }
   // Files in the models folder the engine doesn't list (engine stopped, or not restarted since) can still be deleted.
-  for (const id of local.keys()) if (!models.some((m) => m.id === id)) models.push({ id, status: "not in engine", localOnly: true });
+  for (const id of local.keys()) if (!models.some((m) => m.id === id)) models.push({ id, status: "not loaded", localOnly: true });
+  // Custom loadouts (ids that aren't file names) live on the Loadouts tab, not here.
+  models = models.filter((m) => local.has(m.id) || !loList.some((l) => l.id === m.id));
   render();
 }
 
@@ -379,8 +442,15 @@ function render() {
     const row = el("div", "row " + state);
     row.appendChild(el("span", "dot"));
     const name = row.appendChild(el("div", "name"));
-    name.appendChild(el("div", "id", m.id)).title = m.id;
+    const idRow = name.appendChild(el("div", "idrow"));
+    idRow.appendChild(el("div", "id", m.id)).title = m.id;
     const lf = local.get(m.id);
+    if (lf) { // which loadouts use this file; create one
+      const uses = loList.filter((l) => l.model === m.id);
+      const ub = name.appendChild(el("div", "used-by"));
+      if (!uses.length) ub.textContent = "No loadout yet";
+      else { ub.appendChild(document.createTextNode("Loadouts: ")); uses.forEach((l, k) => { if (k) ub.appendChild(document.createTextNode(", ")); const a = ub.appendChild(el("a", null, l.name)); a.onclick = () => { location.hash = "#loadouts"; loEditOpen(l.id); }; }); }
+    }
     if (m.path || lf) name.appendChild(el("div", "sub", (lf ? fmtBytes(lf.size) + " · " : "") + (m.path || lf.path)));
     row.appendChild(el("span", "state", busy.has(m.id) ? "working…" : state));
 
@@ -390,12 +460,16 @@ function render() {
       btn.disabled = busy.has(m.id);
       btn.onclick = () => act(isUp ? "unload" : "load", m.id);
     }
-    if (lf && lf.mmproj) {
-      const v = row.appendChild(el("button", "vis-btn" + (lf.vision ? " on" : ""), lf.vision ? "👁 Vision" : "👁 Off"));
-      v.title = lf.vision ? "Vision is on: the model can see images. Click to switch off (saves memory; restarts the engine)."
-        : "Vision is off. Click to switch on (restarts the engine).";
-      v.disabled = busy.has(m.id);
-      v.onclick = () => setVision(m.id, !lf.vision);
+    if (lf) {
+      const mk = row.appendChild(el("button", null, "＋ Loadout"));
+      mk.title = "Create a loadout for this model with default settings, on the active engine";
+      mk.onclick = async () => {
+        mk.disabled = true;
+        const r = await fetch("/api/loadouts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: m.id }) });
+        const jx = await r.json().catch(() => ({}));
+        if (!r.ok) { $("status").textContent = jx.error || r.statusText; mk.disabled = false; return; }
+        await loLoad(); location.hash = "#loadouts"; loEditOpen(jx.loadout.id);
+      };
     }
     if (lf) {
       const armed = delArmed === m.id;
@@ -456,7 +530,7 @@ async function act(action, id) {
 
 // ---------- tabs ----------
 function showTab() {
-  const tab = ["engine", "models", "install", "tools", "skills", "mcp", "server"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
+  const tab = ["engine", "sessions", "loadouts", "models", "install", "tools", "skills", "mcp", "server"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
   document.querySelectorAll("[data-tab]").forEach((n) => n.classList.toggle("active", n.dataset.tab === tab));
 }
 window.addEventListener("hashchange", showTab);
@@ -683,62 +757,295 @@ $("mcpExample").onclick = () => {
 mcpLoad(true);
 setInterval(() => { if (!document.hidden && location.hash === "#mcp") mcpLoad(); }, 3000);
 
-// ---------- llama-server process ----------
-let srvStatus = {};
+// ---------- loadouts ----------
+let loList = [], loMeta = null, loEditing = null, loArmed = null; // loEditing: loadout id, "new", or null
+async function loLoad() {
+  try { loMeta = await (await fetch("/api/loadouts")).json(); loList = loMeta.loadouts || []; } catch { loMeta = null; loList = []; }
+  loRender();
+  if (typeof render === "function" && models) render();
+}
+function loSummary(l) {
+  const parts = [l.model];
+  if (l.load?.["ctx-size"]) parts.push(`ctx ${Number(l.load["ctx-size"]).toLocaleString()}`);
+  if (l.load?.["n-gpu-layers"]) parts.push(`GPU layers ${l.load["n-gpu-layers"]}`);
+  if (l.vision) parts.push("vision");
+  if (l.load?.["model-draft"]) parts.push("draft " + l.load["model-draft"]);
+  const smp = Object.entries(l.sampling || {}).map(([k, v]) => `${k.replace(/_/g, "-")} ${v}`);
+  if (smp.length) parts.push(smp.join(" "));
+  return parts.join(" · ");
+}
+function loRender() {
+  $("loCount").textContent = loList.length ? `${loList.length} loadout${loList.length > 1 ? "s" : ""}` : "";
+  const box = $("loList"); box.innerHTML = "";
+  if (!loList.length) box.appendChild(el("div", "empty", "No loadouts yet. Create one here, or with ＋ Loadout on the Models tab."));
+  for (const l of loList) {
+    const eng = loMeta?.engines.find((e) => e.id === l.engine);
+    const row = box.appendChild(el("div", "lo-card"));
+    const info = row.appendChild(el("div", "info"));
+    const nm = info.appendChild(el("div", "nm", l.name));
+    nm.appendChild(el("span", "eng-tag", eng ? eng.name : "missing engine"));
+    info.appendChild(el("div", "sub", loSummary(l))).title = loSummary(l);
+    const b = (t, fn, cls) => { const x = row.appendChild(el("button", cls || null, t)); x.onclick = fn; return x; };
+    b("Edit", () => loEditOpen(l.id));
+    b("Duplicate", () => loEditOpen("new", { ...l, name: l.name + " copy" }));
+    const armed = loArmed === l.id;
+    const del = b(armed ? "Delete?" : "🗑", async () => {
+      if (!armed) { loArmed = l.id; loRender(); setTimeout(() => { if (loArmed === l.id) { loArmed = null; loRender(); } }, 4000); return; }
+      loArmed = null;
+      const r = await fetch("/api/loadouts/" + encodeURIComponent(l.id), { method: "DELETE" });
+      if (!r.ok) $("status").textContent = (await r.json().catch(() => ({}))).error || r.statusText;
+      if (loEditing === l.id) loEditClose();
+      loLoad();
+    }, "eject" + (armed ? " armed" : ""));
+    del.title = "Delete this loadout (the model file stays)";
+  }
+}
+function loEditClose() { loEditing = null; $("loEdit").innerHTML = ""; }
+// The editor: name, engine, model, vision; load settings by group (hidden when the engine's build lacks them);
+// other flags; sampling; a preview of the preset lines.
+function loEditOpen(id, base) {
+  if (!loMeta) return;
+  const src = id === "new" ? (base || {}) : loList.find((l) => l.id === id);
+  if (!src) return;
+  loEditing = id;
+  const v = { name: src.name || "", engine: src.engine || loMeta.engines.find((e) => e.active)?.id || loMeta.engines[0]?.id, model: src.model || loMeta.models[0]?.name || "",
+    vision: src.vision ?? true, load: { ...(src.load || {}) }, other: src.other || "", sampling: { ...(src.sampling || {}) } };
+  if (id === "new" && !base) { const mm = loMeta.models.find((x) => x.name === v.model); v.load["ctx-size"] = String(mm?.maxCtx ? Math.min(mm.maxCtx, loMeta.defaultCtx) : loMeta.defaultCtx); }
+  const box = $("loEdit"); box.innerHTML = "";
+  const form = box.appendChild(el("div", "lo-form"));
+  form.appendChild(el("h3", null, id === "new" ? "New loadout" : "Edit loadout"));
+  const grid0 = form.appendChild(el("div", "lo-grid"));
+  const field = (parent, label, input, hint, cls) => { const f = parent.appendChild(el("div", "lo-f" + (cls ? " " + cls : ""))); f.appendChild(el("label", null, label)); f.appendChild(input); if (hint) input.title = hint; return f; };
+  const txt = (val, ph) => { const i = el("input"); i.type = "text"; i.value = val ?? ""; if (ph) i.placeholder = ph; i.spellcheck = false; return i; };
+  const sel = (opts, val, blank) => { const s2 = el("select"); if (blank) s2.appendChild(el("option", null, blank)).value = ""; for (const o of opts) { const op = s2.appendChild(el("option", null, o.label ?? o)); op.value = o.value ?? o; } s2.value = val ?? ""; return s2; };
+  const nameIn = txt(v.name, "e.g. Flash-Next 64K"); field(grid0, "Name", nameIn);
+  const engIn = sel(loMeta.engines.map((e) => ({ label: e.name + (e.active ? " (active)" : ""), value: e.id })), v.engine); field(grid0, "Engine", engIn);
+  const modelIn = sel(loMeta.models.map((m) => ({ label: m.name, value: m.name })), v.model); field(grid0, "Model", modelIn);
+  const visIn = el("input"); visIn.type = "checkbox"; visIn.checked = !!v.vision;
+  const visF = field(grid0, "Vision", visIn, "Load the model's vision projector (mmproj) so it can see images");
+  const groups = {};
+  for (const f of loMeta.fields) (groups[f.group] = groups[f.group] || []).push(f);
+  const inputs = {};
+  const groupBoxes = [];
+  for (const [g, fs2] of Object.entries(groups)) {
+    form.appendChild(el("h4", null, g));
+    const grid = form.appendChild(el("div", "lo-grid"));
+    groupBoxes.push(grid);
+    for (const f of fs2) {
+      let inp;
+      if (f.type === "bool") { inp = el("input"); inp.type = "checkbox"; inp.checked = !!v.load[f.key]; }
+      else if (f.type === "select") inp = sel(f.options, v.load[f.key], "default");
+      else if (f.type === "model") inp = sel(loMeta.models.map((m) => m.name), v.load[f.key], "none");
+      else inp = txt(v.load[f.key], f.hint || "default");
+      inputs[f.key] = { f, inp, row: field(grid, f.label, inp, `--${f.key}${f.hint ? " · " + f.hint : ""}`) };
+    }
+  }
+  form.appendChild(el("h4", null, "Other flags"));
+  const otherIn = txt(v.other, "e.g. --rope-scaling yarn --override-kv …"); otherIn.style.width = "100%";
+  form.appendChild(otherIn);
+  form.appendChild(el("h4", null, "Sampling · sent with each request, no reload needed"));
+  const sgrid = form.appendChild(el("div", "lo-grid"));
+  const sIn = {};
+  for (const sm of loMeta.sampling) { sIn[sm.key] = txt(v.sampling[sm.key], sm.hint); field(sgrid, sm.label, sIn[sm.key]); }
+  form.appendChild(el("h4", null, "Preset lines (written to the engine's models.ini)"));
+  const pre = form.appendChild(el("pre"));
+  const err = form.appendChild(el("div", "err-text"));
+  const acts = form.appendChild(el("div", "acts"));
+  const save = acts.appendChild(el("button", "load", id === "new" ? "Create" : "Save"));
+  const cancel = acts.appendChild(el("button", null, "Cancel"));
+  const note = acts.appendChild(el("span", "muted"));
+  const collect = () => {
+    const load = {};
+    for (const [k, { f, inp }] of Object.entries(inputs)) { const val = f.type === "bool" ? inp.checked : inp.value.trim(); if (val) load[k] = val; }
+    const sampling = {};
+    for (const [k, inp] of Object.entries(sIn)) if (inp.value.trim()) sampling[k] = inp.value.trim();
+    return { name: nameIn.value.trim(), engine: engIn.value, model: modelIn.value, vision: visIn.checked, load, other: otherIn.value.trim(), sampling };
+  };
+  const update = () => { // fields the engine build doesn't know: hidden unless set (then struck through)
+    const eng = loMeta.engines.find((e) => e.id === engIn.value);
+    for (const { f, inp, row } of Object.values(inputs)) {
+      const ok = !eng?.support || eng.support[f.key] !== false;
+      const set = f.type === "bool" ? inp.checked : !!inp.value;
+      row.style.display = ok || set ? "" : "none";
+      row.classList.toggle("unsup", !ok);
+      if (!ok) row.title = `This engine's build doesn't list --${f.key}`;
+    }
+    const m = loMeta.models.find((x) => x.name === modelIn.value);
+    visF.style.display = m?.mmproj ? "" : "none";
+    const ci = inputs["ctx-size"];
+    if (ci) { // the model's own maximum; blank means llama.cpp uses all of it
+      const lab = ci.row.querySelector("label");
+      let h = lab.querySelector("small");
+      if (!h) { h = lab.appendChild(el("small")); h.style.cssText = "display:block; font-size:11px; opacity:.8"; }
+      h.textContent = m?.maxCtx ? `model max ${Number(m.maxCtx).toLocaleString()}` : "";
+      ci.inp.placeholder = m?.maxCtx ? `blank = ${Number(m.maxCtx).toLocaleString()} (all)` : "blank = model's full context";
+      ci.inp.title = "--ctx-size · blank uses the model's full trained context, which can need a lot of memory";
+    }
+    const c = collect(), id2 = id === "new" ? (c.name || c.model).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") : id;
+    const lines = [`[${id2}]`, `model = …\\${c.model}`];
+    if (c.vision && m?.mmproj) lines.push("mmproj = …");
+    for (const [k, val] of Object.entries(c.load)) lines.push(`${k} = ${val === true ? "true" : val}`);
+    for (const t of [...c.other.matchAll(/--?([A-Za-z][\w-]*)(?:\s+(?!-)(\S+))?/g)]) lines.push(`${t[1]} = ${t[2] ?? "true"}`);
+    pre.textContent = lines.join("\n");
+  };
+  form.addEventListener("input", update); form.addEventListener("change", update);
+  update();
+  cancel.onclick = loEditClose;
+  save.onclick = async () => {
+    save.disabled = true; err.textContent = ""; note.textContent = "Saving…";
+    const r = await fetch(id === "new" ? "/api/loadouts" : "/api/loadouts/" + encodeURIComponent(id), { method: id === "new" ? "POST" : "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(collect()) });
+    const jx = await r.json().catch(() => ({}));
+    save.disabled = false; note.textContent = "";
+    if (!r.ok) { err.textContent = jx.error || r.statusText; return; }
+    loEditClose();
+    await loLoad();
+    $("status").textContent = `Saved ${jx.loadout.name}` + (jx.restarted ? " · engine restarted" : jx.restartNeeded ? " · restart the engine to apply (a reply is running)" : "");
+  };
+  form.scrollIntoView({ block: "nearest" });
+  nameIn.focus();
+}
+$("loNew").onclick = () => loEditOpen("new");
+loLoad();
+
+// ---------- engines ----------
+let srvStatus = {}, engData = null, engLogId = null, engArmed = null, engEditing = false, engFlagsOpen = null;
+const engSize = (n) => !n ? "" : n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : (n / 1e6).toFixed(0) + " MB";
+const engPost = (u, body) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+function engLabel(st) {
+  if (st.pid && st.health === "ready") return ["Running", "ready"];
+  if (st.pid && st.health === "loading") return ["Starting… (loading)", "loading"];
+  if (st.pid) return ["Starting…", "loading"];
+  if (st.health === "external") return ["Something else is answering on its port", "err"];
+  if (st.state === "error") return ["Error", "err"];
+  return ["Stopped", ""];
+}
 async function srvRefresh() {
-  try { srvStatus = await (await fetch("/api/llama/status")).json(); } catch { srvStatus = { state: "error", error: "harness unreachable" }; }
-  const s = srvStatus, box = $("srv");
-  const managed = !!s.pid;
-  let label, cls = "";
-  if (managed && s.health === "ready") { label = "Running"; cls = "ready"; }
-  else if (managed && s.health === "loading") { label = "Starting… (loading)"; cls = "loading"; }
-  else if (managed) { label = "Starting…"; cls = "loading"; }
-  else if (s.health === "external") { label = "Running (not started by the harness)"; cls = "ready"; }
-  else if (s.state === "error") { label = "Error"; cls = "err"; }
-  else label = "Stopped";
-  box.className = "srv " + cls;
-  $("srvState").textContent = label;
-  $("tabEngine").textContent = cls === "ready" ? "●" : cls === "err" ? "!" : "";
-  $("tabEngine").style.color = cls === "ready" ? "var(--green)" : cls === "err" ? "var(--red)" : "";
-  $("srvSub").textContent = (s.url || "") + (managed ? ` · pid ${s.pid}` : "") + (s.startedAt && managed ? ` · since ${new Date(s.startedAt).toLocaleTimeString()}` : "");
-  $("srvErr").style.display = s.error ? "" : "none";
-  $("srvErr").textContent = s.error || "";
-  $("srvStart").disabled = managed || s.health === "external";
-  $("srvStop").disabled = $("srvRestart").disabled = !managed;
+  try { engData = await (await fetch("/api/engines")).json(); } catch { engData = null; }
+  if (!engData) { $("engList").innerHTML = '<div class="srv err"><span class="err-text">harness unreachable</span></div>'; return; }
+  const act = engData.engines.find((e) => e.active);
+  srvStatus = act ? act.status : {};
+  let loaded = [];
+  if (act && act.status.health === "ready") { try { const r = await (await fetch("/api/router/models")).json(); loaded = (r.models || []).filter((m) => m.status === "loaded" || m.status === "loading"); } catch {} }
+  if (!engLogId || !engData.engines.some((e) => e.id === engLogId)) engLogId = act?.id || engData.engines[0]?.id;
+  const list = $("engList"); list.innerHTML = "";
+  for (const e of engData.engines) {
+    const [label, cls] = engLabel(e.status);
+    const card = list.appendChild(el("div", "srv eng " + cls));
+    const r1 = card.appendChild(el("div", "row2"));
+    const stEl = r1.appendChild(el("span", "st")); stEl.appendChild(el("span", "dot"));
+    stEl.appendChild(el("span", "nm", e.name));
+    if (e.active) { const t = r1.appendChild(el("span", "tag-active", "active")); t.title = "Sessions use this engine"; }
+    r1.appendChild(el("span", "muted", [label, e.backend && e.backend.replace(/^cuda-?/, "CUDA ").replace(/^rocm-?/, "ROCm ").replace(/^vulkan$/, "Vulkan").replace(/^cpu$/, "CPU").replace(/^sycl$/, "SYCL").trim(), e.build, `port ${e.port}`, e.status.pid && `pid ${e.status.pid}`].filter(Boolean).join(" · ")));
+    r1.appendChild(el("span", "spacer"));
+    const up = !!e.status.pid;
+    const b = (txt, cls2, fn, title) => { const x = r1.appendChild(el("button", cls2, txt)); x.onclick = fn; if (title) x.title = title; return x; };
+    if (!up) b("▶ Start", "load", () => engAct(e.id, "start"), engData.engines.some((o) => o.id !== e.id && o.status.pid) ? "Stops the running engine and starts this one" : "Start this engine");
+    if (up) b("↻ Restart", "", () => engAct(e.id, "restart"));
+    if (up) b("■ Stop", "eject", () => engAct(e.id, "stop"));
+    b("Log", "logsel" + (engLogId === e.id ? " on" : ""), () => { engLogId = e.id; srvRefresh(); srvLoadLog(); }, "Show this engine's log below");
+    if (engData.engines.length > 1) {
+      const armed = engArmed === e.id;
+      const del = b(armed ? (e.downloaded ? "Delete engine and its files?" : "Remove engine?") : "🗑", "eject" + (armed ? " armed" : ""), async () => {
+        if (engArmed !== e.id) { engArmed = e.id; srvRefresh(); setTimeout(() => { if (engArmed === e.id) { engArmed = null; srvRefresh(); } }, 4000); return; }
+        engArmed = null;
+        const r = await fetch("/api/engines/" + encodeURIComponent(e.id), { method: "DELETE" });
+        if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText);
+        srvRefresh();
+      });
+      del.title = e.downloaded ? "Remove this engine and delete its downloaded build" : "Remove this engine (the executable is left alone)";
+    }
+    card.appendChild(el("div", "path", e.exe)).title = e.exe;
+    if (false) { // engines have no flags; model and server settings live in loadouts
+      const fl = card.appendChild(el("div", "flags"));
+      fl.appendChild(el("span", null, "Engine flags"));
+      const inp = fl.appendChild(el("input")); inp.type = "text"; inp.value = (e.extraArgs || []).join(" "); inp.spellcheck = false;
+      inp.title = "Passed to llama-server itself, e.g. --metrics. Model settings (context, GPU layers, …) go in loadouts.";
+      inp.onfocus = () => (engEditing = true); inp.onblur = () => setTimeout(() => (engEditing = false), 300);
+      const sv = fl.appendChild(el("button", null, "Save"));
+      sv.onclick = async () => {
+        const toks = [...inp.value.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+        await fetch("/api/engines/" + encodeURIComponent(e.id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ extraArgs: toks }) });
+        engEditing = false; engFlagsOpen = null; srvRefresh();
+        engError(e.status.pid ? "Saved. Restart the engine to apply." : "");
+      };
+    }
+    if (e.status.error) card.appendChild(el("div", "err-text", e.status.error));
+    if (e.active && loaded.length) {
+      const l = card.appendChild(el("div", "loaded"));
+      l.appendChild(el("span", null, "Loaded:"));
+      for (const m of loaded) {
+        const chip = l.appendChild(el("span", "lm", m.id + (m.status === "loading" ? " (loading…)" : "")));
+        const ej = chip.appendChild(el("button", "eject", "⏏ Eject")); ej.title = "Unload this model to free memory";
+        ej.onclick = async () => { ej.disabled = true; await engPost("/api/router/unload", { model: m.id }).catch(() => {}); setTimeout(() => { srvRefresh(); refresh(); }, 800); };
+      }
+    }
+  }
+  $("engAuto").checked = engData.autostart; $("engRestartOn").checked = engData.restartOnModelsChange;
+  const jb = $("engJobs"); jb.innerHTML = "";
+  for (const jx of engData.jobs) {
+    const row = jb.appendChild(el("div", "job " + jx.state));
+    const info = row.appendChild(el("div", "info"));
+    info.appendChild(el("div", "fname", jx.name));
+    const bar = info.appendChild(el("div", "bar")).appendChild(el("div")); bar.style.width = (jx.total ? Math.round(jx.done / jx.total * 100) : 0) + "%";
+    info.appendChild(el("div", "sub", jx.state === "downloading" ? `${engSize(jx.done)} of ${engSize(jx.total)}` : jx.state === "unpacking" ? "unpacking…" : jx.state === "done" ? "ready: added above" : jx.state === "error" ? "failed: " + jx.error : jx.state));
+    if (jx.state === "downloading" || jx.state === "unpacking") { const c = row.appendChild(el("button", "eject", "Cancel")); c.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(jx.id)}/cancel`).then(srvRefresh); }
+  }
+  if (engData.jobs.length && engData.jobs.every((x) => ["done", "error", "cancelled"].includes(x.state))) {
+    const c = jb.appendChild(el("button", null, "Clear")); c.style.marginTop = "8px"; c.onclick = () => engPost("/api/engines/jobs/clear").then(srvRefresh);
+  }
+  const ready = act && act.status.health === "ready", bad = engData.engines.some((e) => e.status.state === "error");
+  $("tabEngine").textContent = ready ? "●" : bad ? "!" : "";
+  $("tabEngine").style.color = ready ? "var(--green)" : bad ? "var(--red)" : "";
+  $("engLogName").textContent = engData.engines.find((e) => e.id === engLogId)?.name || "";
   if ($("srvLogBox").open) srvLoadLog();
 }
+function engError(msg) { const x = $("engErr"); x.textContent = msg || ""; x.style.display = msg ? "" : "none"; }
 async function srvLoadLog() {
   const pre = $("srvLog");
+  if (!engLogId) return;
   const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
-  try { pre.textContent = (await (await fetch("/api/llama/log")).text()) || "(no log yet)"; } catch {}
+  try { pre.textContent = (await (await fetch("/api/engines/" + encodeURIComponent(engLogId) + "/log")).text()) || "(no log yet)"; } catch {}
   if (atBottom) pre.scrollTop = pre.scrollHeight;
 }
-async function srvAction(a) {
-  for (const id of ["srvStart", "srvStop", "srvRestart"]) $(id).disabled = true;
-  $("srvState").textContent = a === "stop" ? "Stopping…" : "Starting…";
-  try { await fetch("/api/llama/" + a, { method: "POST" }); } catch {}
+async function engAct(id, a) {
+  document.querySelectorAll("#engList button").forEach((x) => (x.disabled = true));
+  engLogId = id;
+  try { const r = await engPost(`/api/engines/${encodeURIComponent(id)}/${a}`); if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError(""); } catch (e) { engError(e.message); }
   await srvRefresh();
   setTimeout(refresh, 1500);
 }
-async function srvLoadSettings() {
+async function engReleases() {
   try {
-    const st = await (await fetch("/api/llama/settings")).json();
-    $("srvExe").value = st.exe; $("srvArgs").value = st.args;
-    $("srvAuto").checked = st.autostart; $("srvRestartOn").checked = st.restartOnModelsChange;
-  } catch {}
+    const r = await fetch("/api/engines/releases"); const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    const sel = $("engBackend"); sel.innerHTML = "";
+    for (const b of j.backends) {
+      const o = sel.appendChild(el("option", null, `${b.label}  (${engSize(b.asset.size + (b.runtime?.size || 0))}${b.runtime ? ", incl. CUDA runtime" : ""})`));
+      o.value = b.backend;
+    }
+    $("engBuild").textContent = "build " + j.build; $("engBuild").title = "Latest llama.cpp release, " + new Date(j.published).toLocaleDateString();
+    $("engDl").disabled = false; $("engDl").dataset.build = j.build;
+  } catch (e) { $("engBackend").innerHTML = "<option>unavailable</option>"; $("engBuild").textContent = "Could not list releases: " + e.message; }
 }
-$("srvStart").onclick = () => srvAction("start");
-$("srvStop").onclick = () => srvAction("stop");
-$("srvRestart").onclick = () => srvAction("restart");
-$("srvSave").onclick = async () => {
-  await fetch("/api/llama/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-    exe: $("srvExe").value.trim(), args: $("srvArgs").value.trim(), autostart: $("srvAuto").checked, restartOnModelsChange: $("srvRestartOn").checked }) });
-  await srvAction(srvStatus.pid ? "restart" : "start");
+$("engDl").onclick = async () => {
+  const r = await engPost("/api/engines/download", { build: $("engDl").dataset.build, backend: $("engBackend").value });
+  if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError("");
+  srvRefresh();
 };
+$("engAdd").onclick = async () => {
+  const exe = $("engExe").value.trim();
+  if (!exe) return engError("Enter the full path to llama-server.exe (or llama.exe)");
+  const r = await engPost("/api/engines", { exe, name: $("engName").value.trim() });
+  if (!r.ok) return engError((await r.json().catch(() => ({}))).error || r.statusText);
+  engError(""); $("engExe").value = ""; $("engName").value = "";
+  srvRefresh();
+};
+for (const id of ["engAuto", "engRestartOn"]) $(id).onchange = () =>
+  fetch("/api/engines/options", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autostart: $("engAuto").checked, restartOnModelsChange: $("engRestartOn").checked }) });
 $("srvLogBox").addEventListener("toggle", () => { if ($("srvLogBox").open) srvLoadLog(); });
-srvLoadSettings();
 srvRefresh();
-setInterval(() => { if (!document.hidden) srvRefresh(); }, 2000);
+engReleases();
+setInterval(() => { if (!document.hidden && !engArmed && !engEditing) srvRefresh(); }, 2000);
 
 // ---------- Hugging Face search / install ----------
 // Models folder is stored server-side in %USERPROFILE%\.qqstudio\config.json

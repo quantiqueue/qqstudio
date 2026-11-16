@@ -15,7 +15,10 @@ const P = {
   mcp: path.join(HOME, "mcp.json"),              // MCP servers, Claude Desktop format {"mcpServers": {...}}
   config: path.join(HOME, "config.json"),        // general settings (models folder, ...)
   tools: path.join(HOME, "tools.json"),          // tool enable / ask-first
-  llama: path.join(HOME, "llama-server.json"),   // engine executable, args, autostart
+  llama: path.join(HOME, "llama-server.json"),   // old single-engine settings (moved into engines.json on first run)
+  engines: path.join(HOME, "engines.json"),      // {engines: [...], active, autostart, restartOnModelsChange}
+  enginesDir: path.join(HOME, "engines"),
+  loadouts: path.join(HOME, "loadouts.json"),    // {loadouts: [{id, name, engine, model, vision, load, other, sampling}]}        // <id>\ : downloaded llama.cpp build, server.log, server.pid
   presets: path.join(HOME, "models.ini"),        // generated llama-server presets
   uploads: path.join(HOME, "uploads"),          // images pasted or dropped into the chat
   pid: path.join(HOME, "llama-server.pid"),

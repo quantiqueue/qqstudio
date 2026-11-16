@@ -331,7 +331,7 @@
         <button type="button" id="plus" class="icon plus" title="Skills, MCP servers and tools for this session">＋</button>
         <div id="plusMenu" class="plus-menu" hidden></div>
       </div>
-      <select id="model" title="Model for this session"><option>loading…</option></select>
+      <select id="model" title="Loadout for this session (engine, model and settings)"><option value="">loading…</option></select>
       <select id="think" class="think-sel" title="Thinking effort for this session">
         <option value="default">Default</option>
         <option value="off">Off</option>
@@ -484,15 +484,26 @@ async function loadModels() {
     const prev = chat.model || modelSel.value;
     modelSel.innerHTML = "";
     modelVision = {};
+    // Loadouts, grouped by engine when there's more than one; the label is the loadout's name.
+    const engines = [...new Set(j.models.map((m) => m.engineName || ""))];
+    const groups = new Map();
     for (const m of j.models) {
       modelVision[m.id] = !!m.vision;
-      const o = el("option", null, (m.vision ? "👁 " : "") + (m.status ? `${m.id}  (${m.status})` : m.id));
-      if (m.vision) o.title = "Can see images";
+      let parent = modelSel;
+      if (engines.length > 1) {
+        if (!groups.has(m.engineName)) groups.set(m.engineName, modelSel.appendChild(el("optgroup")));
+        parent = groups.get(m.engineName); parent.label = m.engineName;
+      }
+      const name = m.name || m.id;
+      const o = parent.appendChild(el("option", null, (m.vision ? "👁 " : "") + name + (m.status === "loaded" ? "  · loaded" : m.status === "loading" ? "  · loading" : "")));
+      o.title = [m.engineName && `Engine: ${m.engineName}`, m.vision && "Can see images", m.id !== name && `id: ${m.id}`].filter(Boolean).join("\n");
       o.value = m.id;
-      modelSel.appendChild(o);
     }
-    if ([...modelSel.options].some((o) => o.value === prev)) modelSel.value = prev;
-    status.textContent = j.models.length ? `${j.models.length} model(s)` : "no models reported";
+    if (prev && ![...modelSel.options].some((o) => o.value === prev)) { // a session whose loadout is gone
+      const o = modelSel.appendChild(el("option", null, `${prev} (no longer set up)`)); o.value = prev;
+    }
+    if (prev) modelSel.value = prev;
+    status.textContent = j.models.length ? `${j.models.length} loadout(s)` : "no loadouts: create one in Settings > Loadouts";
   } catch (e) {
     modelSel.innerHTML = "<option value=''>(unavailable)</option>";
     status.textContent = e.message;
