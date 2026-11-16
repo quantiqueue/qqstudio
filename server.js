@@ -10,7 +10,9 @@ const PORT = Number(process.env.PORT) || 8003;
 const llama = require("./llama");
 const PUBLIC = path.join(__dirname, "public");
 const DATA = require("./paths"); // must load first: migrates old data into %USERPROFILE%\.qqstudio
-const { ROOTS, runTool, toolList, toolSettings, saveToolSettings, isEnabled, resolveSafe, IMAGE_EXT } = require("./tools");
+const ws = require("./workspaces");
+ws.init(); // makes Default, moves the old chats\ folder into it
+const { ROOTS, addRoot, removeRoot, runTool, toolList, toolSettings, saveToolSettings, isEnabled, resolveSafe, IMAGE_EXT } = require("./tools");
 const hf = require("./hf");
 const presets = require("./presets");
 const createRuns = require("./runs");
@@ -87,7 +89,14 @@ function visionMap() {
 const visionOf = (model) => !!visionMap().get(model);
 const UPLOADS = DATA.uploads;
 // The file on disk behind a pasted image's /api/uploads/<name> link (null for other image refs).
-const uploadPath = (src) => (typeof src === "string" && src.startsWith("/api/uploads/") ? path.join(UPLOADS, path.basename(decodeURIComponent(src.slice(13)))) : null);
+// Pasted images live in the session's workspace files (/api/workspaces/<ws>/files/<name>); older ones in uploads\.
+function uploadPath(src) {
+  if (typeof src !== "string") return null;
+  if (src.startsWith("/api/uploads/")) return path.join(UPLOADS, path.basename(decodeURIComponent(src.slice(13))));
+  const m = src.split("?")[0].match(/^\/api\/workspaces\/([^/]+)\/files\/(.+)$/);
+  if (m) try { return ws.filePath(decodeURIComponent(m[1]), m[2].split("/").map(decodeURIComponent).join("/")); } catch {}
+  return null;
+}
 const IMG_MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", bmp: "image/bmp", webp: "image/webp" };
 const MODEL_IMG = /^image\/(png|jpeg|gif|bmp)$/; // what llama.cpp's image loader decodes
 const MAX_IMG_BYTES = 12 * 1024 * 1024;
@@ -99,10 +108,10 @@ async function loadImage(src) {
     if (src.startsWith("data:")) {
       const m = src.match(/^data:([^;,]+);base64,/);
       return m && MODEL_IMG.test(m[1]) ? src : null;
-    } else if (src.startsWith("/api/uploads/")) {
-      const name = path.basename(decodeURIComponent(src.slice(13)));
-      buf = await fs.promises.readFile(path.join(UPLOADS, name));
-      mime = IMG_MIME[path.extname(name).slice(1).toLowerCase()];
+    } else if (uploadPath(src)) {
+      const file = uploadPath(src);
+      buf = await fs.promises.readFile(file);
+      mime = IMG_MIME[path.extname(file).slice(1).toLowerCase()];
     } else if (src.startsWith("/api/file?")) {
       const file = resolveSafe(new URL(src, "http://x").searchParams.get("path"));
       buf = await fs.promises.readFile(file);
@@ -139,6 +148,18 @@ async function handleUploads(req, res) {
     if (!ext) return sendJson(res, 415, { error: "Only PNG, JPEG, GIF, WebP or BMP images" });
     let buf;
     try { buf = await readRaw(req, 25 * 1024 * 1024); } catch (e) { return sendJson(res, e.status || 400, { error: e.status === 413 ? "Image is larger than 25 MB" : e.message }); }
+    // ?workspace=<id>: save into that workspace's files (named after the dropped file, or "pasted-<date>-<time>")
+    const wsId = new URL(req.url, "http://x").searchParams.get("workspace");
+    if (wsId && ws.exists(wsId)) {
+      const want = new URL(req.url, "http://x").searchParams.get("name");
+      const d = new Date(), p2 = (n) => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+      const base = want && /\.(png|jpe?g|gif|webp|bmp)$/i.test(want) ? want : `pasted-${stamp}.${ext}`;
+      await fs.promises.mkdir(ws.filesDir(wsId), { recursive: true });
+      const name = ws.freeName(wsId, base);
+      await fs.promises.writeFile(path.join(ws.filesDir(wsId), name), buf);
+      return sendJson(res, 200, { src: `/api/workspaces/${encodeURIComponent(wsId)}/files/${encodeURIComponent(name)}`, bytes: buf.length });
+    }
     await fs.promises.mkdir(UPLOADS, { recursive: true });
     const file = `${Date.now().toString(36)}${crypto.randomBytes(4).toString("hex")}.${ext}`;
     await fs.promises.writeFile(path.join(UPLOADS, file), buf);
@@ -232,8 +253,8 @@ async function handleRouterAction(req, res, action) {
 }
 
 // ---- Chat history: one JSON file per chat in ./chats ----
-const CHATS = DATA.chats;
-const chatFile = (id) => (/^[a-z0-9]{6,40}$/.test(id || "") ? path.join(CHATS, id + ".json") : null);
+for (const w of ws.list()) addRoot(w.dir); // each workspace's files folder is an allowed folder for the tools
+const chatFile = (id) => ws.sessionFile(id); // sessions live in workspaces\<ws>\sessions\
 
 // All chat-file writes go through one queue per file, so a run's saves and the page's edits (title, mode, ...)
 // never read-modify-write over each other.
@@ -251,7 +272,7 @@ function updateChat(file, fn) {
   tail.then(() => { if (chatQueues.get(file) === tail) chatQueues.delete(file); });
   return next;
 }
-const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath });
+const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx });
 
 async function writeChat(file, obj) {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`; // unique: runs and the page can save at once
@@ -290,19 +311,97 @@ function openFolder(dir) {
   try { spawn(cmd, [dir], { detached: true, stdio: "ignore" }).unref(); } catch {}
 }
 
+// ---- Workspaces ----
+// GET/POST /api/workspaces · PATCH/DELETE /api/workspaces/<id> · GET/POST /api/workspaces/<id>/files
+// GET/DELETE /api/workspaces/<id>/files/<path> · POST /api/workspaces/<id>/open
+const MAX_FILE = 1024 * 1024 * 1024; // 1 GB per dropped file
+const FILE_MIME = { ...IMG_MIME, svg: "image/svg+xml", ico: "image/x-icon", json: "application/json; charset=utf-8", txt: "text/plain; charset=utf-8",
+  md: "text/plain; charset=utf-8", csv: "text/plain; charset=utf-8", log: "text/plain; charset=utf-8", lua: "text/plain; charset=utf-8",
+  js: "text/plain; charset=utf-8", py: "text/plain; charset=utf-8", html: "text/plain; charset=utf-8", pdf: "application/pdf" };
+async function handleWorkspaces(req, res) {
+  const u = new URL(req.url, "http://x");
+  const parts = u.pathname.split("/").slice(3).map(decodeURIComponent); // after /api/workspaces
+  const [id, sub] = parts, rest = parts.slice(2).join("/");
+  try {
+    if (!id) {
+      if (req.method === "GET") return sendJson(res, 200, { workspaces: ws.list(), default: ws.DEFAULT });
+      if (req.method === "POST") { const w = ws.create(JSON.parse((await readBody(req)) || "{}")); addRoot(w.dir); return sendJson(res, 200, { workspace: w }); }
+      return sendJson(res, 405, { error: "Method not allowed" });
+    }
+    if (!ws.exists(id)) return sendJson(res, 404, { error: "No such workspace" });
+    if (!sub) {
+      if (req.method === "GET") return sendJson(res, 200, { workspace: ws.info(id) });
+      if (req.method === "PATCH") return sendJson(res, 200, { workspace: ws.update(id, JSON.parse((await readBody(req)) || "{}")) });
+      if (req.method === "DELETE") {
+        const dir = ws.filesDir(id);
+        const inWs = (await ws.allSessions()).filter((x) => x.ws === id).map((x) => x.chat.id);
+        for (const s of inWs) runs.deleted(s); // stop replies in progress there
+        await new Promise((r) => setTimeout(r, inWs.some((s) => runs.has(s)) ? 300 : 0));
+        await ws.remove(id);
+        removeRoot(dir);
+        return sendJson(res, 200, { ok: true, deleted: inWs.length });
+      }
+      return sendJson(res, 405, { error: "Method not allowed" });
+    }
+    if (sub === "open" && req.method === "POST") { openFolder(ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
+    if (sub !== "files") return sendJson(res, 404, { error: "Not found" });
+    if (!rest) {
+      if (req.method === "GET") return sendJson(res, 200, { dir: ws.filesDir(id), files: await ws.files(id) });
+      if (req.method === "POST") { // raw body; ?name=<file name>
+        const name = ws.freeName(id, u.searchParams.get("name"));
+        const dest = path.join(ws.filesDir(id), name), part = dest + ".part";
+        await fs.promises.mkdir(ws.filesDir(id), { recursive: true });
+        let size = 0, tooBig = false;
+        await new Promise((resolve, reject) => {
+          const out = fs.createWriteStream(part);
+          req.on("data", (c) => { size += c.length; if (size > MAX_FILE && !tooBig) { tooBig = true; req.unpipe(out); out.destroy(); resolve(); } });
+          req.pipe(out); out.on("finish", resolve); out.on("error", reject); req.on("error", reject);
+        });
+        if (tooBig) { await fs.promises.unlink(part).catch(() => {}); return sendJson(res, 413, { error: "File is larger than 1 GB" }); }
+        await fs.promises.rename(part, dest);
+        return sendJson(res, 200, { path: name, size });
+      }
+      return sendJson(res, 405, { error: "Method not allowed" });
+    }
+    const file = ws.filePath(id, rest);
+    if (!file) return sendJson(res, 400, { error: "Bad file path" });
+    if (req.method === "GET") {
+      const st = await fs.promises.stat(file).catch(() => null);
+      if (!st || !st.isFile()) return sendJson(res, 404, { error: "Not found" });
+      const type = FILE_MIME[path.extname(file).slice(1).toLowerCase()];
+      const disp = (type && u.searchParams.get("download") !== "1" ? "inline" : "attachment") + `; filename*=UTF-8''${encodeURIComponent(path.basename(file))}`;
+      res.writeHead(200, { "Content-Type": type || "application/octet-stream", "Content-Length": st.size, "Content-Disposition": disp,
+        "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox", "Cache-Control": "no-cache" });
+      return fs.createReadStream(file).pipe(res);
+    }
+    if (req.method === "DELETE") {
+      await fs.promises.unlink(file);
+      for (let d = path.dirname(file); d !== ws.filesDir(id) && d.startsWith(ws.filesDir(id)); d = path.dirname(d)) { // tidy empty subfolders
+        try { await fs.promises.rmdir(d); } catch { break; }
+      }
+      return sendJson(res, 200, { ok: true });
+    }
+    sendJson(res, 405, { error: "Method not allowed" });
+  } catch (e) {
+    sendJson(res, e.status || (e.code === "ENOENT" ? 404 : 500), { error: e.message });
+  }
+}
+
 // ---- Context size of a loaded model (best effort; never triggers a load) ----
-async function handleCtx(req, res) {
-  const model = new URL(req.url, "http://x").searchParams.get("model") || "";
+async function nCtx(model) {
   for (const u of [`${llama.url()}/props?model=${encodeURIComponent(model)}&autoload=false`, `${llama.url()}/props`]) {
     try {
       const r = await fetch(u, { signal: AbortSignal.timeout(2000) });
       if (!r.ok) continue;
       const j = await r.json();
       const n = j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx;
-      if (n) return sendJson(res, 200, { n_ctx: n });
+      if (n) return n;
     } catch {}
   }
-  sendJson(res, 200, { n_ctx: null });
+  return null;
+}
+async function handleCtx(req, res) {
+  sendJson(res, 200, { n_ctx: await nCtx(new URL(req.url, "http://x").searchParams.get("model") || "") });
 }
 
 // ---- MCP servers ----
@@ -325,12 +424,12 @@ async function handleMcp(req, res) {
 
 // ---- General user config (config.json) ----
 const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "" };
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models };
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90 }; // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
   const t = c.thinking || {};
   delete c.lanAccess; delete c.lanKey; // served by /api/server (local requests only)
-  return { ...CONFIG_DEFAULTS, ...c, thinking: { budgets: { ...THINK_DEFAULTS.budgets, ...(t.budgets || {}) }, message: t.message ?? THINK_DEFAULTS.message }, dataDir: DATA.home };
+  return { ...CONFIG_DEFAULTS, ...c, thinking: { budgets: { ...THINK_DEFAULTS.budgets, ...(t.budgets || {}) }, message: t.message ?? THINK_DEFAULTS.message}, dataDir: DATA.home };
 }
 async function handleConfig(req, res) {
   if (req.method === "GET") return sendJson(res, 200, getConfig());
@@ -339,6 +438,8 @@ async function handleConfig(req, res) {
     try { patch = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
     const cur = DATA.readJson(DATA.config, {});
     if (typeof patch.modelsFolder === "string") cur.modelsFolder = patch.modelsFolder.trim();
+    if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
+    if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }
     if (patch.thinking && typeof patch.thinking === "object") {
       const t = cur.thinking || {};
       const b = { ...(t.budgets || {}) };
@@ -360,13 +461,8 @@ async function handleChats(req, res) {
     if (!id) {
       if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
       const list = [];
-      for (const f of await fs.promises.readdir(CHATS)) {
-        if (!f.endsWith(".json")) continue;
-        try {
-          const c = JSON.parse(await fs.promises.readFile(path.join(CHATS, f), "utf8"));
-          list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, running: runs.has(c.id), waiting: runs.waiting(c.id), unread: !!c.unread });
-        } catch {}
-      }
+      for (const { ws: w, chat: c } of await ws.allSessions())
+        list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, workspace: w, running: runs.has(c.id), waiting: runs.waiting(c.id), unread: !!c.unread });
       list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
       return sendJson(res, 200, { chats: list });
     }
@@ -382,7 +478,9 @@ async function handleChats(req, res) {
       if (runs.has(id)) return sendJson(res, 409, { error: "A reply is in progress in this chat; stop it first." });
       const c = JSON.parse(await readBody(req));
       c.id = id;
-      await updateChat(file, () => c);
+      const placed = ws.placeSession(id, c.workspace); // a new session goes into the workspace it names (else Default)
+      c.workspace = ws.workspaceOf(id);
+      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; return c; }); // keep groups the model turned on
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "PATCH") {
@@ -394,6 +492,7 @@ async function handleChats(req, res) {
         if (patch.mode === "manual" || patch.mode === "auto") c.mode = patch.mode;
         if (typeof patch.model === "string") c.model = patch.model;
         for (const k of ["skills", "mcp", "cats"]) if (patch[k] && typeof patch[k] === "object") c[k] = patch[k];
+        if (Array.isArray(patch.loaded)) c.loaded = patch.loaded.filter((x) => typeof x === "string");
         if (["default", "off", "low", "medium", "high", "max"].includes(patch.think)) c.think = patch.think;
         return c;
       });
@@ -404,6 +503,7 @@ async function handleChats(req, res) {
     if (req.method === "DELETE") {
       runs.deleted(id);
       await updateChat(file, async () => { await fs.promises.unlink(file).catch(() => {}); return null; }); // queued behind any save in flight
+      ws.forgetSession(id);
       return sendJson(res, 200, { ok: true });
     }
     sendJson(res, 405, { error: "Method not allowed" });
@@ -717,6 +817,7 @@ const server = http.createServer((req, res) => {
     if (req.url === "/api/chats" || req.url.startsWith("/api/chats/")) return handleChats(req, res);
     if (req.url === "/api/config") return handleConfig(req, res);
     if (req.url.startsWith("/api/skills")) return handleSkills(req, res);
+    if (req.url === "/api/workspaces" || req.url.startsWith("/api/workspaces/") || req.url.startsWith("/api/workspaces?")) return handleWorkspaces(req, res);
     if (req.url.startsWith("/api/mcp")) return handleMcp(req, res);
     if (req.url.startsWith("/api/ctx")) return handleCtx(req, res);
     if (req.url.startsWith("/api/hf/")) return handleHf(req, res);
@@ -724,7 +825,7 @@ const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url.startsWith("/api/file?")) return handleFile(req, res);
     if (req.method === "GET" && req.url === "/api/router/models") return handleRouterModels(res);
     if (req.url === "/api/models/local" || req.url === "/api/models/delete" || req.url === "/api/models/vision") return handleLocalModels(req, res);
-    if (req.url === "/api/uploads" || req.url.startsWith("/api/uploads/")) return handleUploads(req, res);
+    if (req.url === "/api/uploads" || req.url.startsWith("/api/uploads/") || req.url.startsWith("/api/uploads?")) return handleUploads(req, res);
     if (req.method === "POST" && req.url === "/api/router/unload") return handleRouterAction(req, res, "unload");
     if (req.method === "POST" && req.url === "/api/router/load") return handleRouterAction(req, res, "load");
     if (req.method === "GET" && (req.url === "/settings" || req.url === "/models")) { req.url = "/models.html"; return serveStatic(req, res); }

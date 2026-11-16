@@ -161,6 +161,11 @@
   .srv.err .dot { background:var(--red); }
   .srv .err-text { color:#f0a3aa; font-size:13px; margin-top:8px; }
   .srv .muted { color:var(--muted); font-size:12px; }
+  .tlevels { border-collapse:collapse; margin-bottom:12px; font-size:14px; }
+  .tlevels th { text-align:left; font-weight:500; color:var(--muted); font-size:12px; padding:0 14px 6px 0; }
+  .tlevels td { padding:3px 14px 3px 0; white-space:nowrap; }
+  .tlevels td:first-child { width:94px; }
+  .tlevels input { width:90px; }
   .srv details { margin-top:10px; }
   .srv textarea { width:100%; font:12px/1.5 ui-monospace,Consolas,monospace; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; resize:vertical; min-height:56px; }
   .srv .field label { width:90px; }
@@ -172,7 +177,7 @@
 <body>
 <header>
   <h1 class="brand"><img src="/icon-64.png" alt="" width="22" height="22">qqstudio</h1>
-  <nav><a href="/">Chat</a><a href="/settings" class="active">Settings</a></nav>
+  <nav><a href="/">Sessions</a><a href="/settings" class="active">Settings</a></nav>
   <span id="status"></span>
 </header>
 <div class="layout">
@@ -219,14 +224,28 @@
   </div>
   
     <h2 style="margin-top:28px">Thinking</h2>
-    <div class="lead">Token caps for the 🧠 Low / Medium / High levels in the chat. Max has no cap; Off disables thinking. Needs llama.cpp b9982+ for per-request budgets.</div>
+    <div class="lead">Thinking token caps for the 💡 levels picked in a session. Per-request budgets need llama.cpp b9982+.</div>
     <div class="srv">
-      <div class="field"><label for="tbLow">Low</label><input type="text" id="tbLow" inputmode="numeric" style="max-width:120px"><span class="muted">tokens</span></div>
-      <div class="field"><label for="tbMed">Medium</label><input type="text" id="tbMed" inputmode="numeric" style="max-width:120px"><span class="muted">tokens</span></div>
-      <div class="field"><label for="tbHigh">High</label><input type="text" id="tbHigh" inputmode="numeric" style="max-width:120px"><span class="muted">tokens</span></div>
+      <table class="tlevels">
+        <tr><td>Default</td><td class="muted">model decides</td></tr>
+        <tr><td>Off</td><td class="muted">no thinking</td></tr>
+        <tr><td>Low</td><td><input type="text" id="tbLow" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
+        <tr><td>Medium</td><td><input type="text" id="tbMed" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
+        <tr><td>High</td><td><input type="text" id="tbHigh" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
+        <tr><td>Max</td><td class="muted">no cap</td></tr>
+      </table>
+      <div class="field"><label for="replyTok">Reply tokens</label><input type="text" id="replyTok" inputmode="numeric" placeholder="no cap" style="max-width:120px"><span class="muted">per model call, on top of the thinking budget</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Caps the text and tool-call arguments one call can write. Default and Max thinking get 4× this. Leave blank for no cap.</div>
       <div class="field"><label for="tbMsg">Cut-off note</label><input type="text" id="tbMsg" placeholder="optional, e.g. Time is up, answer now." spellcheck="false"></div>
       <div class="muted" style="margin:-4px 0 10px 108px">Inserted into the model's thinking when the budget runs out, to nudge it to answer.</div>
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
+    </div>
+
+    <h2 style="margin-top:28px">Session Compaction</h2>
+    <div class="srv">
+      <div class="field"><label for="compactAt">Context Window Max</label><input type="text" id="compactAt" inputmode="numeric" placeholder="off" style="max-width:70px"><span class="muted">%</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Sessions will compact when the context window reaches this maximum. The older part is summarized by the model and replaced by the summary in what it is sent; the full history stays in the session. Leave blank to turn it off.</div>
+      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="caSave" class="load">Save</button><span class="muted" id="caOut"></span></div>
     </div>
   </section>
 
@@ -496,17 +515,26 @@ function confirmNewKey() { // two clicks instead of a blocking confirm() dialog
 lanLoad();
 
 // ---------- thinking budgets ----------
+function showThinking(t) { $("tbLow").value = t.budgets.low; $("tbMed").value = t.budgets.medium; $("tbHigh").value = t.budgets.high; }
 fetch("/api/config").then((r) => r.json()).then((c) => {
   const t = c.thinking || { budgets: {} };
-  $("tbLow").value = t.budgets.low; $("tbMed").value = t.budgets.medium; $("tbHigh").value = t.budgets.high; $("tbMsg").value = t.message || "";
+  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || "";
 }).catch(() => {});
 $("tbSave").onclick = async () => {
   const thinking = { budgets: { low: +$("tbLow").value, medium: +$("tbMed").value, high: +$("tbHigh").value }, message: $("tbMsg").value };
-  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thinking }) });
+  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thinking, replyTokens: $("replyTok").value.trim() }) });
   const c = await r.json();
-  $("tbLow").value = c.thinking.budgets.low; $("tbMed").value = c.thinking.budgets.medium; $("tbHigh").value = c.thinking.budgets.high;
+  showThinking(c.thinking); $("replyTok").value = c.replyTokens || "";
   $("tbMsgOut").textContent = r.ok ? "Saved" : "Error";
   setTimeout(() => ($("tbMsgOut").textContent = ""), 1500);
+};
+
+$("caSave").onclick = async () => {
+  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ compactAt: $("compactAt").value.trim() }) });
+  const c = await r.json().catch(() => ({}));
+  $("compactAt").value = c.compactAt || "";
+  $("caOut").textContent = r.ok ? "Saved" : "Error";
+  setTimeout(() => ($("caOut").textContent = ""), 1500);
 };
 
 // ---------- tools ----------

@@ -50,6 +50,7 @@ class Conn {
       this.log(`connecting (${this.transport})…`);
       const init = await this.request("initialize", { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "qqstudio", version: "0.1" } }, 60000);
       this.serverInfo = init.serverInfo || null;
+      this.instructions = typeof init.instructions === "string" ? init.instructions : null;
       this.protocol = init.protocolVersion || PROTOCOL;
       this.notify("notifications/initialized");
       await this.refreshTools();
@@ -237,6 +238,7 @@ async function setEnabled(name, enabled) {
 function status() {
   return [...conns.values()].map((c) => ({
     name: c.name, transport: c.transport, status: c.status, error: c.error, serverInfo: c.serverInfo,
+    description: c.cfg.description || c.serverInfo?.title || (c.instructions || "").split(/\n|(?<=\.)\s/)[0].slice(0, 160) || "",
     summary: c.transport === "http" ? c.cfg.url : [c.cfg.command, ...(c.cfg.args || [])].join(" "),
     tools: c.tools.map((t) => ({ name: t.name, full: safeName(c.name, t.name), description: t.description || "" })),
     disabled: !!c.cfg.disabled,

@@ -22,8 +22,68 @@
   /* sidebar */
   aside { width:260px; flex:none; background:var(--side); border-right:1px solid var(--line); display:flex; flex-direction:column; }
   aside .top { padding:10px; border-bottom:1px solid var(--line); }
-  #newChat { width:100%; text-align:left; }
-  #newChat:hover { border-color:var(--accent); }
+  .ws-head { display:flex; align-items:center; padding:12px 10px 8px 14px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line); }
+  .ws-head span { flex:1; }
+  button.mini { background:transparent; border:none; color:var(--muted); padding:0 6px; height:22px; font-size:14px; line-height:1; border-radius:6px; }
+  button.mini:hover { background:#252a35; color:var(--text); }
+  .ws-row { display:flex; align-items:center; gap:2px; margin-top:6px; padding:5px 4px 5px 2px; border-radius:8px; cursor:pointer; color:var(--text); font-size:14px; font-weight:600; }
+  .ws-row:hover { background:var(--panel); }
+  .ws-row.active { background:var(--user); }
+  .ws-row .caret { width:18px; text-align:center; color:var(--muted); font-size:10px; flex:none; }
+  .ws-row .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ws-row .mini { visibility:hidden; }
+  .ws-row:hover .mini, .ws-row.active .mini { visibility:visible; }
+  .ws-row .run-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; margin-right:4px; }
+  .ws-row .run-dot.running { animation:pulse 1.2s ease-in-out infinite; } .ws-row .run-dot.waiting { background:#e3b04b; } .ws-row .run-dot.unread { background:#4fc98a; }
+  .ws-sessions .chat-item { padding-left:22px; }
+  .ws-sessions .empty-list { padding:4px 10px 4px 24px; }
+  .logwrap[hidden], #form[hidden], .crumbs[hidden], .wsview[hidden] { display:none !important; }
+  /* breadcrumb */
+  /* floats over the top-left of the session; takes no space from it */
+  .crumbs { position:absolute; top:8px; left:12px; z-index:6; max-width:calc(100% - 40px); display:flex; align-items:center; gap:4px; padding:2px 4px; font-size:13px; color:var(--muted); background:var(--bg); box-shadow:0 0 10px 6px var(--bg); border-radius:8px; min-width:0; }
+  .crumbs a { color:var(--muted); text-decoration:none; padding:2px 6px; border-radius:6px; white-space:nowrap; }
+  .crumbs a:hover { background:#252a35; color:var(--text); }
+  .crumbs .cur { color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* workspace view */
+  .wsview { flex:1; min-height:0; overflow-y:auto; padding:24px 16px 40px; }
+  .wsview > * { max-width:900px; margin-left:auto; margin-right:auto; }
+  .wsv-head { display:flex; align-items:center; gap:10px; }
+  .wsv-head h2 { flex:1; margin:0; font-size:22px; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  .wsv-desc { color:#b8bdca; white-space:pre-wrap; margin-top:8px; line-height:1.5; }
+  .wsv-desc.none { color:var(--muted); font-style:italic; }
+  .wsview h3 { display:flex; align-items:center; gap:8px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; margin-top:28px; margin-bottom:8px; }
+  .wsview h3 .sp { flex:1; }
+  .wsview h3 button { text-transform:none; letter-spacing:0; font-weight:400; font-size:12px; padding:3px 10px; }
+  .wsv-list { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .wsv-item { display:flex; align-items:center; gap:10px; padding:10px 14px; cursor:pointer; background:var(--panel); }
+  .wsv-item + .wsv-item { border-top:1px solid var(--line); }
+  .wsv-item:hover { background:#1b1f27; }
+  .wsv-item .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wsv-item small { color:var(--muted); white-space:nowrap; }
+  .wsv-empty { color:var(--muted); font-size:13px; padding:14px; border:1px dashed var(--line); border-radius:10px; text-align:center; }
+  .wsv-files { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:10px; }
+  .wsv-file { position:relative; border:1px solid var(--line); border-radius:10px; background:var(--panel); overflow:hidden; cursor:pointer; text-decoration:none; color:var(--text); display:flex; flex-direction:column; }
+  .wsv-file:hover { border-color:var(--accent); }
+  .wsv-file .pv { height:96px; display:flex; align-items:center; justify-content:center; background:#0b0d11; font-size:28px; color:var(--muted); }
+  .wsv-file .pv img { max-width:100%; max-height:100%; image-rendering:pixelated; object-fit:contain; }
+  .wsv-file .nm { font-size:12px; padding:6px 8px 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wsv-file small { font-size:11px; color:var(--muted); padding:0 8px 6px; }
+  .wsv-file .del { position:absolute; top:4px; right:4px; visibility:hidden; background:rgba(15,17,21,.85); border:1px solid var(--line); padding:1px 6px; font-size:12px; }
+  .wsv-file:hover .del, .wsv-file .del.armed { visibility:visible; }
+  .wsv-file .del.armed { color:#f0a3aa; }
+  .wsview.drop { outline:2px dashed var(--accent); outline-offset:-8px; }
+  /* dialog */
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .modal[hidden] { display:none; }
+  .dlg { width:min(460px, calc(100vw - 32px)); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; box-shadow:0 20px 50px rgba(0,0,0,.6); display:flex; flex-direction:column; gap:12px; }
+  .dlg h3 { margin:0; font-size:16px; }
+  .dlg label { display:flex; flex-direction:column; gap:5px; font-size:13px; color:var(--muted); }
+  .dlg label small { font-size:11px; }
+  .dlg input, .dlg textarea { padding:8px 10px; font-size:14px; height:auto; resize:vertical; }
+  .dlg .row { display:flex; gap:8px; align-items:center; } .dlg .row .sp { flex:1; }
+  .dlg .err { color:#f0a3aa; font-size:13px; min-height:0; } .dlg .err:empty { display:none; }
+  button.danger { color:#f0a3aa; } button.danger:hover { border-color:#6b2a30; } button.danger.armed { background:#3a1a1d; border-color:#6b2a30; }
+  @media (hover:none) { .ws-row .mini, .wsv-file .del { visibility:visible; } }
   #chatList { flex:1; overflow-y:auto; overflow-x:hidden; padding:4px 6px 12px; }
   .group { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); padding:12px 8px 4px; }
   .chat-item { display:flex; align-items:center; gap:2px; padding:6px 6px 6px 10px; border-radius:8px; cursor:pointer; color:#b8bdca; font-size:14px; }
@@ -43,7 +103,7 @@
   .empty-list { color:var(--muted); font-size:13px; padding:14px 10px; }
 
   /* main */
-  .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; position:relative; }
   header { flex:none; display:flex; gap:10px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
   header h1.brand { display:flex; align-items:center; gap:8px; letter-spacing:.01em; }
   header h1.brand img { display:block; }
@@ -57,7 +117,7 @@
   label.opt, a.opt { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:4px; white-space:nowrap; }
   #status { color:var(--muted); font-size:13px; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .logwrap { flex:1; min-height:0; position:relative; display:flex; flex-direction:column; }
-  #log { flex:1; min-height:0; overflow-y:auto; padding:20px 16px; }
+  #log { flex:1; min-height:0; overflow-y:auto; padding:40px 16px 120px; } /* top: room for the floating breadcrumb; bottom: generous space above the composer */
   .jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); z-index:5; width:32px; height:32px; padding:0; border-radius:50%; background:var(--panel); border:1px solid var(--line); color:var(--text); font-size:16px; line-height:1; box-shadow:0 2px 10px rgba(0,0,0,.45); }
   .jump:hover { border-color:var(--accent); }
   .jump[hidden] { display:none; }
@@ -97,6 +157,21 @@
   .hl-kw { color:#ff7b72; } .hl-str { color:#a5d6ff; } .hl-num, .hl-lit { color:#79c0ff; } .hl-com { color:#8b949e; font-style:italic; }
   .hl-fn { color:#d2a8ff; } .hl-ty, .hl-var { color:#ffa657; } .hl-bi { color:#79c0ff; } .hl-meta { color:#d2a8ff; } .hl-tag { color:#7ee787; } .hl-attr { color:#79c0ff; }
   .hl-ins { color:#aff5b4; background:rgba(46,160,67,.15); display:inline-block; min-width:100%; } .hl-del { color:#ffdcd7; background:rgba(248,81,73,.15); display:inline-block; min-width:100%; }
+  .thoughts { padding:0 14px; }
+  .thoughts .think { margin:8px 0 0; }
+  #log > .thoughts + .msg.assistant { margin-top:8px; }
+  /* a reply box with nothing in it yet (only thinking so far) stays hidden */
+  .msg.assistant:not(:has(.phase)):not(:has(.meta)):has(> .md:empty):not(.error) { display:none; }
+  details.compacted > summary { list-style:none; display:flex; align-items:center; gap:10px; color:var(--muted); font-size:12px; cursor:pointer; }
+  details.compacted > summary::-webkit-details-marker { display:none; }
+  details.compacted > summary .line { flex:1; height:1px; background:var(--line); }
+  details.compacted > summary:hover .lbl { color:var(--text); }
+  details.compacted .csum { margin-top:10px; padding:10px 14px; border:1px dashed var(--line); border-radius:10px; color:#b8bdca; font-size:13px; }
+  .uwrap.pending .msg.user { opacity:.7; border:1px dashed #3b4356; }
+  .uwrap.pending .acts { display:none; }
+  .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; }
+  .stopline { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; padding:0 14px; }
+  .stopline button { font-size:12px; padding:3px 12px; }
   .think { color:var(--muted); font-size:13px; border-left:2px solid var(--line); padding-left:10px; margin-bottom:8px; white-space:pre-wrap; }
   .meta { color:var(--muted); font-size:12px; margin-top:6px; display:flex; align-items:center; gap:8px; min-height:22px; }
   .uwrap { display:flex; flex-direction:column; align-items:flex-end; }
@@ -118,6 +193,7 @@
   .phase { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px; }
   .phase + * { margin-top:6px; }
   .phase .spin { width:12px; height:12px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; flex:none; }
+  summary.think-sum .spin { display:inline-block; vertical-align:-2px; width:10px; height:10px; margin-right:7px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
   .phase .bar { width:120px; height:4px; background:var(--bg); border-radius:2px; overflow:hidden; }
   .phase .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -147,16 +223,22 @@
   #lightbox img { max-width:94vw; max-height:94vh; }
   form { display:flex; gap:10px; padding:12px 16px; border-top:1px solid var(--line); background:var(--panel); }
   form .inner { display:flex; flex-direction:column; gap:8px; max-width:900px; width:100%; margin:0 auto; }
-  .compose { display:flex; gap:10px; }
+  /* one bordered box: the textarea grows from 1 line to about 5, the send/stop icon sits inside on the right */
+  .compose { display:flex; align-items:flex-end; gap:8px; background:var(--bg); border:1px solid var(--line); border-radius:16px; padding:6px 6px 6px 14px; transition:border-color .12s; }
+  .compose:focus-within { border-color:#3b4356; }
+  .compose textarea#input { flex:1; border:none; background:transparent; outline:none; box-shadow:none; padding:7px 0; margin:0; height:36px; min-height:36px; max-height:124px; line-height:22px; overflow-y:hidden; resize:none; font-size:14px; }
+  .compose #send { flex:none; width:34px; height:34px; min-width:0; padding:0; border-radius:50%; border:none; display:flex; align-items:center; justify-content:center; transition:background .12s, opacity .12s; }
+  .compose #send.primary:disabled, .compose #send.empty { opacity:.35; cursor:default; }
+  .compose #send.stop { background:var(--text); color:var(--bg); }
+  .compose #send.stop:hover { background:#fff; }
   .attachments { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .attachments .att { position:relative; width:56px; height:56px; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#0b0d11; }
   .attachments .att img { width:100%; height:100%; object-fit:cover; display:block; }
   .attachments .att.busy img { opacity:.4; }
   .attachments .att button { position:absolute; top:2px; right:2px; width:18px; height:18px; padding:0; line-height:16px; font-size:12px; border-radius:50%; background:rgba(0,0,0,.7); border:none; color:#fff; cursor:pointer; }
   .attachments .att-note { font-size:12px; color:#e3b04b; }
-  form.drop .compose textarea { border-color:var(--accent); background:#141a26; }
+  form.drop .compose { border-color:var(--accent); background:#141a26; }
   .uwrap .imgs { width:min(80%, 420px); }
-  .compose #send { min-width:76px; }
   .toolbar { display:flex; gap:8px; align-items:center; font-size:13px; }
   .toolbar select { font-size:13px; padding:4px 8px; min-width:0; max-width:320px; }
   .toolbar button.icon { padding:3px 9px; font-size:13px; }
@@ -194,7 +276,8 @@
   .toolbar #modeBtn.auto { color:#f0c674; }
   .toolbar select option { background:var(--panel); color:var(--text); }
   .seg.sm button { padding:2px 8px; font-size:12px; }
-  .seg.sm button.on[data-v="pinned"] { background:#1d2b45; color:#9cc0ff; }
+  .seg.sm button.on[data-v="on"] { background:#1d2b45; color:#9cc0ff; }
+  .pm-row .nm small.tag { color:#4fc98a; }
   .seg.sm button.on[data-v="off"] { background:#2a1d20; color:#d9a0a6; }
   .toolbar select.think-sel { min-width:0; width:auto; }
   /* one height for every control in the composer toolbar */
@@ -225,29 +308,31 @@
 <body>
 <header>
   <h1 class="brand"><img src="/icon-64.png" alt="" width="22" height="22">qqstudio</h1>
-  <nav><a href="/" class="active">Chat</a><a href="/settings">Settings</a></nav>
+  <nav><a href="/" class="active">Sessions</a><a href="/settings">Settings</a></nav>
   <span id="status"></span>
 </header>
 <div class="layout">
 <aside>
-  <div class="top"><button id="newChat">＋ New chat</button></div>
+  <div class="ws-head"><span>Workspaces</span><button type="button" id="newWs" class="mini" title="New workspace">＋</button></div>
   <div id="chatList"></div>
 </aside>
 <div class="main">
+  <div id="crumbs" class="crumbs" hidden></div>
+  <div id="wsView" class="wsview" hidden></div>
   <div class="logwrap"><div id="log"></div><button type="button" id="jump" class="jump" title="Jump to latest" hidden>↓</button></div>
   <form id="form"><div class="inner">
     <div id="attachments" class="attachments" hidden></div>
     <div class="compose">
-      <textarea id="input" placeholder="Message (Enter to send, Shift+Enter for newline, paste or drop images)"></textarea>
-      <button type="submit" class="primary" id="send">Send</button>
+      <textarea id="input" rows="1" placeholder="Message (Enter to send, Shift+Enter for newline, paste or drop images)"></textarea>
+      <button type="submit" class="primary" id="send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>
     <div class="toolbar">
       <div class="plus-wrap">
-        <button type="button" id="plus" class="icon plus" title="Skills, MCP servers and tools for this chat">＋</button>
+        <button type="button" id="plus" class="icon plus" title="Skills, MCP servers and tools for this session">＋</button>
         <div id="plusMenu" class="plus-menu" hidden></div>
       </div>
-      <select id="model" title="Model for this chat"><option>loading…</option></select>
-      <select id="think" class="think-sel" title="Thinking effort for this chat">
+      <select id="model" title="Model for this session"><option>loading…</option></select>
+      <select id="think" class="think-sel" title="Thinking effort for this session">
         <option value="default">Default</option>
         <option value="off">Off</option>
         <option value="low">Low</option>
@@ -256,7 +341,7 @@
         <option value="max">Max</option>
       </select>
       <div class="plus-wrap">
-        <button type="button" id="modeBtn" class="icon mode-btn" title="Tool approval for this chat"></button>
+        <button type="button" id="modeBtn" class="icon mode-btn" title="Tool approval for this session"></button>
         <div id="modeMenu" class="plus-menu mode-menu" hidden></div>
       </div>
       <span id="ctxMeter" class="ctx" title="Estimated context use"></span>
@@ -265,8 +350,19 @@
 </div>
 </div>
 <div id="lightbox"><img alt=""></div>
+<div id="wsDialog" class="modal" hidden><form class="dlg" id="wsForm">
+  <h3 id="wsDlgTitle">New workspace</h3>
+  <label>Name<input id="wsName" maxlength="80" autocomplete="off" required></label>
+  <label>Description <small>(also given to the model as instructions for every session here)</small><textarea id="wsDesc" maxlength="4000" rows="5"></textarea></label>
+  <div class="err" id="wsErr"></div>
+  <div class="row"><button type="button" id="wsDel" class="danger" hidden>Delete workspace</button><span class="sp"></span>
+    <button type="button" id="wsCancel">Cancel</button><button type="submit" class="primary" id="wsOk">Create</button></div>
+</form></div>
 <script>
 const $ = (id) => document.getElementById(id);
+let workspaces = [], defaultWs = "Default", wsView = null; // wsView: id of the workspace shown in the main area, or null for a session
+const SEND_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const STOP_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor"/></svg>';
 const log = $("log"), input = $("input"), sendBtn = $("send"), modelSel = $("model"), status = $("status");
 const MAX_STEPS = 25;
 
@@ -279,7 +375,7 @@ let renaming = false;
 let running = false, pendingApproval = null, listTimer = null;
 let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
-function blankChat() { return { id: null, title: "New chat", mode: "manual", think: "default", skills: {}, mcp: {}, cats: {}, messages: [] }; }
+function blankChat(workspace) { return { id: null, workspace: workspace || defaultWs, title: "New session", mode: "manual", think: "default", skills: {}, mcp: {}, cats: {}, messages: [] }; }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function el(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
 function add(node) { log.querySelector(".welcome")?.remove(); log.appendChild(node); follow(); return node; }
@@ -310,7 +406,7 @@ jumpBtn.addEventListener("click", () => { stick = true; log.scrollTo({ top: log.
 function setHash(id) { window.history.replaceState(null, "", id ? "#" + id : location.pathname); }
 function stripUi(m) { return Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_"))); }
 function prettyArgs(s) { try { return JSON.stringify(JSON.parse(s || "{}"), null, 2); } catch { return s; } }
-function showWelcome() { log.innerHTML = ""; log.appendChild(el("div", "welcome", "Start a new conversation.")); }
+function showWelcome() { log.innerHTML = ""; log.appendChild(el("div", "welcome", "Start a new session.")); }
 
 // ---------- per-chat thinking level ----------
 // default: send nothing (model decides) · off: no thinking · low/medium/high: effort hint + token budget · max: no budget.
@@ -326,7 +422,7 @@ function thinkParams(level) {
 }
 function updateThinkTitle() {
   const b = thinkCfg.budgets;
-  $("think").title = `Thinking for this chat\nDefault: model decides\nOff: no thinking\nLow / Medium / High: effort hint + cap of ${b.low} / ${b.medium} / ${b.high} tokens\nMax: no cap\n(Budgets: Settings > Engine)`;
+  $("think").title = `Thinking for this session\nDefault: model decides\nOff: no thinking\nLow / Medium / High: effort hint + cap of ${b.low} / ${b.medium} / ${b.high} tokens\nMax: no cap\n(Budgets: Settings > Engine)`;
 }
 function renderThink() { $("think").value = chat.think || "default"; }
 $("think").onchange = () => {
@@ -407,6 +503,7 @@ let modelVision = {};
 // ---------- pasted / dropped images ----------
 let attachments = []; // [{src, busy, preview}]
 function renderAttachments() {
+  if (typeof updateSendState === "function") setTimeout(updateSendState);
   const box = $("attachments");
   box.hidden = !attachments.length;
   box.innerHTML = "";
@@ -424,7 +521,9 @@ async function attachImage(blob) {
   const a = { busy: true, preview: URL.createObjectURL(blob) };
   attachments.push(a); renderAttachments();
   try {
-    const r = await fetch("/api/uploads", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+    const q = new URLSearchParams({ workspace: chat.workspace || defaultWs }); // saved in the workspace's files
+    if (blob.name && blob.name !== "image.png") q.set("name", blob.name); // dropped files keep their name; clipboard images are all "image.png"
+    const r = await fetch("/api/uploads?" + q, { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
     a.src = j.src; a.busy = false;
@@ -463,10 +562,18 @@ async function loadTools() {
   if (mc) mcpServers = mc.servers.filter((x) => !x.disabled);
   renderToolbarState();
 }
-// Per-chat view of skills / MCP servers / tool categories (defaults: everything allowed in Settings is on).
-const skillMode = (name) => (chat.skills || {})[name] || "auto";
-const mcpOn = (server) => (chat.mcp || {})[server] !== false;
-const catOn = (cat) => (chat.cats || {})[cat] !== false;
+// Per-chat Auto | On | Off for skills, MCP servers and built-in tool categories (Settings is the ceiling).
+// Auto: skills are listed by name (load_skill); MCP servers and categories are listed as one line each and the model
+// turns them on with enable_tools. Groups it turned on are kept in chat.loaded ("mcp:<server>", "cat:<category>").
+const CATS = ["File Access", "Web", "Images", "System"];
+const modeOf = (v) => (v === false || v === "off" ? "off" : v === true || v === "on" || v === "pinned" ? "on" : "auto"); // old chats: false / "pinned"
+const skillMode = (name) => modeOf((chat.skills || {})[name]);
+const mcpMode = (server) => modeOf((chat.mcp || {})[server]);
+const catMode = (cat) => modeOf((chat.cats || {})[cat]);
+const isLoaded = (key) => (chat.loaded || []).includes(key);
+const groupOn = (mode, key) => mode === "on" || (mode === "auto" && isLoaded(key));
+const mcpOn = (server) => groupOn(mcpMode(server), "mcp:" + server);
+const catOn = (cat) => groupOn(catMode(cat), "cat:" + cat);
 function activeTools() {
   if (toolInfo.enabled === false) return [];
   const autoSkills = skillList.some((s) => skillMode(s.name) === "auto");
@@ -477,13 +584,42 @@ function activeTools() {
     return catOn(t.category);
   });
 }
+// Groups on Auto that the model hasn't turned on yet: listed in the instructions, their tools sent separately.
+function deferredGroups() {
+  if (toolInfo.enabled === false) return [];
+  const out = [], win = toolInfo.platform === "win32";
+  for (const sv of mcpServers) {
+    if (sv.status !== "ready" || mcpMode(sv.name) !== "auto" || isLoaded("mcp:" + sv.name)) continue;
+    const tools = toolInfo.tools.filter((t) => t.enabled && t.server === sv.name);
+    if (!tools.length) continue;
+    const short = tools.map((t) => t.name.replace(/^.*?__/, ""));
+    const desc = (sv.description ? sv.description.replace(/\.$/, "") + ". " : "") +
+      `${tools.length} tool${tools.length > 1 ? "s" : ""}: ${short.slice(0, 15).join(", ")}${short.length > 15 ? `, … (+${short.length - 15} more)` : ""}`;
+    out.push({ key: "mcp:" + sv.name, name: sv.name, desc, tools, note: `Tool names start with "${sv.name}__".` });
+  }
+  const CAT_DESC = {
+    "File Access": `list, read, search, write, move and delete files in ${visibleRoots().join(", ")}`,
+    Web: "search the web, read web pages and download files",
+    Images: "search for images and show images to the user",
+    System: `run ${win ? "cmd.exe" : "shell"} commands`,
+  };
+  for (const cat of CATS) {
+    if (catMode(cat) !== "auto" || isLoaded("cat:" + cat)) continue;
+    const tools = toolInfo.tools.filter((t) => t.enabled && !t.server && t.category === cat);
+    if (!tools.length) continue;
+    out.push({ key: "cat:" + cat, name: cat, desc: CAT_DESC[cat] || cat, tools,
+      note: cat === "File Access" ? `Allowed folders: ${visibleRoots().join(", ")}. Use absolute ${win ? "Windows " : ""}paths.` : "" });
+  }
+  return out;
+}
 function renderToolbarState() {
   const n = toolInfo.enabled === false ? 0 : activeTools().length;
-  $("plus").title = `Skills, MCP servers and tools for this chat (${n} tool${n === 1 ? "" : "s"} active)`;
+  $("plus").title = `Skills, MCP servers and tools for this session (${n} tool${n === 1 ? "" : "s"} active)`;
   updateCtx();
 }
 
-function systemPrompt(specs = activeTools(), pinned = []) {
+function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGroups()) {
+  let out0 = "";
   const win = toolInfo.platform === "win32";
   const on = new Set(specs.map((t) => t.name));
   const has = (...n) => n.some((x) => on.has(x));
@@ -491,7 +627,7 @@ function systemPrompt(specs = activeTools(), pinned = []) {
   const fileOps = [["list_dir", "list folders"], ["read_file", "read files"], ["search_files", "search for files"], ["write_file", "write files"],
     ["move_file", "move or rename files"], ["delete_file", "delete files"]].filter(([n]) => on.has(n)).map(([, d]) => d);
   if (fileOps.length) {
-    lines.push(`You have tools to ${fileOps.join(", ")} in these folders: ${toolInfo.roots.join(", ")}.`);
+    lines.push(`You have tools to ${fileOps.join(", ")} in these folders: ${visibleRoots().join(", ")}.`);
     lines.push(`When the user asks about files or folders, call the tools yourself instead of telling the user how to do it. Use absolute ${win ? "Windows " : ""}paths.`);
   }
   if (has("web_search", "fetch_url", "download_file")) {
@@ -506,13 +642,20 @@ function systemPrompt(specs = activeTools(), pinned = []) {
   if (on.has("run_command")) lines.push(`You can run ${win ? "cmd.exe" : "shell"} commands with run_command; use it when no specific tool fits.`);
   const servers = [...new Set(specs.filter((t) => t.server).map((t) => t.server))];
   if (servers.length) lines.push(`You also have tools from connected services: ${servers.join(", ")} (tool names start with the service name).`);
-  if (on.size) {
+  if (on.size || deferred.length) {
     lines.push("Only use the tools listed to you. Never say you cannot do something a tool can do.");
     if (specs.some((t) => t.approval) && chat.mode !== "auto") lines.push("Some actions ask the user for approval automatically, so just call the tool.");
     lines.push("If a tool returns an error, read it and try a corrected call.");
   } else lines.push("You have no tools available; answer from your own knowledge.");
   lines.push("After you have what you need, answer concisely.");
-  let out = lines.join(" ");
+  const w = curWs();
+  if (w) {
+    out0 = `\n\nThis session is in the workspace "${w.name}". Its folder is ${w.dir}. Save files you create there unless the user names another place.`;
+    if (w.description.trim()) out0 += `\nWorkspace instructions:\n${w.description.trim()}`;
+  }
+  let out = lines.join(" ") + out0;
+  if (deferred.length) out += "\n\nMore tools you can turn on. When a task needs one of these groups, call enable_tools with its name first; its tools can be called right after:\n" +
+    deferred.map((g) => `- ${g.name}: ${g.desc}`).join("\n");
   const auto = on.has("load_skill") ? skillList.filter((s) => skillMode(s.name) === "auto") : [];
   if (auto.length) out += "\n\nSkills you can use. Before doing a task that matches one, call load_skill with its name and follow the instructions:\n" +
     auto.map((s) => `- ${s.name}: ${s.description || "(no description)"}`).join("\n");
@@ -763,7 +906,7 @@ function assistantBox() {
   const box = add(el("div", "msg assistant"));
   const contentEl = box.appendChild(el("div", "md"));
   let mdRaf = 0, mdText = "";
-  let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false,  phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
+  let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false, thinkTimer = null, phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
   const drawPhase = () => {
     if (!phaseEl) return;
     const secs = Math.floor((performance.now() - phaseT0) / 1000);
@@ -772,9 +915,21 @@ function assistantBox() {
     bar.style.display = phasePct == null ? "none" : "";
     if (phasePct != null) bar.firstChild.style.width = phasePct + "%";
   };
+  // While the model thinks, the collapsed "Thinking… Ns" line (with spinner) is the status line; no separate phase line.
+  const drawThink = () => {
+    if (!thinkSum) return;
+    if (thinkT1 !== null) { clearInterval(thinkTimer); thinkTimer = null; const t = +((thinkT1 - thinkT0) / 1000).toFixed(1); thinkSum.textContent = `Thought for ${t < 60 ? t + "s" : Math.round(t / 60) + " min"}`; return; }
+    const secs = Math.floor((performance.now() - thinkT0) / 1000);
+    thinkSum.innerHTML = ""; thinkSum.appendChild(el("span", "spin"));
+    thinkSum.appendChild(document.createTextNode("Thinking…" + (secs >= 1 ? ` ${secs}s` : "")));
+  };
   return {
     // Status line shown until the reply text starts streaming.
     phase(text, pct = null) {
+      if (thinkEl && thinkT1 === null) {
+        if (text === "Thinking") return; // the thinking line already says so
+        thinkT1 = performance.now(); drawThink(); // thinking ended (e.g. "Preparing tool call")
+      }
       if (!phaseEl) {
         phaseEl = el("div", "phase");
         phaseEl.appendChild(el("span", "spin"));
@@ -791,14 +946,16 @@ function assistantBox() {
     thinking(text) {
       if (thinkT0 === null) thinkT0 = performance.now();
       if (!thinkEl) {
-        const det = el("details"); det.open = true;
-        thinkSum = det.appendChild(el("summary", null, "Thinking…"));
+        this.clearPhase();
+        const det = el("details", "thoughts"); // collapsed by default; sits above the reply box, not inside it
+        thinkSum = det.appendChild(el("summary", "think-sum"));
         thinkEl = det.appendChild(el("div", "think"));
-        box.insertBefore(det, contentEl);
+        box.before(det);
+        drawThink(); thinkTimer = setInterval(drawThink, 500);
       }
       thinkEl.textContent = text;
     },
-    content(text) { if (text && thinkT0 !== null && thinkT1 === null) thinkT1 = performance.now(); mdText = text;
+    content(text) { if (text && thinkT0 !== null && thinkT1 === null) { thinkT1 = performance.now(); drawThink(); } mdText = text;
       if (!mdRaf) mdRaf = requestAnimationFrame(() => { mdRaf = 0; contentEl.innerHTML = mdRender(mdText); });
     },
     setThinkSecs(secs) { thinkSecsFixed = secs; },
@@ -807,8 +964,8 @@ function assistantBox() {
     error(text) { cancelAnimationFrame(mdRaf); mdRaf = 0; box.classList.add("error"); contentEl.classList.remove("md"); contentEl.style.whiteSpace = "pre-wrap"; contentEl.textContent = text; },
     finish(text, meta) {
       this.clearPhase();
+      clearInterval(thinkTimer); thinkTimer = null;
       if (thinkEl) {
-        thinkEl.parentElement.open = false;
         const secs = thinkSecsFixed !== undefined ? thinkSecsFixed : this.thinkSecs(); // saved chats without timing -> "Thought"
         thinkSum.textContent = (secs != null ? `Thought for ${secs < 60 ? secs + "s" : Math.round(secs / 60) + " min"}` : "Thought") + (budgetHit ? " · budget reached" : "");
       }
@@ -900,7 +1057,8 @@ function renderChat(live = false) {
   if (!chat.messages.length) return showWelcome();
   const results = new Map(chat.messages.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, m]));
   for (const m of chat.messages) {
-    if (m.role === "user") userBubble(m);
+    if (m._summary) add(summaryDivider(m));
+    else if (m.role === "user") userBubble(m);
     else if (m.role === "assistant") {
       if (m.content || m._reasoning) {
         const b = assistantBox();
@@ -918,13 +1076,37 @@ function renderChat(live = false) {
       }
     }
   }
+  const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
+  if (lastA?._stop && chat.messages[chat.messages.length - 1].role !== "user" && !live) add(stopLine(lastA._stop));
   toBottom();
+}
+// Where the session was compacted: everything above is replaced by this summary in what the model gets.
+function summaryDivider(m) {
+  const d = el("details", "compacted");
+  const s = d.appendChild(el("summary"));
+  s.appendChild(el("span", "line"));
+  s.appendChild(el("span", "lbl", "Compacted · the model sees a summary of the messages above"));
+  s.appendChild(el("span", "line"));
+  const body = d.appendChild(el("div", "md csum"));
+  body.innerHTML = mdRender(String(m.content || "").replace(/^\[Summary[^\]]*\]\s*/, ""));
+  if (m._meta) body.appendChild(el("div", "meta", m._meta));
+  return d;
+}
+// "Stopped after N steps" line with a Continue button: starts a new run that picks up where this one ended.
+function stopLine(text) {
+  const d = el("div", "stopline");
+  d.appendChild(el("span", null, text));
+  const b = d.appendChild(el("button", null, "Continue")); b.type = "button";
+  b.title = "Keep going from here (uses the thinking level picked below)";
+  b.onclick = () => { if (running) return; d.remove(); startRun(chat); };
+  return d;
 }
 
 // ---------- chat persistence ----------
 async function loadList() {
   try { chatList = (await (await fetch("/api/chats")).json()).chats || []; } catch { chatList = []; }
   if (!renaming) renderList();
+  if (wsView && !renaming) renderWsView();
   clearTimeout(listTimer); // keep the sidebar's "reply in progress" dots current
   if (chatList.some((c) => c.running)) listTimer = setTimeout(loadList, 3000);
 }
@@ -940,9 +1122,10 @@ async function saveChat(c = chat) {
 }
 
 
-async function newChat() {
+async function newChat(workspace) {
   detach(); // a running reply keeps going on the server
-  chat = blankChat();
+  chat = blankChat(workspace || curWs()?.id);
+  showSessionUi();
   renderMode();
   renderThink();
   renderToolbarState();
@@ -959,9 +1142,11 @@ async function loadChat(id) {
     if (!r.ok) throw new Error("not found");
     chat = await r.json();
   } catch (e) {
-    status.textContent = "Could not open chat: " + e.message;
-    return newChat();
+    status.textContent = "Could not open session: " + e.message;
+    return openWorkspace(defaultWs);
   }
+  chat.workspace = chat.workspace || defaultWs;
+  showSessionUi();
   setHash(chat.id);
   if (chat.unread) { delete chat.unread; fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unread: false }) }).then(loadList).catch(() => {}); }
   renderMode();
@@ -978,7 +1163,8 @@ async function loadChat(id) {
 async function deleteChat(id) {
   await stopAndWait(id);
   await fetch(`/api/chats/${id}`, { method: "DELETE" }).catch(() => {});
-  if (id === chat.id) await newChat();
+  const wasWs = chatList.find((c) => c.id === id)?.workspace || defaultWs;
+  if (id === chat.id && !wsView) { await loadList(); return openWorkspace(wasWs); }
   loadList();
 }
 
@@ -995,7 +1181,7 @@ function startRename(item, c) {
     const title = inp.value.trim();
     if (save && title && title !== c.title) {
       await fetch(`/api/chats/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
-      if (c.id === chat.id) chat.title = title;
+      if (c.id === chat.id) { chat.title = title; renderCrumbs(); }
     }
     loadList();
   };
@@ -1004,20 +1190,197 @@ function startRename(item, c) {
   inp.onclick = (e) => e.stopPropagation();
 }
 
+// ---------- workspaces ----------
+const curWs = () => workspaces.find((w) => w.id === (wsView || chat.workspace || defaultWs)) || workspaces.find((w) => w.id === defaultWs) || null;
+const wsName = (id) => workspaces.find((w) => w.id === id)?.name || id;
+// The tool folders the model is told about: everything except other workspaces' files folders.
+function visibleRoots() {
+  const others = new Set(workspaces.filter((w) => w !== curWs()).map((w) => w.dir));
+  return toolInfo.roots.filter((r) => !others.has(r));
+}
+async function loadWorkspaces() {
+  try { const j = await (await fetch("/api/workspaces")).json(); workspaces = j.workspaces || []; defaultWs = j.default || "Default"; } catch {}
+}
+let wsOpen = {};
+try { wsOpen = JSON.parse(localStorage.getItem("qq.wsOpen") || "{}"); } catch {}
+const isOpen = (id) => wsOpen[id] ?? true;
+function setOpen(id, v) { wsOpen[id] = v; try { localStorage.setItem("qq.wsOpen", JSON.stringify(wsOpen)); } catch {} }
+const dotOf = (c) => c.waiting ? ["waiting", "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
+const ago = (t) => { const s = (Date.now() - t) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 86400 * 30 ? `${Math.floor(s / 86400)} d ago` : new Date(t).toLocaleDateString(); };
+const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`;
+
+// Shows a workspace (its sessions and files) in the main area instead of a session.
+async function openWorkspace(id) {
+  if (!workspaces.some((w) => w.id === id)) id = defaultWs;
+  detach();
+  wsView = id;
+  chat = blankChat(id);
+  setHash("w/" + encodeURIComponent(id));
+  $("wsView").hidden = false; $("crumbs").hidden = true;
+  document.querySelector(".logwrap").hidden = true; $("form").hidden = true;
+  renderList();
+  await renderWsView();
+}
+function showSessionUi() {
+  wsView = null;
+  $("wsView").hidden = true;
+  document.querySelector(".logwrap").hidden = false; $("form").hidden = false;
+  renderCrumbs();
+}
+function renderCrumbs() {
+  const c = $("crumbs");
+  if (wsView) { c.hidden = true; return; }
+  c.hidden = false; c.innerHTML = "";
+  const a = c.appendChild(el("a", null, wsName(chat.workspace || defaultWs))); a.href = "#w/" + encodeURIComponent(chat.workspace || defaultWs);
+  a.onclick = (e) => { e.preventDefault(); openWorkspace(chat.workspace || defaultWs); };
+  c.appendChild(el("span", null, "›"));
+  c.appendChild(el("span", "cur", chat.id ? chat.title || "Untitled" : "New session"));
+}
+async function renderWsView() {
+  const id = wsView, w = workspaces.find((x) => x.id === id);
+  const v = $("wsView");
+  if (!w) return;
+  v.innerHTML = "";
+  const head = v.appendChild(el("div", "wsv-head"));
+  head.appendChild(el("h2", null, w.name));
+  const edit = head.appendChild(el("button", null, "Edit")); edit.type = "button"; edit.onclick = () => wsDialog(w);
+  const ns = head.appendChild(el("button", "primary", "＋ New session")); ns.type = "button"; ns.onclick = () => newChat(id);
+  v.appendChild(el("div", "wsv-desc" + (w.description.trim() ? "" : " none"), w.description.trim() || "No description. Edit to add one; it is also given to the model as instructions."));
+  const sessions = chatList.filter((c) => (c.workspace || defaultWs) === id);
+  v.appendChild(el("h3", null, `Sessions · ${sessions.length}`));
+  if (!sessions.length) v.appendChild(el("div", "wsv-empty", "No sessions yet."));
+  else {
+    const l = v.appendChild(el("div", "wsv-list"));
+    for (const c of sessions) {
+      const it = l.appendChild(el("div", "wsv-item"));
+      const dot = dotOf(c);
+      if (dot) { const sp = it.appendChild(el("span", "run-dot " + dot[0])); sp.title = dot[1]; sp.style.cssText = "width:7px;height:7px;border-radius:50%;flex:none;background:" + (dot[0] === "waiting" ? "#e3b04b" : dot[0] === "unread" ? "#4fc98a" : "var(--accent)"); }
+      it.appendChild(el("span", "t", c.title || "Untitled"));
+      if (c.model) it.appendChild(el("small", null, c.model));
+      it.appendChild(el("small", null, ago(c.updated || 0)));
+      it.onclick = () => loadChat(c.id);
+    }
+  }
+  const h = v.appendChild(el("h3"));
+  h.appendChild(el("span", null, "Files"));
+  const cnt = h.appendChild(el("span")); h.appendChild(el("span", "sp"));
+  const up = h.appendChild(el("button", null, "Upload")); up.type = "button";
+  const op = h.appendChild(el("button", null, "Open folder")); op.type = "button"; op.title = w.dir;
+  op.onclick = () => fetch(`/api/workspaces/${encodeURIComponent(id)}/open`, { method: "POST" });
+  up.onclick = () => { const i = el("input"); i.type = "file"; i.multiple = true; i.onchange = () => uploadWsFiles(id, [...i.files]); i.click(); };
+  const box = v.appendChild(el("div"));
+  box.appendChild(el("div", "wsv-empty", "Loading…"));
+  let files = [];
+  try { files = (await (await fetch(`/api/workspaces/${encodeURIComponent(id)}/files`)).json()).files || []; } catch {}
+  if (wsView !== id) return;
+  cnt.textContent = `· ${files.length}`;
+  box.innerHTML = "";
+  if (!files.length) { box.appendChild(el("div", "wsv-empty", "No files yet. Drop files here, or the model saves what it makes here.")); return; }
+  const grid = box.appendChild(el("div", "wsv-files"));
+  for (const f of files) {
+    const url = `/api/workspaces/${encodeURIComponent(id)}/files/${f.path.split("/").map(encodeURIComponent).join("/")}`;
+    const card = grid.appendChild(el("a", "wsv-file")); card.href = url; card.target = "_blank"; card.rel = "noopener"; card.title = f.path;
+    const pv = card.appendChild(el("div", "pv"));
+    if (/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f.path)) { const img = pv.appendChild(el("img")); img.loading = "lazy"; img.src = url + "?v=" + Math.round(f.modified); img.alt = ""; }
+    else pv.textContent = /\.(json|md|txt|csv|lua|js|py|html)$/i.test(f.path) ? "📄" : "📦";
+    card.appendChild(el("div", "nm", f.path));
+    card.appendChild(el("small", null, `${fmtSize(f.size)} · ${ago(f.modified)}`));
+    const del = card.appendChild(el("button", "del", "🗑")); del.type = "button"; del.title = "Delete file";
+    del.onclick = async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!del.classList.contains("armed")) { del.classList.add("armed"); del.textContent = "Delete?"; setTimeout(() => { del.classList.remove("armed"); del.textContent = "🗑"; }, 3000); return; }
+      await fetch(url, { method: "DELETE" }).catch(() => {});
+      renderWsView();
+    };
+  }
+}
+async function uploadWsFiles(id, list) {
+  for (const file of list) {
+    status.textContent = `Uploading ${file.name}…`;
+    try {
+      const r = await fetch(`/api/workspaces/${encodeURIComponent(id)}/files?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    } catch (e) { status.textContent = `Upload failed: ${e.message}`; return; }
+  }
+  status.textContent = "";
+  if (wsView === id) renderWsView();
+}
+$("wsView").addEventListener("dragover", (e) => { if (wsView && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); $("wsView").classList.add("drop"); } });
+$("wsView").addEventListener("dragleave", (e) => { if (!$("wsView").contains(e.relatedTarget)) $("wsView").classList.remove("drop"); });
+$("wsView").addEventListener("drop", (e) => { $("wsView").classList.remove("drop"); if (!wsView || !e.dataTransfer.files.length) return; e.preventDefault(); uploadWsFiles(wsView, [...e.dataTransfer.files]); });
+
+// New / edit workspace dialog. Deleting a workspace deletes its sessions and files.
+function wsDialog(w = null) {
+  const d = $("wsDialog");
+  $("wsDlgTitle").textContent = w ? "Edit workspace" : "New workspace";
+  $("wsOk").textContent = w ? "Save" : "Create";
+  $("wsName").value = w ? w.name : ""; $("wsDesc").value = w ? w.description : ""; $("wsErr").textContent = "";
+  const del = $("wsDel");
+  del.hidden = !w || w.isDefault; del.classList.remove("armed"); del.textContent = "Delete workspace";
+  del.onclick = async () => {
+    if (!del.classList.contains("armed")) {
+      del.classList.add("armed");
+      del.textContent = `Delete ${w.sessions} session${w.sessions === 1 ? "" : "s"} and all files?`;
+      return;
+    }
+    const r = await fetch(`/api/workspaces/${encodeURIComponent(w.id)}`, { method: "DELETE" });
+    if (!r.ok) { $("wsErr").textContent = (await r.json().catch(() => ({}))).error || r.statusText; return; }
+    d.hidden = true;
+    await Promise.all([loadWorkspaces(), loadList()]);
+    openWorkspace(defaultWs);
+  };
+  $("wsForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const body = JSON.stringify({ name: $("wsName").value, description: $("wsDesc").value });
+    const r = await fetch(w ? `/api/workspaces/${encodeURIComponent(w.id)}` : "/api/workspaces", { method: w ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { $("wsErr").textContent = j.error || r.statusText; return; }
+    d.hidden = true;
+    await loadWorkspaces();
+    if (!w) setOpen(j.workspace.id, true);
+    openWorkspace(w ? w.id : j.workspace.id);
+    loadTools(); // the new files folder is an allowed folder now
+  };
+  d.hidden = false;
+  $("wsName").focus();
+}
+$("wsCancel").onclick = () => ($("wsDialog").hidden = true);
+$("wsDialog").addEventListener("mousedown", (e) => { if (e.target === $("wsDialog")) $("wsDialog").hidden = true; });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("wsDialog").hidden) $("wsDialog").hidden = true; });
+$("newWs").onclick = () => wsDialog();
+
 function renderList() {
   const list = $("chatList");
   list.innerHTML = "";
-  if (!chatList.length) { list.appendChild(el("div", "empty-list", "No chats yet.")); return; }
-  const d = new Date(), today = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(), day = 864e5;
-  const groupOf = (t) => t >= today ? "Today" : t >= today - day ? "Yesterday" : t >= today - 6 * day ? "Previous 7 days" : t >= today - 29 * day ? "Previous 30 days" : "Older";
-  let last = null;
-  for (const c of chatList) {
-    const g = groupOf(c.updated || 0);
-    if (g !== last) { list.appendChild(el("div", "group", g)); last = g; }
-    const item = el("div", "chat-item" + (c.id === chat.id ? " active" : ""));
+  // Most recently used first: the latest session update in each workspace (or when it was created, if it has none).
+  const lastUsed = (w) => Math.max(w.created || 0, ...chatList.filter((c) => (c.workspace || defaultWs) === w.id).map((c) => c.updated || 0));
+  for (const w of [...workspaces].sort((a, b) => lastUsed(b) - lastUsed(a))) {
+    const sessions = chatList.filter((c) => (c.workspace || defaultWs) === w.id);
+    const open = isOpen(w.id);
+    const row = list.appendChild(el("div", "ws-row" + (wsView === w.id ? " active" : "")));
+    const caret = row.appendChild(el("span", "caret", open ? "▾" : "▸")); caret.title = open ? "Collapse" : "Expand";
+    if (!open) { // a collapsed workspace still shows that something happened inside it
+      const dots = sessions.map(dotOf).filter(Boolean);
+      const d = dots.find((x) => x[0] === "waiting") || dots.find((x) => x[0] === "running") || dots[0];
+      if (d) { const sp = row.appendChild(el("span", "run-dot " + d[0])); sp.title = d[1]; }
+    }
+    const t = row.appendChild(el("span", "t", w.name)); t.title = w.description || w.name;
+    const add = row.appendChild(el("button", "mini", "＋")); add.type = "button"; add.title = `New session in ${w.name}`;
+    caret.onclick = (e) => { e.stopPropagation(); setOpen(w.id, !open); renderList(); };
+    add.onclick = (e) => { e.stopPropagation(); setOpen(w.id, true); newChat(w.id); };
+    row.onclick = () => openWorkspace(w.id);
+    if (!open) continue;
+    const box = list.appendChild(el("div", "ws-sessions"));
+    if (!sessions.length) box.appendChild(el("div", "empty-list", "No sessions yet."));
+    for (const c of sessions) box.appendChild(sessionItem(c));
+  }
+}
+function sessionItem(c) {
+  {
+    const item = el("div", "chat-item" + (c.id === chat.id && !wsView ? " active" : ""));
     const t = item.appendChild(el("span", "t", c.title || "Untitled")); t.title = c.title || "";
     // Pulsing blue: reply in progress · yellow: waiting for you (approval) · green: finished, not read yet
-    const dot = c.waiting ? ["waiting", "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
+    const dot = dotOf(c);
     if (dot) { const sp = el("span", "run-dot " + dot[0]); sp.title = dot[1]; item.insertBefore(sp, t); }
     const ren = item.appendChild(el("button", "act", "✎")); ren.title = "Rename";
     const del = item.appendChild(el("button", "act", "🗑")); del.title = "Delete";
@@ -1030,7 +1393,7 @@ function renderList() {
       del.classList.add("armed"); del.textContent = "Delete?";
       setTimeout(() => { del.classList.remove("armed"); del.textContent = "🗑"; }, 3000);
     };
-    list.appendChild(item);
+    return item;
   }
 }
 
@@ -1042,8 +1405,7 @@ let es = null, live = null, cards = new Map();
 function setBusy(busy) {
   window.harnessBusy = busy;
   if (!busy && window.harnessReloadPending) return location.reload(); // hot reload deferred during a reply
-  sendBtn.textContent = busy ? "Stop" : "Send";
-  sendBtn.classList.toggle("primary", !busy);
+  updateSendState();
   modelSel.disabled = busy;
 }
 
@@ -1068,6 +1430,12 @@ function attach(id) {
 }
 
 async function endRun(id, reload) {
+  if (steerContinue === id) { // stopped with steers pending: they were added to the session; reply to them now
+    steerContinue = null;
+    setTimeout(() => { if (chat.id === id && !running) startRun(chat); }, 50);
+  }
+  if (liveUsage?.chat === id) { liveUsage = null; setTimeout(updateCtx); } // saved messages carry the exact counts now
+  if (live?.box) live.box.finish(live.content || "", ""); // a step the server ended without a reply: stop its timers
   live = null; pendingApproval = null; running = false;
   setBusy(false);
   loadList();
@@ -1116,6 +1484,8 @@ function onRunEvent(ev, id) {
         else if (ev.cur.phase) b.phase(ev.cur.phase, ev.cur.pct);
       }
       if (ev.tool) liveTool(ev.tool.tc, ev.tool.status);
+      pendingEls.clear();
+      for (const p of ev.pending || []) pendingBubble(p);
       break;
     }
     case "step": liveStep().phase("Sending request"); break;
@@ -1150,8 +1520,21 @@ function onRunEvent(ev, id) {
       follow();
       break;
     }
+    case "loaded": chat.loaded = ev.loaded; renderToolbarState(); renderPlus(); break;
+    case "halted": add(stopLine(ev.text)); break;
+    case "steer_pending": if (!pendingEls.has(ev.id)) { pendingBubble(ev); follow(); } break; // sent from another tab
+    case "steer_applied": {
+      chat.messages.push(ev.msg);
+      for (const sid of ev.ids) { pendingEls.get(sid)?.remove(); pendingEls.delete(sid); }
+      userBubble(ev.msg); follow(); // now part of the conversation, in its place
+      if (ev.leftover) steerContinue = id;
+      break;
+    }
+    case "compacted": chat.messages.splice(ev.at, 0, ev.msg); if (live?.box) { live.box.clearPhase(); live.box.finish("", ""); live.box = null; } add(summaryDivider(ev.msg)); updateCtx(); break;
     case "notice": add(el("div", "msg error", ev.text)); break;
-    case "usage": lastUsage = { prompt: ev.prompt, completion: ev.completion, model: ev.model }; updateCtx(); break;
+    case "usage":
+      lastUsage = { prompt: ev.prompt, completion: ev.completion, model: ev.model };
+      liveUsage = { chat: id, prompt: ev.prompt, completion: ev.completion }; updateCtx(); break;
     case "done": if (es) { es.close(); es = null; } endRun(id, false); break;
   }
 }
@@ -1161,12 +1544,13 @@ async function startRun(c) {
   try {
     await saveChat(c);
     await loadTools(); // pick up changes made in Settings
-    const specs = activeTools();
-    const pinned = (await Promise.all(skillList.filter((x) => skillMode(x.name) === "pinned")
+    const specs = activeTools(), deferred = deferredGroups();
+    const pinned = (await Promise.all(skillList.filter((x) => skillMode(x.name) === "on")
       .map((x) => fetch("/api/skills/get?name=" + encodeURIComponent(x.name)).then((r) => (r.ok ? r.json() : null)).catch(() => null)))).filter(Boolean);
     const tp = thinkParams(c.think);
     const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-      chatId: c.id, model: modelSel.value, system: systemPrompt(specs, pinned), tools: specs.map((s) => s.spec),
+      chatId: c.id, model: modelSel.value, system: systemPrompt(specs, pinned, deferred), tools: specs.map((s) => s.spec),
+      deferred: deferred.map((g) => ({ key: g.key, name: g.name, note: g.note, tools: g.tools.map((t) => t.spec) })),
       think: { body: tp.body, budget: tp.budget, message: thinkCfg.message },
     }) });
     const j = await r.json().catch(() => ({}));
@@ -1184,16 +1568,54 @@ async function send() {
   if (attachments.some((a) => a.busy)) { status.textContent = "Waiting for the image to finish attaching…"; return; }
   const imgs = attachments.map((a) => ({ src: a.src, full: a.src }));
   if ((!text && !imgs.length) || running) return;
-  input.value = "";
+  input.value = ""; autosize();
   attachments = []; renderAttachments();
   const c = chat;
-  if (!c.messages.some((m) => m.role === "user")) c.title = (text || "Image").replace(/\s+/g, " ").slice(0, 60);
+  if (!c.messages.some((m) => m.role === "user")) { c.title = (text || "Image").replace(/\s+/g, " ").slice(0, 60); if (c === chat) setTimeout(renderCrumbs); }
   const um = { role: "user", content: text };
   if (imgs.length) um._images = imgs;
   c.messages.push(um);
   userBubble(um);
   toBottom();
   await startRun(c);
+}
+
+// ---------- steering ----------
+// A message sent while a reply runs is "pending": the server adds it after the current step, before the next model call.
+const pendingEls = new Map(); // steer id -> bubble
+let steerContinue = null;      // session id whose stopped reply left steers behind: start a new reply with them
+function pendingBubble(p) {
+  const m = { role: "user", content: p.text || "" };
+  if (p.images?.length) m._images = p.images;
+  const w = userBubble(m);
+  w.classList.add("pending");
+  const tag = w.appendChild(el("div", "ptag", "pending"));
+  tag.title = "The model sees this after its current step";
+  pendingEls.set(p.id, w);
+  return w;
+}
+async function steer() {
+  if (attachments.some((a) => a.busy)) { status.textContent = "Waiting for the image to finish attaching…"; return; }
+  const text = input.value.trim(), images = attachments.map((a) => ({ src: a.src, full: a.src }));
+  if (!text && !images.length) return;
+  const id = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), sid = chat.id;
+  input.value = ""; attachments = []; renderAttachments(); autosize();
+  pendingBubble({ id, text, images }); toBottom();
+  try {
+    const r = await fetch(`/api/runs/${sid}/steer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, text, images }) });
+    if (r.status === 409) { // the reply ended just now: send it as a normal message instead
+      pendingEls.get(id)?.remove(); pendingEls.delete(id);
+      for (let i = 0; i < 50 && running; i++) await new Promise((res) => setTimeout(res, 100));
+      if (chat.id !== sid) return;
+      input.value = text; attachments = images.map((im) => ({ src: im.src, preview: im.src })); renderAttachments();
+      return send();
+    }
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  } catch (e) {
+    pendingEls.get(id)?.remove(); pendingEls.delete(id);
+    status.textContent = "Could not send: " + e.message;
+    input.value = text; autosize();
+  }
 }
 
 // Retry: drop everything after this prompt and run it again.
@@ -1251,37 +1673,41 @@ function renderPlus() {
   const m = $("plusMenu");
   if (m.hidden) return;
   m.innerHTML = "";
+  const MODES3 = (what) => [["auto", "Auto", `Model ${what} when relevant`], ["on", "On", "Always available"], ["off", "Off", "Not available in this session"]];
+  const tag = (r, text) => r.querySelector(".nm").appendChild(el("small", "tag", text));
   m.appendChild(el("h4", null, "Skills"));
   if (!skillList.length) { const e = m.appendChild(el("div", "pm-empty")); e.innerHTML = 'No skills enabled. <a href="/settings#skills">Add skills</a>'; }
   for (const s of skillList) {
     const r = m.appendChild(el("div", "pm-row"));
     const nm = r.appendChild(el("span", "nm", s.name)); nm.title = s.description;
-    r.appendChild(seg([["pinned", "📌 Pin", "Always include the full instructions"], ["auto", "Auto", "Model loads it when relevant"], ["off", "Off", "Not available in this chat"]],
-      skillMode(s.name), (v) => patchChat({ skills: { ...(chat.skills || {}), [s.name]: v } })));
+    r.appendChild(seg(MODES3("loads it"), skillMode(s.name), (v) => patchChat({ skills: { ...(chat.skills || {}), [s.name]: v } })));
   }
+  // Picking Auto or Off for a group the model had turned on puts it back to "not loaded".
+  const pickGroup = (field, name, key, v) => patchChat({ [field]: { ...(chat[field] || {}), [name]: v }, ...(isLoaded(key) && v !== "on" ? { loaded: chat.loaded.filter((x) => x !== key) } : {}) });
   m.appendChild(el("h4", null, "MCP servers"));
   if (!mcpServers.length) { const e = m.appendChild(el("div", "pm-empty")); e.innerHTML = 'None configured. <a href="/settings#mcp">Add MCP servers</a>'; }
   for (const sv of mcpServers) {
-    const r = m.appendChild(el("label", "pm-row" + (sv.status === "ready" ? "" : " dis")));
-    const cb = r.appendChild(el("input")); cb.type = "checkbox"; cb.checked = mcpOn(sv.name);
-    cb.onchange = () => patchChat({ mcp: { ...(chat.mcp || {}), [sv.name]: cb.checked } });
+    const key = "mcp:" + sv.name, mode = mcpMode(sv.name);
+    const r = m.appendChild(el("div", "pm-row" + (sv.status === "ready" ? "" : " dis")));
     r.appendChild(el("span", "d " + sv.status));
-    const nm = r.appendChild(el("span", "nm", sv.name));
+    const nm = r.appendChild(el("span", "nm", sv.name)); nm.title = sv.description || "";
     nm.appendChild(el("small", null, sv.status === "ready" ? `${sv.tools.length} tools` : sv.status));
+    if (mode === "auto" && isLoaded(key)) tag(r, "loaded");
+    r.appendChild(seg(MODES3("turns it on"), mode, (v) => pickGroup("mcp", sv.name, key, v)));
   }
   m.appendChild(el("h4", null, "Tools"));
-  const cats = ["File Access", "Web", "Images", "System"];
-  for (const cat of cats) {
-    const inCat = toolInfo.tools.filter((t) => !t.server && t.category === cat);
-    const allowed = inCat.filter((t) => t.enabled).length;
-    const r = m.appendChild(el("label", "pm-row" + (allowed && toolInfo.enabled !== false ? "" : " dis")));
-    const cb = r.appendChild(el("input")); cb.type = "checkbox"; cb.checked = catOn(cat); cb.disabled = !allowed || toolInfo.enabled === false;
-    cb.onchange = () => patchChat({ cats: { ...(chat.cats || {}), [cat]: cb.checked } });
+  for (const cat of CATS) {
+    const key = "cat:" + cat, mode = catMode(cat);
+    const allowed = toolInfo.tools.filter((t) => !t.server && t.category === cat && t.enabled).length;
+    const usable = allowed && toolInfo.enabled !== false;
+    const r = m.appendChild(el("div", "pm-row" + (usable ? "" : " dis")));
     const nm = r.appendChild(el("span", "nm", cat));
-    nm.appendChild(el("small", null, allowed ? `${allowed} tool${allowed > 1 ? "s" : ""}` : "off in Settings"));
+    nm.appendChild(el("small", null, usable ? `${allowed} tool${allowed > 1 ? "s" : ""}` : "off in Settings"));
+    if (usable && mode === "auto" && isLoaded(key)) tag(r, "loaded");
+    if (usable) r.appendChild(seg(MODES3("turns it on"), mode, (v) => pickGroup("cats", cat, key, v)));
   }
   const f = m.appendChild(el("div", "pm-foot"));
-  f.innerHTML = 'These apply to this chat only. Manage what is installed in <a href="/settings#tools">Settings</a>.';
+  f.innerHTML = 'These apply to this session only. Manage what is installed in <a href="/settings#tools">Settings</a>.';
 }
 $("plus").onclick = (e) => { e.stopPropagation(); togglePlus(); };
 $("plusMenu").onclick = (e) => e.stopPropagation();
@@ -1289,36 +1715,67 @@ document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus
 document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); });
 
 // ---------- context meter ----------
-let lastUsage = null, ctxSize = {}, ctxTimer = null;
+let lastUsage = null, liveUsage = null, ctxSize = {}, ctxTimer = null; // liveUsage: exact counts from the run in progress
 const estTokens = (str) => Math.ceil(str.length / 3.6);
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
 function updateCtx() {
   clearTimeout(ctxTimer);
   ctxTimer = setTimeout(async () => {
     const specs = activeTools();
-    const pinnedChars = skillList.filter((s) => skillMode(s.name) === "pinned").length * 1500; // rough until loaded
+    const pinnedChars = skillList.filter((s) => skillMode(s.name) === "on").length * 1500; // rough until loaded
     const sys = estTokens(systemPrompt(specs, [])) + estTokens(JSON.stringify(specs.map((t) => t.spec))) + Math.ceil(pinnedChars / 3.6);
-    const conv = estTokens(JSON.stringify(chat.messages.map(stripUi))) + estTokens(input.value);
     const model = modelSel.value;
+    // Exact when possible: llama-server's count for the last request in this session (prompt + what it wrote), plus an
+    // estimate of only what came after it. Images count roughly 1,000 tokens each for a vision model.
+    const imgTok = (ms) => modelVision[model] ? ms.reduce((n, m) => n + (m._images?.length || 0), 0) * 1000 : 0;
+    let from = 0; // a compacted session: the model only gets the messages from the last summary on
+    for (let i = chat.messages.length - 1; i >= 0; i--) if (chat.messages[i]._summary) { from = i; break; }
+    let anchor = -1;
+    for (let i = chat.messages.length - 1; i >= from; i--) if (chat.messages[i]._usage && (chat.messages[i]._ctxFrom ?? 0) === from) { anchor = i; break; }
+    const live = liveUsage && liveUsage.chat === chat.id ? liveUsage : null;
+    let exact = 0, after = chat.messages.slice(from), conv;
+    if (live) { exact = live.prompt + live.completion; after = []; }
+    else if (anchor >= 0) { const u = chat.messages[anchor]._usage; exact = u.prompt + u.completion; after = chat.messages.slice(anchor + 1); }
+    conv = estTokens(JSON.stringify(after.map(stripUi))) + imgTok(after) + estTokens(input.value);
     if (model && ctxSize[model] === undefined) {
       ctxSize[model] = null;
       try { ctxSize[model] = (await (await fetch("/api/ctx?model=" + encodeURIComponent(model))).json()).n_ctx; } catch {}
     }
-    const total = sys + conv, max = ctxSize[model];
+    const total = exact ? exact + conv : sys + conv, max = ctxSize[model];
     const m = $("ctxMeter");
-    m.textContent = `≈${fmtK(total)}${max ? " / " + fmtK(max) : ""} tok`;
+    m.textContent = `${exact && conv < 50 ? "" : "≈"}${fmtK(total)}${max ? " / " + fmtK(max) : ""} tok`;
     m.className = "ctx" + (max && total > max * 0.9 ? " bad" : max && total > max * 0.75 ? " warn" : "");
-    m.title = `Estimated context use\nInstructions + ${specs.length} tool definitions: ≈${fmtK(sys)}\nConversation: ≈${fmtK(conv)}` +
+    m.title = (exact ? `Context use\nLast request (from llama-server): ${exact} tokens\nSince then (estimate): ≈${fmtK(conv)}`
+      : `Estimated context use\nInstructions + ${specs.length} tool definitions: ≈${fmtK(sys)}\nConversation: ≈${fmtK(conv)}`) +
       (max ? `\nModel context size: ${fmtK(max)}` : "\n(Context size shows once the model is loaded)") +
       (lastUsage && lastUsage.model === model ? `\nLast request (exact): ${lastUsage.prompt} prompt + ${lastUsage.completion} reply tokens` : "");
   }, 250);
 }
 input.addEventListener("input", updateCtx);
+// The message box grows with its text, up to about 5 lines, then scrolls.
+function autosize() {
+  input.style.height = "auto";
+  const h = Math.min(input.scrollHeight, 124);
+  input.style.height = Math.max(36, h) + "px";
+  input.style.overflowY = input.scrollHeight > 124 ? "auto" : "hidden";
+  updateSendState();
+}
+const hasDraft = () => !!(input.value.trim() || attachments.length);
+function updateSendState() {
+  const stopMode = running && !hasDraft();
+  sendBtn.innerHTML = stopMode ? STOP_ICON : SEND_ICON;
+  sendBtn.title = stopMode ? "Stop" : running ? "Send now: the model sees it after its current step" : "Send (Enter)";
+  sendBtn.setAttribute("aria-label", stopMode ? "Stop" : "Send");
+  sendBtn.classList.toggle("stop", stopMode); sendBtn.classList.toggle("primary", !stopMode);
+  sendBtn.classList.toggle("empty", !running && !hasDraft());
+}
+input.addEventListener("input", autosize);
+autosize();
 
 // ---------- wiring ----------
-$("form").addEventListener("submit", (e) => { e.preventDefault(); if (running) stop(); else send(); });
-input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!running) send(); } });
-$("newChat").onclick = newChat;
+$("form").addEventListener("submit", (e) => { e.preventDefault(); if (running) { if (hasDraft()) steer(); else stop(); } else send(); });
+input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (running) { if (hasDraft()) steer(); } else send(); } });
+window.addEventListener("hashchange", () => route());
 window.addEventListener("focus", () => loadModels()); // no reload button: refresh the model list when the window regains focus
 modelSel.onchange = () => {
   chat.model = modelSel.value;
@@ -1328,11 +1785,18 @@ modelSel.onchange = () => {
 };
 renderMode();
 
+// #w/<workspace> shows a workspace, #<session id> opens a session, nothing shows Default.
+async function route() {
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h.startsWith("w/")) { if (wsView !== h.slice(2)) await openWorkspace(h.slice(2)); }
+  else if (h) { if (h !== chat.id || wsView) await loadChat(h); }
+  else await openWorkspace(defaultWs);
+}
+
 (async () => {
-  await Promise.all([loadModels(), loadTools(), loadList()]);
-  const id = location.hash.slice(1);
-  if (id) await loadChat(id); else showWelcome();
-  input.focus();
+  await Promise.all([loadModels(), loadTools(), loadList(), loadWorkspaces()]);
+  renderList();
+  await route();
 })();
 </script>
 </body>

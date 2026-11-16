@@ -7,7 +7,8 @@ const path = require("path");
 const HOME = path.resolve(process.env.QQSTUDIO_HOME || path.join(os.homedir(), ".qqstudio"));
 const P = {
   home: HOME,
-  chats: path.join(HOME, "chats"),
+  chats: path.join(HOME, "chats"),               // old (pre-workspaces) sessions folder; moved into workspaces\Default
+  workspaces: path.join(HOME, "workspaces"),     // <id>\{workspace.json, sessions\, files\}
   models: path.join(HOME, "models"),             // default models folder (<vendor>\<model>\<file>.gguf)
   skills: path.join(HOME, "skills"),             // <name>\SKILL.md (Anthropic Agent Skills format)
   skillsCfg: path.join(HOME, "skills.json"),     // enabled/disabled skills
@@ -21,7 +22,7 @@ const P = {
   log: path.join(HOME, "logs", "llama-server.log"),
 };
 
-for (const d of [HOME, P.chats, P.models, P.skills, path.dirname(P.log)]) fs.mkdirSync(d, { recursive: true });
+for (const d of [HOME, P.models, P.skills, path.dirname(P.log)]) fs.mkdirSync(d, { recursive: true });
 
 function move(from, to) {
   if (!fs.existsSync(from) || fs.existsSync(to)) return false;

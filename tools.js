@@ -322,4 +322,7 @@ function isEnabled(name) {
   return cfg.enabled !== false && (cfg.tools[name] || {}).enabled !== false;
 }
 
-module.exports = { ROOTS, resolveSafe, IMAGE_EXT, runTool, toolList, toolSettings, saveToolSettings, isEnabled };
+// Workspace files folders are added (and removed) while the server runs.
+const addRoot = (dir) => { const r = path.resolve(dir); if (!ROOTS.some((x) => norm(x) === norm(r))) ROOTS.push(r); };
+const removeRoot = (dir) => { const i = ROOTS.findIndex((x) => norm(x) === norm(path.resolve(dir))); if (i > 0) ROOTS.splice(i, 1); };
+module.exports = { ROOTS, addRoot, removeRoot, resolveSafe, IMAGE_EXT, runTool, toolList, toolSettings, saveToolSettings, isEnabled };
