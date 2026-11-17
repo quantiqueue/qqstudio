@@ -324,7 +324,15 @@ function updateChat(file, fn) {
   tail.then(() => { if (chatQueues.get(file) === tail) chatQueues.delete(file); });
   return next;
 }
-const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine });
+const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession });
+// A sub-agent's session (runs.js run_agent): in its main session's workspace, marked with parent so the sidebar hides it.
+async function newSubSession(parentId, data) {
+  const id = parentId.slice(0, 30) + "s" + (Date.now().toString(36) + Math.random().toString(36).slice(2, 5)).slice(-7);
+  const file = ws.placeSession(id, ws.workspaceOf(parentId));
+  const now = Date.now();
+  await updateChat(file, () => ({ id, workspace: ws.workspaceOf(id), parent: parentId, created: now, updated: now, ...data }));
+  return id;
+}
 
 async function writeChat(file, obj) {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`; // unique: runs and the page can save at once
@@ -548,12 +556,13 @@ const lazyInfo = () => ({ lazyAt: lazyTools.threshold(getConfig()), serverTokens
 const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
 const EFFORTS = ["default", "off", "low", "medium", "high", "max"]; // "default" is shown as Auto (nothing sent)
 const BUDGETS = ["auto", "off", "low", "medium", "high", "unlimited"]; // low/medium/high: the caps in budgets
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000 }; // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000 };
+const AGENT_DEFAULTS = { maxActive: 1, reportWords: 300, instructions: "" }; // Settings > Agents // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
   const t = c.thinking || {};
   delete c.lanAccess; delete c.lanKey; // served by /api/server (local requests only)
-  return { ...CONFIG_DEFAULTS, ...c, thinking: { budgets: THINK_DEFAULTS.budgets, message: t.message ?? THINK_DEFAULTS.message,
+  return { ...CONFIG_DEFAULTS, ...c, agents: { ...AGENT_DEFAULTS, ...(c.agents || {}) }, thinking: { budgets: THINK_DEFAULTS.budgets, message: t.message ?? THINK_DEFAULTS.message,
     effort: EFFORTS.includes(t.effort) ? t.effort : EFFORTS.includes(t.level) ? t.level : THINK_DEFAULTS.effort, budget: BUDGETS.includes(t.budget) ? t.budget : THINK_DEFAULTS.budget }, dataDir: DATA.home };
 }
 async function handleConfig(req, res) {
@@ -564,6 +573,13 @@ async function handleConfig(req, res) {
     const cur = DATA.readJson(DATA.config, {});
     if (typeof patch.modelsFolder === "string") cur.modelsFolder = patch.modelsFolder.trim();
     if (typeof patch.maskSecrets === "boolean") cur.maskSecrets = patch.maskSecrets;
+    if (patch.agents && typeof patch.agents === "object") {
+      const a = { ...AGENT_DEFAULTS, ...(cur.agents || {}) }, p = patch.agents, int = (v, lo, hi) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null; };
+      if (p.maxActive !== undefined && int(p.maxActive, 1, 8) !== null) a.maxActive = int(p.maxActive, 1, 8);
+      if (p.reportWords !== undefined && int(p.reportWords, 50, 3000) !== null) a.reportWords = int(p.reportWords, 50, 3000);
+      if (typeof p.instructions === "string") a.instructions = p.instructions.slice(0, 4000);
+      cur.agents = a;
+    }
     if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
     if ("lazyToolsAt" in patch) { const v = patch.lazyToolsAt === "" || patch.lazyToolsAt == null ? 0 : Math.round(Number(patch.lazyToolsAt)); if (Number.isFinite(v) && v >= 0) cur.lazyToolsAt = v; }
     if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }
@@ -586,7 +602,7 @@ async function handleChats(req, res) {
       if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
       const list = [];
       for (const { ws: w, chat: c } of await ws.allSessions())
-        list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, workspace: w, running: runs.has(c.id), waiting: runs.waiting(c.id), unread: !!c.unread });
+        if (!c.parent) list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, workspace: w, running: runs.has(c.id), waiting: runs.waiting(c.id), unread: !!c.unread }); // sub-agent sessions open from their chip
       list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
       return sendJson(res, 200, { chats: list });
     }
@@ -627,6 +643,12 @@ async function handleChats(req, res) {
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "DELETE") {
+      for (const { chat: s } of await ws.allSessions()) if (s.parent === id) { // its sub-agents' sessions go with it
+        runs.deleted(s.id);
+        const f = chatFile(s.id);
+        if (f) await updateChat(f, async () => { await fs.promises.unlink(f).catch(() => {}); return null; });
+        ws.forgetSession(s.id);
+      }
       runs.deleted(id);
       await updateChat(file, async () => { await fs.promises.unlink(file).catch(() => {}); return null; }); // queued behind any save in flight
       ws.forgetSession(id);

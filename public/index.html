@@ -179,6 +179,25 @@
   .uwrap.pending .msg.user { opacity:.7; border:1px dashed #3b4356; }
   .uwrap.pending .acts { display:none; }
   .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; }
+  /* Sub-agents: a chip per sub-agent in the main session, report cards, and the read-only sub-agent session. */
+  .agent-chip { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:10px; background:#12151b; padding:4px 6px 4px 4px; font-size:13px; }
+  .agent-chip.approval { border-color:#e3b04b; }
+  .agent-chip .ac-main { flex:1; min-width:0; display:flex; align-items:center; gap:8px; background:none; border:none; color:var(--text); text-align:left; padding:4px 8px; cursor:pointer; font:inherit; }
+  .agent-chip .ac-main:hover .ac-go { color:var(--accent); }
+  .agent-chip .ac-t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .agent-chip .ac-s { color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .agent-chip .ac-go { margin-left:auto; color:var(--muted); }
+  .agent-chip .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; animation:runpulse 1.4s ease-in-out infinite; }
+  .agent-chip .dot.warn { background:#e3b04b; }
+  .agent-chip > button:not(.ac-main) { font-size:12px; padding:3px 10px; }
+  .agent-chip.done .ac-t, .agent-chip.stopped .ac-t, .agent-chip.ended .ac-t { color:var(--muted); }
+  details.agent-report > summary { list-style:none; cursor:pointer; color:var(--muted); font-size:13px; display:flex; align-items:center; gap:8px; padding:0 14px; }
+  details.agent-report > summary::-webkit-details-marker { display:none; }
+  details.agent-report > summary .car { font-size:10px; width:10px; transition:transform .15s; } details.agent-report[open] > summary .car { transform:rotate(90deg); }
+  details.agent-report > .md { margin:8px 0 0 19px; padding:8px 12px; border-left:2px solid var(--line); font-size:13px; }
+  .ro-note { display:flex; align-items:center; gap:10px; border:1px dashed var(--line); border-radius:10px; padding:10px 14px; color:var(--muted); font-size:13px; }
+  .ro-note button { font-size:12px; padding:3px 12px; margin-left:auto; }
+  .ro-note[hidden] { display:none; } /* its display:flex would otherwise override the hidden attribute */
   /* The session's task list (todo tool), above the message box. */
   .todo-panel { margin-bottom:8px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-size:13px; }
   .todo-panel .th { display:flex; align-items:center; gap:8px; padding:6px 12px; cursor:pointer; color:var(--muted); user-select:none; }
@@ -272,6 +291,7 @@
   .compose #send.stop { background:var(--text); color:var(--bg); }
   .compose #send.stop:hover { background:#fff; }
   .attachments { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .attachments[hidden] { display:none; }
   .attachments .att { position:relative; width:56px; height:56px; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#0b0d11; }
   .attachments .att img { width:100%; height:100%; object-fit:cover; display:block; }
   .attachments .att.busy img { opacity:.4; }
@@ -351,6 +371,8 @@
   .hdr-btn { margin-left:auto; display:inline-flex; align-items:center; gap:6px; color:var(--muted); text-decoration:none; padding:5px 8px; border-radius:8px; font-size:14px; transition:background .12s, color .12s; }
   .hdr-btn:hover { background:#252a35; color:var(--text); }
   #status { display:none !important; } /* still written to by the page; not shown */
+  /* last, so it wins over the composer's own rules: a sub-agent's session has no message box */
+  #form.readonly .compose, #form.readonly .toolbar, #form.readonly #attachments, #form.readonly #todoPanel { display:none !important; }
 </style>
 </head>
 <body>
@@ -370,6 +392,7 @@
   <div class="logwrap"><div id="log"></div><button type="button" id="jump" class="jump" title="Jump to latest" hidden>↓</button></div>
   <form id="form"><div class="inner">
     <div id="todoPanel" class="todo-panel" hidden></div>
+    <div id="roNote" class="ro-note" hidden></div>
     <div id="attachments" class="attachments" hidden></div>
     <div class="compose">
       <textarea id="input" rows="1" placeholder="Message (Enter to send, Shift+Enter for newline, paste or drop images)"></textarea>
@@ -449,7 +472,7 @@ function footStart(ms = 0, tokens = 0) {
   e.appendChild(el("span", "dot")); e.appendChild(el("span"));
   log.appendChild(e);
   foot = { el: e, t0: performance.now() - ms, tokens };
-  const draw = () => { if (foot) foot.el.lastChild.textContent = `${fmtTok(foot.tokens)} in ${fmtDur(performance.now() - foot.t0)}`; };
+  const draw = () => { if (foot) foot.el.lastChild.textContent = `${fmtTok(foot.tokens)} in ${fmtDur(performance.now() - foot.t0)}` + (foot.waiting ? " · waiting for sub-agents" : ""); };
   foot.draw = draw; draw();
   foot.timer = setInterval(draw, 500);
   follow();
@@ -797,7 +820,7 @@ async function loadTools() {
 // Per-chat Auto | On | Off for skills, MCP servers and built-in tool categories (Settings is the ceiling).
 // Auto: skills are listed by name (load_skill); MCP servers and categories are listed as one line each and the model
 // turns them on with enable_tools. Groups it turned on are kept in chat.loaded ("mcp:<server>", "cat:<category>").
-const CATS = ["File Access", "Web", "Images", "System", "Questions", "Tasks"];
+const CATS = ["File Access", "Web", "Images", "System", "Questions", "Tasks", "Agents"];
 const modeOf = (v) => (v === false || v === "off" ? "off" : v === true || v === "on" || v === "pinned" ? "on" : "auto"); // old chats: false / "pinned"
 const skillMode = (name) => modeOf((chat.skills || {})[name]);
 const mcpMode = (server) => modeOf((chat.mcp || {})[server]);
@@ -839,6 +862,7 @@ function deferredGroups() {
     System: `run ${win ? "cmd.exe" : "shell"} commands and scripts (Python, PowerShell, Node), including long-running ones in the background`,
     Questions: "ask the user multiple-choice questions before a big task that leaves real choices open",
     Tasks: "keep a task list the user can see, for work with several steps",
+    Agents: "hand separate pieces of work to sub-agents that work in the background and report back",
   };
   for (const cat of CATS) {
     if (catMode(cat) !== "auto") continue;
@@ -880,6 +904,7 @@ function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGro
   if (on.has("edit_file")) lines.push("To change part of a file, use edit_file rather than rewriting the whole file.");
   if (on.has("run_script")) lines.push("For anything that needs code (calculations, data, images, converting files), write it as a script with run_script instead of quoting it into run_command.");
   if (on.has("run_background")) lines.push("Start long-running commands (dev servers, builds) with run_background, then check them with check_background.");
+  if (on.has("run_agent")) lines.push("You can hand a separate, self-contained piece of work to a sub-agent with run_agent; it works in the background and its report arrives in this conversation by itself.");
   if (on.has("todo")) lines.push("For work with several steps, keep a task list with todo and update it as you go.");
   if (on.has("run_command")) lines.push(`You can run ${win ? "cmd.exe" : "shell"} commands with run_command; use it when no specific tool fits.`);
   const servers = [...new Set(specs.filter((t) => t.server).map((t) => t.server))];
@@ -1393,6 +1418,67 @@ function userBubble(msg) {
 }
 
 // live = true while a run is going: tool calls still waiting for a result get a card the run events will fill in.
+// ---------- sub-agents (run_agent): a chip per sub-agent, its report, and its read-only session ----------
+// "Running sub-agent: Update file 23 · 230 tokens in 2m 34s →" (Allow / Deny when it needs approval, Stop while it
+// runs); clicking it opens the sub-agent's session. Its report arrives in the main session as a card.
+const agentChips = new Map(); // sub-agent id -> { el, info, at, sEl }
+let agentTimer = null;
+const chipLive = (i) => i.status === "running" || i.status === "approval";
+function agentChip(info) {
+  let c = agentChips.get(info.id);
+  if (!c) { c = { el: add(el("div", "agent-chip")), info: {}, at: performance.now() }; agentChips.set(info.id, c); }
+  c.info = { ...c.info, ...Object.fromEntries(Object.entries(info).filter(([, v]) => v !== undefined)) };
+  c.at = performance.now();
+  drawChip(c);
+  if (!agentTimer) agentTimer = setInterval(() => { for (const x of agentChips.values()) if (chipLive(x.info) && x.sEl) x.sEl.textContent = chipStats(x); }, 500);
+  return c;
+}
+function chipStats(c) {
+  const i = c.info, live = chipLive(i), ms = live ? (i.ms || 0) + (performance.now() - c.at) : i.ms;
+  return [i.status === "approval" && i.tc ? shownCall(i.tc).name : null, live ? null : i.status === "stopped" ? "stopped" : i.status === "ended" ? "ended" : "done",
+    i.tokens != null && ms != null ? `${fmtTok(i.tokens)} in ${fmtDur(ms)}` : null].filter(Boolean).join(" · ");
+}
+function drawChip(c) {
+  const i = c.info, e = c.el, live = chipLive(i);
+  e.className = "agent-chip " + (i.status || "");
+  e.innerHTML = "";
+  const main = e.appendChild(el("button", "ac-main")); main.type = "button"; main.title = "Open the sub-agent's session (read-only)";
+  if (live) main.appendChild(el("span", "dot" + (i.status === "approval" ? " warn" : "")));
+  main.appendChild(el("span", "ac-t", (i.status === "approval" ? "Sub-agent needs approval: " : live ? "Running sub-agent: " : "Sub-agent: ") + (i.title || "Sub-agent")));
+  c.sEl = main.appendChild(el("span", "ac-s", chipStats(c)));
+  main.appendChild(el("span", "ac-go", "→"));
+  main.onclick = () => loadChat(i.id);
+  const post = (action, body) => fetch(`/api/runs/${encodeURIComponent(i.id)}/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }).catch(() => {});
+  if (i.status === "approval" && i.tc) {
+    const yes = e.appendChild(el("button", "primary", "Allow")), no = e.appendChild(el("button", null, "Deny"));
+    yes.type = no.type = "button";
+    yes.title = `Allow ${shownCall(i.tc).name} for this sub-agent`;
+    yes.onclick = () => { post("approve", { id: i.tc.id, approved: true }); agentChip({ id: i.id, status: "running", tc: null }); };
+    no.onclick = () => { post("approve", { id: i.tc.id, approved: false }); agentChip({ id: i.id, status: "running", tc: null }); };
+  }
+  if (live) { const st = e.appendChild(el("button", null, "Stop")); st.type = "button"; st.title = "Stop this sub-agent (its report so far comes back)"; st.onclick = () => post("stop"); }
+}
+function reportCard(m) {
+  const r = m._agentReport || {}, d = el("details", "agent-report");
+  const s = d.appendChild(el("summary"));
+  s.appendChild(el("span", "car", "▸"));
+  s.appendChild(el("span", null, `Report from sub-agent: ${r.title || r.alias || ""}` + (r.tokens != null ? ` · ${r.status === "stopped" ? "stopped · " : ""}${fmtTok(r.tokens)} in ${fmtDur(r.ms || 0)}` : "")));
+  d.appendChild(el("div", "md")).innerHTML = mdRender(String(m.content || "").replace(/^\[Sub-agent[^\n]*\]\n?/, ""));
+  return d;
+}
+function clearChips() { agentChips.clear(); clearInterval(agentTimer); agentTimer = null; }
+// A sub-agent's own session is read-only: you steer the main session instead.
+function renderReadOnly() {
+  const ro = !!chat.parent, note = $("roNote");
+  $("form").classList.toggle("readonly", ro);
+  note.hidden = !ro;
+  note.innerHTML = "";
+  if (!ro) return;
+  note.appendChild(el("span", null, "This is a sub-agent's session: you can watch it here, and talk to the main session."));
+  const b = note.appendChild(el("button", null, "Open main session")); b.type = "button";
+  b.onclick = () => loadChat(chat.parent);
+}
+
 // ---------- task list (todo tool): shown above the message box, open while steps are left ----------
 let todoOpen = null; // the user's own open/closed choice for this page (null: open while not all done)
 function renderTodo() {
@@ -1414,7 +1500,7 @@ function renderTodo() {
   }
 }
 function renderChat(live = false) {
-  todoOpen = null; renderTodo();
+  todoOpen = null; renderTodo(); clearChips(); renderReadOnly();
   footStop(); pendingQuestion = null; qCards.clear();
   if (fold) clearInterval(fold.timer);
   fold = null;
@@ -1424,6 +1510,7 @@ function renderChat(live = false) {
   const results = new Map(chat.messages.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, m]));
   for (const m of chat.messages) {
     if (m._summary) add(summaryDivider(m));
+    else if (m.role === "user" && m._agentReport) { add(reportCard(m)); const r = m._agentReport; if (agentChips.has(r.id)) agentChip({ id: r.id, status: r.status, tokens: r.tokens, ms: r.ms }); }
     else if (m.role === "user") userBubble(m);
     else if (m.role === "assistant") {
       const calls = (m.tool_calls || []).length > 0;
@@ -1439,6 +1526,7 @@ function renderChat(live = false) {
       }
       for (const tc of m.tool_calls || []) {
         const sc = shownCall(tc), r0 = results.get(tc.id);
+        if (sc.name === "run_agent" && r0?._agent) { agentChip({ ...r0._agent, status: live ? "running" : "ended" }); continue; } // a report later in the session marks it done
         if (sc.name === "ask_user" && (r0?._answers || (live && !r0))) { // questions: answered, or still waiting (the snapshot shows the card)
           if (r0?._answers) qCards.set(tc.id, { card: add(questionCard(r0._answers.questions, r0._answers)), questions: r0._answers.questions });
           continue;
@@ -1612,6 +1700,12 @@ function renderCrumbs() {
   const a = c.appendChild(el("a", null, wsName(chat.workspace || defaultWs))); a.href = "#w/" + encodeURIComponent(chat.workspace || defaultWs);
   a.onclick = (e) => { e.preventDefault(); openWorkspace(chat.workspace || defaultWs); };
   c.appendChild(el("span", null, "›"));
+  if (chat.parent) { // a sub-agent: Workspace › Main session › Sub-agent
+    const p = c.appendChild(el("a", null, chat._parentTitle || "Main session")); p.href = "#" + chat.parent;
+    p.onclick = (e) => { e.preventDefault(); loadChat(chat.parent); };
+    c.appendChild(el("span", null, "›"));
+    if (!chat._parentTitle) fetch(`/api/chats/${chat.parent}`).then((r) => r.json()).then((pc) => { if (chat.parent === pc.id) { chat._parentTitle = pc.title || "Untitled"; renderCrumbs(); } }).catch(() => {});
+  }
   c.appendChild(el("span", "cur", chat.id ? chat.title || "Untitled" : "New session"));
 }
 async function renderWsView() {
@@ -1873,6 +1967,8 @@ function onRunEvent(ev, id) {
       if (live.box && live.content) promote(live.box.node); // text streaming right now
       if (fold && lastChild() === fold.el) foldLive(fold, true);
       if (ev.stat) footStart(ev.stat.ms, ev.stat.tokens);
+      for (const a of ev.agents || []) agentChip(a);
+      if (ev.waiting && foot) { foot.waiting = true; foot.draw(); }
       pendingEls.clear();
       for (const p of ev.pending || []) pendingBubble(p);
       break;
@@ -1904,10 +2000,14 @@ function onRunEvent(ev, id) {
     case "tool": liveTool(ev.tc, ev.status); break;
     case "question": liveQuestion(ev); break;
     case "todo": chat.todo = ev.items; renderTodo(); break;
+    case "agent": agentChip(ev); loadList(); break;
+    case "agent_report": { chat.messages.push(ev.msg); add(reportCard(ev.msg)); const r = ev.msg._agentReport; agentChip({ id: r.id, title: r.title, status: r.status, tokens: r.tokens, ms: r.ms, tc: null }); follow(); break; }
+    case "waiting": if (foot) { foot.waiting = ev.on; foot.draw(); } break;
     case "answered": answeredQuestion(ev.id, ev.answers); break;
     case "tool_result": {
       const m = ev.msg;
       chat.messages.push(m);
+      if (m._agent) { agentChip({ ...m._agent, status: "running", tokens: 0, ms: 0 }); follow(); break; } // run_agent: a chip, not a tool card
       if (m._answers || qCards.has(m.tool_call_id)) { // ask_user: the card already shows the answers (or cancelled)
         if (m._answers) answeredQuestion(m.tool_call_id, m._answers);
         else { const q = qCards.get(m.tool_call_id); q.card.className = "qcard done"; q.card.innerHTML = ""; q.card.appendChild(el("div", "qh", "Questions · " + (m._status || "cancelled"))); if (pendingQuestion?.id === m.tool_call_id) pendingQuestion = null; }
@@ -1971,6 +2071,7 @@ async function startRun(c) {
 }
 
 async function send() {
+  if (chat.parent) return; // a sub-agent's session is read-only
   const text = input.value.trim();
   if (attachments.some((a) => a.busy)) { status.textContent = "Waiting for the image to finish attaching…"; return; }
   const imgs = attachments.map((a) => ({ src: a.src, full: a.src }));

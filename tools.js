@@ -363,6 +363,23 @@ const schemas = [
       json: { description: "A JSON body (sent with Content-Type: application/json)" },
       body: { type: "string", description: "A raw text body, when not sending json" },
       timeout: { type: "integer", description: "Seconds to wait (default 30, max 120)" } }, required: ["url"] } },
+  // Handled by runs.js (sub-agents are separate runs with their own sessions); listed here for settings and a category.
+  { name: "run_agent", approval: false,
+    description: "Hand a separate piece of work to a sub-agent: it works in the background with its own context and the same tools (but can't ask the user anything), then its report arrives in this conversation by itself. Good for self-contained work such as one file of many, or a research question. The sub-agent doesn't see this conversation: put everything it needs in task. You can keep working meanwhile, or end your turn to wait.",
+    parameters: { type: "object", properties: {
+      title: { type: "string", description: "A few words naming the work, shown to the user, e.g. \"Update file 23\"" },
+      task: { type: "string", description: "Complete instructions: the goal, the files or facts involved, and what to report back" } }, required: ["title", "task"] } },
+  { name: "message_agent", approval: false,
+    description: "Send a message to a running sub-agent (e.g. a correction or an extra detail); it sees it after its current step.",
+    parameters: { type: "object", properties: {
+      id: { type: "string", description: "The sub-agent, e.g. a1" },
+      text: { type: "string", description: "The message" } }, required: ["id", "text"] } },
+  { name: "stop_agent", approval: false,
+    description: "Stop a running sub-agent; its report with what it had done so far arrives here.",
+    parameters: { type: "object", properties: { id: { type: "string", description: "The sub-agent, e.g. a1" } }, required: ["id"] } },
+  { name: "check_agent", approval: false,
+    description: "See a sub-agent's status and latest message. Not needed to get its result: the report arrives by itself.",
+    parameters: { type: "object", properties: { id: { type: "string", description: "The sub-agent, e.g. a1" } }, required: ["id"] } },
   // Handled by runs.js (the session's task list is shown above the message box); listed here for settings and a category.
   { name: "todo", approval: false,
     description: "Keep a short task list for a task with several steps; the user sees it. Send the whole list each time, each item with status pending, in_progress (one at a time) or done. Create it when a task has 3 or more steps and update it as you finish each one. Don't use it for small tasks.",
@@ -446,8 +463,12 @@ const META = {
   http_request: ["Web", "Call web APIs"],
   ask_user: ["Questions", "Ask questions"],
   todo: ["Tasks", "Task list"],
+  run_agent: ["Agents", "Start sub-agents"],
+  message_agent: ["Agents", "Message sub-agents"],
+  stop_agent: ["Agents", "Stop sub-agents"],
+  check_agent: ["Agents", "Check sub-agents"],
 };
-const CATEGORIES = ["File Access", "Web", "Images", "System", "Questions", "Tasks", "Skills"];
+const CATEGORIES = ["File Access", "Web", "Images", "System", "Questions", "Tasks", "Agents", "Skills"];
 const CFG_FILE = require("./paths").tools;
 const fsSync = require("fs");
 

@@ -235,6 +235,7 @@
   <a href="#models" data-tab="models"><span class="ic">▤</span>Models<span class="badge" id="tabModels"></span></a>
   <a href="#install" data-tab="install"><span class="ic">⇩</span>Install Models<span class="badge" id="tabInstall"></span></a>
   <a href="#sessions" data-tab="sessions"><span class="ic">💬</span>Sessions<span class="badge"></span></a>
+  <a href="#agents" data-tab="agents"><span class="ic">⧉</span>Agents<span class="badge"></span></a>
   <a href="#tools" data-tab="tools"><span class="ic">🔧</span>Tools<span class="badge" id="tabTools"></span></a>
   <a href="#skills" data-tab="skills"><span class="ic">🧩</span>Skills<span class="badge" id="tabSkills"></span></a>
   <a href="#mcp" data-tab="mcp"><span class="ic">🔌</span>MCP Servers<span class="badge" id="tabMcp"></span></a>
@@ -396,6 +397,19 @@
     </div>
   </section>
 
+  <section data-tab="agents">
+    <h2>Agents</h2>
+    <div class="lead">Sub-agents take a separate piece of work from a reply and do it in the background, in their own session with their own context, then report back. They use the session's loadout, effort, thinking, approval mode and tools, but can't ask you questions or start sub-agents of their own. The model gets them through the Agents tool group (＋ menu in a session).</div>
+    <div class="srv">
+      <div class="field"><label for="agMax">Max active</label><input type="text" id="agMax" inputmode="numeric" style="max-width:70px"><span class="muted">sub-agents at a time, per reply</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">A request beyond this is refused, so the model waits for a report first. Also capped at the engine's parallel slots minus one. With one GPU, sub-agents running side by side share its speed; while the main reply waits, a single sub-agent runs at full speed.</div>
+      <div class="field"><label for="agWords">Report length</label><input type="text" id="agWords" inputmode="numeric" style="max-width:70px"><span class="muted">words at most</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">The sub-agent's final report, which goes back into the main conversation; longer reports are shortened.</div>
+      <div class="field" style="align-items:flex-start"><label for="agInstr">Instructions</label><textarea id="agInstr" rows="4" style="flex:1; min-height:80px" placeholder="optional: extra instructions for every sub-agent"></textarea></div>
+      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="agSave" class="load">Save</button><span class="muted" id="agOut"></span></div>
+    </div>
+  </section>
+
   <section data-tab="tools">
     <h2>Tools</h2>
     <div class="lead">Choose what the model may do. "Ask first" shows an Allow / Deny prompt in the chat before the tool runs.</div>
@@ -550,8 +564,17 @@ async function act(action, id) {
 }
 
 // ---------- tabs ----------
+// ---------- agents ----------
+function showAgents(a) { $("agMax").value = a.maxActive; $("agWords").value = a.reportWords; $("agInstr").value = a.instructions || ""; }
+fetch("/api/config").then((r) => r.json()).then((c) => showAgents(c.agents || {})).catch(() => {});
+$("agSave").onclick = async () => {
+  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agents: { maxActive: $("agMax").value.trim(), reportWords: $("agWords").value.trim(), instructions: $("agInstr").value } }) }).catch(() => null);
+  if (r && r.ok) showAgents((await r.json()).agents);
+  $("agOut").textContent = r && r.ok ? "Saved" : "Error";
+  setTimeout(() => ($("agOut").textContent = ""), 1500);
+};
 function showTab() {
-  const tab = ["engine", "sessions", "loadouts", "models", "install", "tools", "skills", "mcp", "server"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
+  const tab = ["engine", "sessions", "loadouts", "models", "install", "agents", "tools", "skills", "mcp", "server"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
   document.querySelectorAll("[data-tab]").forEach((n) => n.classList.toggle("active", n.dataset.tab === tab));
 }
 window.addEventListener("hashchange", showTab);
