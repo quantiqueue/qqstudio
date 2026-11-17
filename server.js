@@ -40,6 +40,10 @@ const RELOAD_SNIPPET = `<script>(() => {
   const reload = () => { if (window.harnessBusy) window.harnessReloadPending = true; else location.reload(); };
   es.addEventListener("hello", (e) => { if (boot && boot !== e.data) reload(); boot = e.data; });
   es.addEventListener("reload", reload);
+  // Leaving the page closes the stream, so a page kept in the back/forward cache can't hold one of the browser's
+  // few connections to this server; coming back to such a page reloads it.
+  addEventListener("pagehide", () => es.close());
+  addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
 })();</script>`;
 
 if (HOT) {
@@ -234,7 +238,7 @@ async function handleModels(res) {
       status: act && l.engine === act.id ? status.get(l.id) || null : null, vision: !!loadouts.visionOf(l.id) })) });
   }
   try {
-    const r = await fetch(`${llama.url()}/v1/models`);
+    const r = await fetch(`${llama.url()}/v1/models`, { signal: AbortSignal.timeout(3000) });
     const body = await r.json();
     // OpenAI shape: { data: [{ id, ... }] }. Older/other shapes: { models: [...] }.
     const vis = visionMap();
@@ -258,9 +262,9 @@ function statusOf(m) {
 
 async function handleRouterModels(res) {
   try {
-    let r = await fetch(`${llama.url()}/models`);
+    let r = await fetch(`${llama.url()}/models`, { signal: AbortSignal.timeout(3000) }); // a busy engine must not hang the page
     let router = r.ok;
-    if (!r.ok) r = await fetch(`${llama.url()}/v1/models`); // single-model mode
+    if (!r.ok) r = await fetch(`${llama.url()}/v1/models`, { signal: AbortSignal.timeout(3000) }); // single-model mode
     const body = await r.json();
     const list = (body.data || body.models || []).map((m) => {
       const st = statusOf(m);
@@ -288,6 +292,7 @@ async function handleRouterAction(req, res, action) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model: body.model }),
+      signal: AbortSignal.timeout(action === "load" ? 120000 : 30000),
     });
     const text = await r.text();
     console.log(`[models] ${action} ${body.model} -> ${r.status}`);
@@ -534,7 +539,7 @@ async function handleMcp(req, res) {
 
 // ---- General user config (config.json) ----
 const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "" };
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90 }; // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true }; // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
   const t = c.thinking || {};
@@ -548,6 +553,7 @@ async function handleConfig(req, res) {
     try { patch = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
     const cur = DATA.readJson(DATA.config, {});
     if (typeof patch.modelsFolder === "string") cur.modelsFolder = patch.modelsFolder.trim();
+    if (typeof patch.maskSecrets === "boolean") cur.maskSecrets = patch.maskSecrets;
     if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
     if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }
     if (patch.thinking && typeof patch.thinking === "object") {
@@ -638,7 +644,7 @@ function modelFiles(m, all) {
   return { files, size };
 }
 async function engineHas(id) {
-  try { const j = await (await fetch(`${llama.url()}/models`)).json(); const m = (j.data || j.models || []).find((x) => (x.id || x.name) === id); return m ? statusOf(m) : null; } catch { return null; }
+  try { const j = await (await fetch(`${llama.url()}/models`, { signal: AbortSignal.timeout(3000) })).json(); const m = (j.data || j.models || []).find((x) => (x.id || x.name) === id); return m ? statusOf(m) : null; } catch { return null; }
 }
 async function handleLocalModels(req, res) {
   const root = path.resolve(getConfig().modelsFolder);
@@ -665,7 +671,7 @@ async function handleLocalModels(req, res) {
   if (!files.every((f) => insideFolder(root, f))) return sendJson(res, 400, { error: "Refusing to delete files outside the models folder." });
   // Unload first so Windows lets go of the file, then wait for it to leave memory.
   if (["loaded", "loading"].includes(await engineHas(m.name))) {
-    try { await fetch(`${llama.url()}/models/unload`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: m.name }) }); } catch {}
+    try { await fetch(`${llama.url()}/models/unload`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: m.name }), signal: AbortSignal.timeout(15000) }); } catch {}
     for (let i = 0; i < 20 && ["loaded", "loading", "unloading"].includes(await engineHas(m.name)); i++) await new Promise((r) => setTimeout(r, 500));
   }
   const deleted = [];

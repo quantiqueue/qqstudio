@@ -216,13 +216,17 @@
   .srv .checks { display:flex; gap:18px; margin:6px 0 10px 98px; font-size:13px; color:var(--muted); }
   #srvLog { margin:8px 0 0; height:320px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:11.5px/1.45 ui-monospace,Consolas,monospace; color:#b8bdca; white-space:pre-wrap; word-break:break-all; }
   .empty { padding:30px; text-align:center; color:var(--muted); background:var(--panel); }
+  /* top-right: settings cog (sessions page) / return to sessions (settings page) */
+  .hdr-btn { margin-left:auto; display:inline-flex; align-items:center; gap:6px; color:var(--muted); text-decoration:none; padding:5px 8px; border-radius:8px; font-size:14px; transition:background .12s, color .12s; }
+  .hdr-btn:hover { background:#252a35; color:var(--text); }
+  #status { display:none !important; } /* still written to by the page; not shown */
 </style>
 </head>
 <body>
 <header>
   <h1 class="brand"><img src="/icon-64.png" alt="" width="22" height="22">qqstudio</h1>
-  <nav><a href="/">Sessions</a><a href="/settings" class="active">Settings</a></nav>
   <span id="status"></span>
+  <a href="/" class="hdr-btn" title="Back to your sessions">← Return to sessions</a>
 </header>
 <div class="layout">
 <aside class="tabs">
@@ -319,7 +323,13 @@
       <div class="muted" style="margin:-4px 0 10px 108px">Sessions will compact when the context window reaches this maximum. The older part is summarized by the model and replaced by the summary in what it is sent; the full history stays in the session. Leave blank to turn it off.</div>
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="caSave" class="load">Save</button><span class="muted" id="caOut"></span></div>
     </div>
-  </section>
+  
+    <h2 style="margin-top:28px; font-size:15px">Privacy</h2>
+    <div class="srv">
+      <label class="lo-f" style="gap:10px"><input type="checkbox" id="maskSecrets"> <span>Mask secrets in tool results</span></label>
+      <div class="muted" style="margin:6px 0 0 26px">Tokens, API keys, private keys and password-style values that tools return (e.g. from reading a file) are replaced with placeholders like <code>[secret:github-token-1]</code> before they are saved or sent to the model. The model can still pass a placeholder to a tool and the real value is filled in only for that tool. Real values are kept in memory only, until the harness restarts.</div>
+    </div>
+</section>
 
   <section data-tab="loadouts">
     <h2>Loadouts</h2>
@@ -399,6 +409,16 @@
 </div>
 </div>
 <script>
+// Requests from this page give up after a while (reads 8 s, changes 60 s), so a stuck request frees its connection
+// and the next poll can try again. Browsers allow only a few connections per server.
+(() => {
+  const f = window.fetch.bind(window);
+  window.fetch = (u, o = {}) => o.signal ? f(u, o) : f(u, { ...o, signal: AbortSignal.timeout(!o.method || o.method === "GET" ? 8000 : 60000) });
+})();
+
+// Runs fn at most once at a time; calls while it's running share the running call.
+const single = (fn) => { let p = null; return (...a) => p || (p = Promise.resolve().then(() => fn(...a)).finally(() => { p = null; })); };
+
 const $ = (id) => document.getElementById(id);
 let models = [], router = true, busy = new Set(), local = new Map(), delArmed = null, delTimer = null;
 
@@ -592,7 +612,7 @@ lanLoad();
 function showThinking(t) { $("tbLow").value = t.budgets.low; $("tbMed").value = t.budgets.medium; $("tbHigh").value = t.budgets.high; }
 fetch("/api/config").then((r) => r.json()).then((c) => {
   const t = c.thinking || { budgets: {} };
-  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || "";
+  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("maskSecrets").checked = c.maskSecrets !== false;
 }).catch(() => {});
 $("tbSave").onclick = async () => {
   const thinking = { budgets: { low: +$("tbLow").value, medium: +$("tbMed").value, high: +$("tbHigh").value }, message: $("tbMsg").value };
@@ -603,6 +623,7 @@ $("tbSave").onclick = async () => {
   setTimeout(() => ($("tbMsgOut").textContent = ""), 1500);
 };
 
+$("maskSecrets").onchange = () => fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ maskSecrets: $("maskSecrets").checked }) });
 $("caSave").onclick = async () => {
   const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ compactAt: $("compactAt").value.trim() }) });
   const c = await r.json().catch(() => ({}));
@@ -755,6 +776,7 @@ $("mcpExample").onclick = () => {
   $("mcpMsg").textContent = "Example inserted: review, then Save & reconnect.";
 };
 mcpLoad(true);
+mcpLoad = single(mcpLoad);
 setInterval(() => { if (!document.hidden && location.hash === "#mcp") mcpLoad(); }, 3000);
 
 // ---------- loadouts ----------
@@ -1023,7 +1045,8 @@ async function engReleases() {
       const o = sel.appendChild(el("option", null, `${b.label}  (${engSize(b.asset.size + (b.runtime?.size || 0))}${b.runtime ? ", incl. CUDA runtime" : ""})`));
       o.value = b.backend;
     }
-    $("engBuild").textContent = "build " + j.build; $("engBuild").title = "Latest llama.cpp release, " + new Date(j.published).toLocaleDateString();
+    $("engBuild").textContent = "build " + j.build + (j.stale ? " (cached)" : "");
+    $("engBuild").title = j.stale ? j.note : "Latest llama.cpp release, " + new Date(j.published).toLocaleDateString();
     $("engDl").disabled = false; $("engDl").dataset.build = j.build;
   } catch (e) { $("engBackend").innerHTML = "<option>unavailable</option>"; $("engBuild").textContent = "Could not list releases: " + e.message; }
 }
@@ -1045,6 +1068,7 @@ for (const id of ["engAuto", "engRestartOn"]) $(id).onchange = () =>
 $("srvLogBox").addEventListener("toggle", () => { if ($("srvLogBox").open) srvLoadLog(); });
 srvRefresh();
 engReleases();
+srvRefresh = single(srvRefresh);
 setInterval(() => { if (!document.hidden && !engArmed && !engEditing) srvRefresh(); }, 2000);
 
 // ---------- Hugging Face search / install ----------
@@ -1226,6 +1250,7 @@ $("ejectAll").onclick = async () => {
 };
 $("refresh").onclick = refresh;
 refresh();
+refresh = single(refresh);
 setInterval(() => { if (!busy.size && !document.hidden) refresh(); }, 3000);
 </script>
 </body>

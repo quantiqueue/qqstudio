@@ -263,7 +263,14 @@ const allEngines = () => llama.all();
 
 // ---------- what each engine build supports (from its --help) ----------
 const helpCache = new Map(); // engine id -> { exe, mtime, flags: Set | null }
+const helpRunning = new Map(); // engine id -> promise of the --help run in progress (shared, so it never runs twice at once)
 function supported(e) {
+  if (helpRunning.has(e.id)) return helpRunning.get(e.id);
+  const p = supportedNow(e).finally(() => helpRunning.delete(e.id));
+  helpRunning.set(e.id, p);
+  return p;
+}
+function supportedNow(e) {
   return new Promise((resolve) => {
     let mtime = 0;
     try { mtime = fs.statSync(e.exe).mtimeMs; } catch {}
@@ -283,7 +290,8 @@ function supported(e) {
   });
 }
 async function fieldSupport(e) {
-  const flags = await supported(e);
+  const flags = await Promise.race([supported(e), new Promise((r) => setTimeout(() => r(undefined), 3000))]);
+  if (flags === undefined) return null; // still running: show all fields this time
   if (!flags) return null;
   const out = {};
   for (const f of FIELDS) out[f.key] = flags.has(f.key) || (f.aliases || []).some((a) => flags.has(a));

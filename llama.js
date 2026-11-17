@@ -247,11 +247,36 @@ function isInside(dir, p) { const r = path.relative(dir, path.resolve(p)); retur
 // cudart-llama-bin-win-cuda-12.4-x64.zip in the same folder.
 const BACKEND_LABEL = { cpu: "CPU", vulkan: "Vulkan", sycl: "SYCL (Intel)" };
 const labelOf = (b) => BACKEND_LABEL[b] || b.replace(/^cuda-/, "CUDA ").replace(/^rocm-/, "ROCm ").replace(/^hip-/, "HIP ").replace(/^openvino-/, "OpenVINO ");
-let relCache = null;
-async function releases() {
-  if (relCache && Date.now() - relCache.at < 10 * 60 * 1000) return relCache.value;
-  const r = await fetch(RELEASES_API, { headers: { "User-Agent": "qqstudio", Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error(`GitHub answered ${r.status}${r.status === 403 ? " (rate limit; try again in a while)" : ""}`);
+// The release list is cached on disk for an hour (harness restarts don't refetch), only one GitHub request runs at a
+// time, and after a rate-limit answer nothing is sent until GitHub's reset time; the last list is shown meanwhile.
+// Unauthenticated GitHub allows 60 requests an hour; set GITHUB_TOKEN for 5,000.
+const REL_FILE = path.join(ENGINES_DIR, "releases.json"); // {at, value, blockedUntil}
+const REL_TTL = 60 * 60 * 1000;
+let relCache = null, relRunning = null;
+function relLoad() { if (!relCache) { try { relCache = JSON.parse(fs.readFileSync(REL_FILE, "utf8")); } catch { relCache = {}; } } return relCache; }
+function relSave() { try { fs.mkdirSync(ENGINES_DIR, { recursive: true }); fs.writeFileSync(REL_FILE, JSON.stringify(relCache)); } catch {} }
+function releases({ force = false } = {}) {
+  const c = relLoad(), now = Date.now();
+  if (c.blockedUntil > now) { // rate-limited: don't ask again before the reset
+    const when = new Date(c.blockedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (c.value) return Promise.resolve({ ...c.value, stale: true, note: `GitHub rate limit; showing the list from ${new Date(c.at).toLocaleString()} until ${when}` });
+    return Promise.reject(new Error(`GitHub rate limit reached; try again after ${when}`));
+  }
+  if (!force && c.value && now - c.at < REL_TTL) return Promise.resolve(c.value);
+  if (!relRunning) relRunning = releasesNow().finally(() => { relRunning = null; });
+  return relRunning.catch((err) => { if (c.value) return { ...c.value, stale: true, note: err.message }; throw err; });
+}
+async function releasesNow() {
+  const headers = { "User-Agent": "qqstudio", Accept: "application/vnd.github+json" };
+  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  const r = await fetch(RELEASES_API, { headers, signal: AbortSignal.timeout(15000) });
+  if (r.status === 403 || r.status === 429) {
+    const reset = Number(r.headers.get("x-ratelimit-reset")) * 1000, retry = Number(r.headers.get("retry-after")) * 1000;
+    relLoad().blockedUntil = reset > Date.now() ? reset : Date.now() + (retry || REL_TTL);
+    relSave();
+    throw new Error(`GitHub rate limit reached; try again after ${new Date(relCache.blockedUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+  }
+  if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
   const list = await r.json();
   for (const rel of list) {
     const assets = rel.assets || [], backends = [];
@@ -267,6 +292,7 @@ async function releases() {
       const order = (b) => (/^cuda/.test(b) ? 0 : b === "vulkan" ? 1 : b === "cpu" ? 2 : 3);
       backends.sort((a, b) => order(a.backend) - order(b.backend) || a.backend.localeCompare(b.backend));
       relCache = { at: Date.now(), value: { build: rel.tag_name, published: rel.published_at, url: rel.html_url, backends } };
+      relSave();
       return relCache.value;
     }
   }

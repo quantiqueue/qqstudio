@@ -2,6 +2,7 @@
 // keeps going when the user switches chats, opens Settings, reloads or closes the tab. Progress is saved to the
 // chat file as it streams; any number of pages can watch a run through an event stream and stop it.
 const fs = require("fs");
+const secrets = require("./secrets");
 
 const MAX_IMAGES = 4; // most recent images re-sent to a vision model on each step; older ones become a short note
 const SAVE_EVERY_MS = 1500;
@@ -344,9 +345,22 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     run.tool = { tc, status: "running" };
     emit(run, { type: "tool", tc, status: "running" });
     const t0 = Date.now();
-    const out = await runTool(name, args);
+    // Secret masking (Settings > Sessions): placeholders in the arguments get their real values just for the tool.
+    const maskOn = getConfig().maskSecrets !== false;
+    let callArgs = args;
+    if (maskOn) {
+      const u = secrets.unmask(run.id, args);
+      if (u.missing.length) return { status: "error", text: `ERROR: ${u.missing.join(", ")} ${u.missing.length > 1 ? "are" : "is"} no longer available (the harness restarted since it was read). Read it again, then retry.` };
+      callArgs = u.value;
+    }
+    const out = await runTool(name, callArgs);
     console.log(`[tool] ${name} ${JSON.stringify(args).slice(0, 200)} (${Date.now() - t0}ms)`);
     let text = String(out.text), images = out.images || [];
+    if (maskOn) { // secrets in the result are replaced before it is saved or sent to the model
+      const m = secrets.mask(run.id, text);
+      text = m.text;
+      if (m.count) text += `\n(${m.count} secret${m.count > 1 ? "s" : ""} hidden as [secret:…] placeholders. To use one, put the placeholder in a tool argument; it is filled in when the tool runs. Never ask the user for the real value.)`;
+    }
     const failed = text.startsWith("ERROR");
     // MCP tools that write an image (e.g. Aseprite export_frame) only return its path: pick it up so it's shown and seen.
     if (!failed && !images.length && name.includes("__")) images = imagePathsIn(text);
