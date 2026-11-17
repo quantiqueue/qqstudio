@@ -179,6 +179,13 @@
   .uwrap.pending .msg.user { opacity:.7; border:1px dashed #3b4356; }
   .uwrap.pending .acts { display:none; }
   .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; }
+  /* The session's task list (todo tool), above the message box. */
+  .todo-panel { margin-bottom:8px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-size:13px; }
+  .todo-panel .th { display:flex; align-items:center; gap:8px; padding:6px 12px; cursor:pointer; color:var(--muted); user-select:none; }
+  .todo-panel .th:hover { color:var(--text); } .todo-panel .th .car { font-size:10px; width:10px; transition:transform .15s; } .todo-panel.open .th .car { transform:rotate(90deg); }
+  .todo-panel ul { list-style:none; margin:0; padding:0 12px 8px 30px; display:none; } .todo-panel.open ul { display:block; }
+  .todo-panel li { padding:2px 0; display:flex; gap:8px; } .todo-panel li .st { width:14px; flex:none; text-align:center; color:var(--muted); }
+  .todo-panel li.done { color:var(--muted); text-decoration:line-through; } .todo-panel li.in_progress { font-weight:600; } .todo-panel li.in_progress .st { color:var(--accent); }
   /* Under a reply: "330 tokens in 1m 2s" while it runs (pulsing dot), "Generated 1,337 tokens in 3m 40s" when done. */
   .runfoot { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; padding:0 14px; font-variant-numeric:tabular-nums; }
   .runfoot .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; animation:runpulse 1.4s ease-in-out infinite; }
@@ -362,6 +369,7 @@
   <div id="wsView" class="wsview" hidden></div>
   <div class="logwrap"><div id="log"></div><button type="button" id="jump" class="jump" title="Jump to latest" hidden>↓</button></div>
   <form id="form"><div class="inner">
+    <div id="todoPanel" class="todo-panel" hidden></div>
     <div id="attachments" class="attachments" hidden></div>
     <div class="compose">
       <textarea id="input" rows="1" placeholder="Message (Enter to send, Shift+Enter for newline, paste or drop images)"></textarea>
@@ -789,7 +797,7 @@ async function loadTools() {
 // Per-chat Auto | On | Off for skills, MCP servers and built-in tool categories (Settings is the ceiling).
 // Auto: skills are listed by name (load_skill); MCP servers and categories are listed as one line each and the model
 // turns them on with enable_tools. Groups it turned on are kept in chat.loaded ("mcp:<server>", "cat:<category>").
-const CATS = ["File Access", "Web", "Images", "System", "Questions"];
+const CATS = ["File Access", "Web", "Images", "System", "Questions", "Tasks"];
 const modeOf = (v) => (v === false || v === "off" ? "off" : v === true || v === "on" || v === "pinned" ? "on" : "auto"); // old chats: false / "pinned"
 const skillMode = (name) => modeOf((chat.skills || {})[name]);
 const mcpMode = (server) => modeOf((chat.mcp || {})[server]);
@@ -825,11 +833,12 @@ function deferredGroups() {
     out.push({ key: "mcp:" + sv.name, name: sv.name, desc, tools, note: `Tool names start with "${sv.name}__".` });
   }
   const CAT_DESC = {
-    "File Access": `list, read, search, write, move and delete files in ${visibleRoots().join(", ")}`,
-    Web: "search the web, read web pages and download files",
+    "File Access": `list, read (also PDF and Office documents), search, write, edit, move and delete files in ${visibleRoots().join(", ")}`,
+    Web: "search the web, read web pages, download files and call web APIs",
     Images: "search for images and show images to the user",
-    System: `run ${win ? "cmd.exe" : "shell"} commands`,
+    System: `run ${win ? "cmd.exe" : "shell"} commands and scripts (Python, PowerShell, Node), including long-running ones in the background`,
     Questions: "ask the user multiple-choice questions before a big task that leaves real choices open",
+    Tasks: "keep a task list the user can see, for work with several steps",
   };
   for (const cat of CATS) {
     if (catMode(cat) !== "auto") continue;
@@ -852,7 +861,7 @@ function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGro
   const on = new Set(specs.map((t) => t.name));
   const has = (...n) => n.some((x) => on.has(x));
   const lines = [`You are a helpful assistant running on the user's ${win ? "Windows" : toolInfo.platform} computer.`];
-  const fileOps = [["list_dir", "list folders"], ["read_file", "read files"], ["search_files", "search for files"], ["write_file", "write files"],
+  const fileOps = [["list_dir", "list folders"], ["read_file", "read files and documents (PDF, Word, Excel, PowerPoint)"], ["search_files", "find files by name"], ["search_text", "search inside files"], ["write_file", "write files"], ["edit_file", "edit files"],
     ["move_file", "move or rename files"], ["delete_file", "delete files"]].filter(([n]) => on.has(n)).map(([, d]) => d);
   if (fileOps.length) {
     lines.push(`You have tools to ${fileOps.join(", ")} in these folders: ${visibleRoots().join(", ")}.`);
@@ -868,6 +877,10 @@ function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGro
     lines.push(`To show the user pictures, use ${im.join(" or ")}.`);
   }
   if (on.has("ask_user")) lines.push("Before a big task that leaves real choices open, ask the user with ask_user (once, all questions together); for anything else, just proceed.");
+  if (on.has("edit_file")) lines.push("To change part of a file, use edit_file rather than rewriting the whole file.");
+  if (on.has("run_script")) lines.push("For anything that needs code (calculations, data, images, converting files), write it as a script with run_script instead of quoting it into run_command.");
+  if (on.has("run_background")) lines.push("Start long-running commands (dev servers, builds) with run_background, then check them with check_background.");
+  if (on.has("todo")) lines.push("For work with several steps, keep a task list with todo and update it as you go.");
   if (on.has("run_command")) lines.push(`You can run ${win ? "cmd.exe" : "shell"} commands with run_command; use it when no specific tool fits.`);
   const servers = [...new Set(specs.filter((t) => t.server).map((t) => t.server))];
   if (servers.length) lines.push(`You also have tools from connected services: ${servers.join(", ")} (tool names start with the service name).`);
@@ -1380,7 +1393,28 @@ function userBubble(msg) {
 }
 
 // live = true while a run is going: tool calls still waiting for a result get a card the run events will fill in.
+// ---------- task list (todo tool): shown above the message box, open while steps are left ----------
+let todoOpen = null; // the user's own open/closed choice for this page (null: open while not all done)
+function renderTodo() {
+  const box = $("todoPanel"), items = Array.isArray(chat.todo) ? chat.todo : [];
+  box.hidden = !items.length;
+  if (!items.length) return;
+  const done = items.filter((x) => x.status === "done").length, all = done === items.length;
+  box.innerHTML = "";
+  box.classList.toggle("open", todoOpen ?? !all);
+  const th = box.appendChild(el("div", "th"));
+  th.appendChild(el("span", "car", "▸"));
+  th.appendChild(el("span", null, all ? `Tasks · all ${items.length} done` : `Tasks · ${done} of ${items.length} done` + ((c) => (c ? ` · ${c.text}` : ""))(items.find((x) => x.status === "in_progress"))));
+  th.onclick = () => { todoOpen = !box.classList.contains("open"); renderTodo(); };
+  const ul = box.appendChild(el("ul"));
+  for (const it of items) {
+    const li = ul.appendChild(el("li", it.status));
+    li.appendChild(el("span", "st", it.status === "done" ? "✓" : it.status === "in_progress" ? "◐" : "○"));
+    li.appendChild(el("span", null, it.text));
+  }
+}
 function renderChat(live = false) {
+  todoOpen = null; renderTodo();
   footStop(); pendingQuestion = null; qCards.clear();
   if (fold) clearInterval(fold.timer);
   fold = null;
@@ -1869,6 +1903,7 @@ function onRunEvent(ev, id) {
     case "failed": { const b = live?.box || liveStep(); b.error(ev.text); promote(b.node); if (live) live.box = null; break; }
     case "tool": liveTool(ev.tc, ev.status); break;
     case "question": liveQuestion(ev); break;
+    case "todo": chat.todo = ev.items; renderTodo(); break;
     case "answered": answeredQuestion(ev.id, ev.answers); break;
     case "tool_result": {
       const m = ev.msg;

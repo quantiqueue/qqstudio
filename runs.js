@@ -451,6 +451,19 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return { status: "done", text: answerText(q.value, answers), answers: { questions: q.value, ...answers } };
   }
 
+  // The session's task list: saved with the session and shown above the message box.
+  async function todoTool(run, args) {
+    const STATUS = { pending: "pending", in_progress: "in_progress", done: "done", completed: "done", complete: "done", todo: "pending", doing: "in_progress" };
+    const items = (Array.isArray(args.items) ? args.items : Array.isArray(args.todos) ? args.todos : []).slice(0, 30)
+      .map((x) => (typeof x === "string" ? { text: x, status: "pending" } : { text: String(x?.text ?? x?.content ?? x?.task ?? "").trim().slice(0, 200), status: STATUS[String(x?.status || "").toLowerCase()] || "pending" }))
+      .filter((x) => x.text);
+    if (!items.length) return { status: "bad arguments", text: "ERROR: todo needs items: [{text, status}] with status pending, in_progress or done." };
+    emit(run, { type: "todo", items });
+    await save(run, null, { todo: items });
+    const done = items.filter((x) => x.status === "done").length, cur = items.find((x) => x.status === "in_progress");
+    return { status: "done", text: `Task list saved: ${done} of ${items.length} done${cur ? `; in progress: ${cur.text}` : ""}.` };
+  }
+
   async function callTool(run, tc) {
     let name = tc.function.name;
     let args;
@@ -469,6 +482,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     } else if (!run.allowed.has(name)) return { status: "error", text: `ERROR: the tool "${name}" is not available in this chat.` };
     if (!isEnabled(name)) return { status: "error", text: `ERROR: the tool "${name}" is disabled in Settings > Tools.` };
     if (name === "ask_user") return askUser(run, tc, args);
+    if (name === "todo") return todoTool(run, args);
     const spec = toolList().find((t) => t.name === name);
     if (spec && spec.approval) {
       let mode = "manual";

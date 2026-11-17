@@ -154,4 +154,33 @@ async function download_file({ url, path: dest }, resolveSafe) {
   return `Downloaded ${(bytes / 1048576).toFixed(2)} MB from ${r.url}\nSaved to ${target}\nContent-Type: ${r.headers.get("content-type") || "unknown"}`;
 }
 
-module.exports = { web_search, image_search, fetch_url, download_file, htmlToText };
+// http_request: any method, headers and body; returns the status, the main headers and the body (JSON pretty-printed).
+const MAX_BODY = 5 * 1024 * 1024, BODY_CHARS = 20000;
+async function http_request({ url, method = "GET", headers = {}, json, body, timeout = 30 }) {
+  const u = checkUrl(url), m = String(method || "GET").toUpperCase();
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(m)) throw new Error(`unsupported method ${m}`);
+  const h = { "User-Agent": UA, Accept: "application/json, text/plain, */*", ...(headers && typeof headers === "object" ? headers : {}) };
+  const hasType = Object.keys(h).some((k) => k.toLowerCase() === "content-type");
+  let data;
+  if (json !== undefined) { data = typeof json === "string" ? json : JSON.stringify(json); if (!hasType) h["Content-Type"] = "application/json"; }
+  else if (body !== undefined) { data = typeof body === "string" ? body : JSON.stringify(body); if (!hasType && typeof body !== "string") h["Content-Type"] = "application/json"; }
+  const ms = Math.min(Math.max(Number(timeout) || 30, 1), 120) * 1000;
+  const r = await fetch(u, { method: m, headers: h, body: m === "GET" || m === "HEAD" ? undefined : data, redirect: "follow", signal: AbortSignal.timeout(ms) });
+  const keep = ["content-type", "content-length", "location", "retry-after", "x-ratelimit-remaining", "x-ratelimit-reset", "www-authenticate"];
+  const hdrs = keep.map((k) => (r.headers.get(k) ? `${k}: ${r.headers.get(k)}` : "")).filter(Boolean).join("\n");
+  let text = "";
+  if (m !== "HEAD") {
+    const buf = Buffer.from(await r.arrayBuffer()).subarray(0, MAX_BODY);
+    const ct = r.headers.get("content-type") || "";
+    const textual = /json|text|xml|javascript|html|form|yaml|csv/i.test(ct) || (!ct && !buf.subarray(0, 4000).includes(0));
+    if (!textual) text = `(binary body: ${buf.length} bytes of ${ct || "unknown type"}; use download_file to save it)`;
+    else {
+      text = buf.toString("utf8");
+      if (/json/i.test(ct)) { try { text = JSON.stringify(JSON.parse(text), null, 2); } catch {} }
+      if (text.length > BODY_CHARS) text = text.slice(0, BODY_CHARS) + `\n...[truncated, ${text.length - BODY_CHARS} more chars]`;
+    }
+  }
+  return `HTTP ${r.status} ${r.statusText}${r.redirected ? ` (redirected to ${r.url})` : ""}${hdrs ? "\n" + hdrs : ""}\n\n${text || "(empty body)"}`;
+}
+
+module.exports = { web_search, image_search, fetch_url, download_file, htmlToText, http_request };

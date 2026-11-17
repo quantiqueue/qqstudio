@@ -604,7 +604,7 @@ async function handleChats(req, res) {
       c.id = id;
       const placed = ws.placeSession(id, c.workspace); // a new session goes into the workspace it names (else Default)
       c.workspace = ws.workspaceOf(id);
-      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; return c; }); // keep groups the model turned on, tools given full details
+      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; if (!Array.isArray(c.todo) && Array.isArray(disk?.todo)) c.todo = disk.todo; return c; }); // keep groups the model turned on, tools given full details
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "PATCH") {

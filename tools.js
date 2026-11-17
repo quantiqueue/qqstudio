@@ -3,7 +3,10 @@
 const fs = require("fs/promises");
 const path = require("path");
 const { exec, execFile } = require("child_process");
+const os = require("os");
 const web = require("./web");
+const docs = require("./docs");
+const background = require("./background");
 
 const ROOTS = (process.env.ALLOWED_ROOTS || "C:\\claude-tools")
   .split(";").map((r) => r.trim()).filter(Boolean).map((r) => path.resolve(r));
@@ -66,9 +69,14 @@ const impl = {
 
   async read_file({ path: p, offset = 1, limit = 400 }) {
     const file = resolveSafe(p);
-    const buf = await fs.readFile(file);
-    if (buf.subarray(0, 8000).includes(0)) return `${file} looks like a binary file (${fmtSize(buf.length)}); not shown.`;
-    const lines = buf.toString("utf8").split(/\r?\n/);
+    let text;
+    if (docs.DOC_EXT.test(file)) text = await docs.extract(file); // PDF, Word, Excel, PowerPoint, OpenDocument: their text
+    else {
+      const buf = await fs.readFile(file);
+      if (buf.subarray(0, 8000).includes(0)) return `${file} looks like a binary file (${fmtSize(buf.length)}); not shown.`;
+      text = buf.toString("utf8");
+    }
+    const lines = text.split(/\r?\n/);
     const start = Math.max(1, Number(offset) || 1);
     const end = Math.min(lines.length, start + (Number(limit) || 400) - 1);
     const body = lines.slice(start - 1, end).map((l, i) => `${String(start + i).padStart(5)}  ${l}`).join("\n");
@@ -99,6 +107,67 @@ const impl = {
     }
     await walk(root, 0);
     return results.length ? results.join("\n") + (results.length >= 200 ? "\n...(limit 200 reached)" : "") : "No matches.";
+  },
+
+  // Replaces exact text in a file (the file's own line endings are kept). It fails loudly when the text isn't there
+  // exactly once, so a small model can't silently garble a file the way a full rewrite can.
+  async edit_file({ path: p, old_text, new_text, replace_all = false }) {
+    const file = resolveSafe(p);
+    if (typeof old_text !== "string" || !old_text) throw new Error("old_text (the exact text to replace) is required");
+    if (typeof new_text !== "string") throw new Error('new_text is required (use "" to delete old_text)');
+    const raw = await fs.readFile(file, "utf8");
+    const crlf = raw.includes("\r\n"), eol = (s) => (crlf ? s.replace(/\r?\n/g, "\r\n") : s.replace(/\r\n/g, "\n"));
+    const find = eol(old_text), repl = eol(new_text);
+    const count = raw.split(find).length - 1;
+    if (!count) {
+      const first = old_text.split(/\r?\n/).find((l) => l.trim());
+      const near = raw.split(/\r?\n/).map((l, i) => (first && l.trim() === first.trim() ? i + 1 : 0)).filter(Boolean).slice(0, 5);
+      throw new Error(`old_text was not found in ${file}. It must match exactly, including spaces, indentation and line breaks.` +
+        (near.length ? ` A line like its first line is at line ${near.join(", ")}: read the file there and copy the text exactly.` : " Read the file again and copy the text exactly."));
+    }
+    if (count > 1 && !replace_all) throw new Error(`old_text appears ${count} times in ${file}. Include more surrounding lines so it is unique, or set replace_all to true.`);
+    const at = raw.indexOf(find), out = replace_all ? raw.split(find).join(repl) : raw.slice(0, at) + repl + raw.slice(at + find.length);
+    await fs.writeFile(file, out, "utf8");
+    const line = raw.slice(0, at).split("\n").length, lines = out.split(/\r?\n/);
+    const from = Math.max(1, line - 2), to = Math.min(lines.length, line + repl.split("\n").length + 1);
+    return `Edited ${file}: replaced ${replace_all && count > 1 ? count + " occurrences" : "1 occurrence"} at line ${line}.\n` +
+      lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(5)}  ${l}`).join("\n");
+  },
+
+  // Finds text (or a regular expression) inside files: path:line: text.
+  async search_text({ path: p, pattern, regex = false, case_sensitive = false, glob, max_results = 100 }) {
+    const root = resolveSafe(p);
+    if (!pattern) throw new Error("pattern is required");
+    let rx;
+    try { rx = new RegExp(regex ? pattern : pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), case_sensitive ? "" : "i"); }
+    catch (e) { throw new Error(`invalid regular expression: ${e.message}`); }
+    const nameRx = glob ? new RegExp("^" + glob.split("").map((c) => (c === "*" ? ".*" : c === "?" ? "." : c.replace(/[.+^${}()|[\]\\]/g, "\\$&"))).join("") + "$", "i") : null;
+    const max = Math.min(Number(max_results) || 100, 500), hits = [];
+    let files = 0, skipped = 0;
+    async function scan(file) {
+      if (docs.DOC_EXT.test(file) || IMAGE_EXT.test(file)) return;
+      let st; try { st = await fs.stat(file); } catch { return; }
+      if (st.size > 2 * 1024 * 1024) { skipped++; return; }
+      let buf; try { buf = await fs.readFile(file); } catch { return; }
+      if (buf.subarray(0, 8000).includes(0)) return; // binary
+      files++;
+      const lines = buf.toString("utf8").split(/\r?\n/);
+      for (let i = 0; i < lines.length && hits.length < max; i++)
+        if (rx.test(lines[i])) hits.push(`${file}:${i + 1}: ${lines[i].trim().slice(0, 300)}`);
+    }
+    async function walk(dir, depth) {
+      if (depth > 12 || hits.length >= max) return;
+      let entries; try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (hits.length >= max) return;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) await walk(full, depth + 1); }
+        else if (!nameRx || nameRx.test(e.name)) await scan(full);
+      }
+    }
+    if ((await fs.stat(root)).isFile()) await scan(root); else await walk(root, 0);
+    const note = (hits.length >= max ? `\n...(limit of ${max} matches reached; narrow the search)` : "") + (skipped ? `\n(${skipped} file${skipped > 1 ? "s" : ""} over 2 MB skipped)` : "");
+    return hits.length ? clip(hits.join("\n") + note) : `No matches in ${files} file${files === 1 ? "" : "s"}.${note}`;
   },
 
   async write_file({ path: p, content }) {
@@ -169,6 +238,48 @@ const impl = {
       });
     });
   },
+
+  // Runs a script given as text: saved to a temp file and run with its interpreter, so there's no shell quoting.
+  async run_script({ language = "python", code, cwd, timeout = 120 }) {
+    if (typeof code !== "string" || !code.trim()) throw new Error("code is required");
+    const win = process.platform === "win32", lang = String(language).toLowerCase();
+    const kinds = {
+      python: { ext: "py", run: (f) => (win ? [["py", ["-3", f]], ["python", [f]]] : [["python3", [f]], ["python", [f]]]) },
+      powershell: { ext: "ps1", run: (f) => [[win ? "powershell.exe" : "pwsh", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", f]]] },
+      node: { ext: "js", run: (f) => [[process.execPath, [f]]] },
+      ...(win ? { cmd: { ext: "bat", run: (f) => [["cmd.exe", ["/d", "/c", f]]] } } : { bash: { ext: "sh", run: (f) => [["bash", [f]]] } }),
+    };
+    const k = kinds[lang === "javascript" || lang === "js" ? "node" : lang === "ps" || lang === "pwsh" ? "powershell" : lang === "py" ? "python" : lang === "batch" ? "cmd" : lang === "sh" ? "bash" : lang];
+    if (!k) throw new Error(`language must be one of: ${Object.keys(kinds).join(", ")}`);
+    const dir = path.join(os.tmpdir(), "qqstudio-scripts");
+    await fs.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `script-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${k.ext}`);
+    await fs.writeFile(file, k.ext === "ps1" ? "\ufeff" + code : code, "utf8"); // BOM: Windows PowerShell reads the file as UTF-8
+    const ms = Math.min(Math.max(Number(timeout) || 120, 1), 600) * 1000;
+    const workDir = cwd ? resolveSafe(cwd) : ROOTS[0];
+    const env = { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
+    try {
+      for (const [cmd, args] of k.run(file)) {
+        const r = await new Promise((resolve) => execFile(cmd, args, { cwd: workDir, timeout: ms, maxBuffer: 10 * 1024 * 1024, windowsHide: true, env },
+          (err, stdout, stderr) => resolve({ err, stdout, stderr })));
+        if (r.err && r.err.code === "ENOENT") continue; // interpreter not installed under this name: try the next
+        const codeOut = r.err ? (r.err.killed ? `killed (timeout ${ms / 1000}s)` : r.err.code) : 0;
+        return clip(`exit code: ${codeOut}\n--- stdout ---\n${r.stdout || "(none)"}\n--- stderr ---\n${r.stderr || "(none)"}`);
+      }
+      return `ERROR: no ${lang} interpreter found on this computer.`;
+    } finally { fs.unlink(file).catch(() => {}); }
+  },
+
+  async run_background({ command, cwd }) {
+    if (!command) throw new Error("command is required");
+    const p = background.start(command, cwd ? resolveSafe(cwd) : ROOTS[0]);
+    await new Promise((r) => setTimeout(r, 1500)); // early output (or an immediate failure) comes back with the start
+    return `Started ${p.id} in the background.\n` + background.check(p.id) + `\n\nCheck it later with check_background {"id": "${p.id}"}; stop it with stop_background.`;
+  },
+  check_background({ id, tail }) { return id ? background.check(id, tail) : background.list(); },
+  stop_background({ id }) { if (!id) throw new Error("id is required"); return background.stop(id); },
+
+  http_request: (a) => web.http_request(a),
 };
 
 const schemas = [
@@ -179,7 +290,7 @@ const schemas = [
     description: "List the files and subfolders in a folder on the user's computer.",
     parameters: { type: "object", properties: { path: { type: "string", description: "Absolute folder path, e.g. C:\\claude-tools" } }, required: ["path"] } },
   { name: "read_file", approval: false,
-    description: "Read a text file. Returns numbered lines. Use offset/limit for long files.",
+    description: "Read a text file, or the text of a document (PDF, Word .docx, Excel .xlsx, PowerPoint .pptx, OpenDocument). Returns numbered lines. Use offset/limit for long files.",
     parameters: { type: "object", properties: {
       path: { type: "string", description: "Absolute file path" },
       offset: { type: "integer", description: "First line to read (1-based). Default 1." },
@@ -189,6 +300,22 @@ const schemas = [
     parameters: { type: "object", properties: {
       path: { type: "string", description: "Folder to search in" },
       pattern: { type: "string", description: "Name substring or wildcard, e.g. report or *.py" } }, required: ["path", "pattern"] } },
+  { name: "edit_file", approval: true,
+    description: "Change part of a text file: replaces old_text with new_text. old_text must match the file exactly (spaces, indentation, line breaks) and appear once; include a few surrounding lines to make it unique. Use this instead of rewriting a whole file with write_file. The user must approve.",
+    parameters: { type: "object", properties: {
+      path: { type: "string", description: "Absolute file path" },
+      old_text: { type: "string", description: "The exact text to replace, copied from the file" },
+      new_text: { type: "string", description: "The text to put in its place (\"\" deletes old_text)" },
+      replace_all: { type: "boolean", description: "Replace every occurrence instead of exactly one (default false)" } }, required: ["path", "old_text", "new_text"] } },
+  { name: "search_text", approval: false,
+    description: "Search inside files for text or a regular expression. Returns path:line: matching line. path can be a folder (searched recursively) or one file.",
+    parameters: { type: "object", properties: {
+      path: { type: "string", description: "Absolute folder or file path" },
+      pattern: { type: "string", description: "Text to find (or a regular expression when regex is true)" },
+      regex: { type: "boolean", description: "Treat pattern as a regular expression (default false)" },
+      case_sensitive: { type: "boolean", description: "Match letter case (default false)" },
+      glob: { type: "string", description: "Only files whose name matches, e.g. *.js" },
+      max_results: { type: "integer", description: "Most matches to return (default 100, max 500)" } }, required: ["path", "pattern"] } },
   { name: "write_file", approval: true,
     description: "Create or overwrite a text file with the given content. The user must approve.",
     parameters: { type: "object", properties: {
@@ -227,6 +354,22 @@ const schemas = [
     parameters: { type: "object", properties: {
       url: { type: "string", description: "Full http(s) URL of the file" },
       path: { type: "string", description: "Destination file path or folder" } }, required: ["url", "path"] } },
+  { name: "http_request", approval: true,
+    description: "Call a web API: send an HTTP request and get the status, main headers and body (JSON is pretty-printed). For reading web pages use fetch_url; for saving files use download_file. The user must approve.",
+    parameters: { type: "object", properties: {
+      url: { type: "string", description: "Full http(s) URL" },
+      method: { type: "string", description: "GET (default), POST, PUT, PATCH, DELETE or HEAD" },
+      headers: { type: "object", description: "Request headers, e.g. {\"Authorization\": \"Bearer …\"}" },
+      json: { description: "A JSON body (sent with Content-Type: application/json)" },
+      body: { type: "string", description: "A raw text body, when not sending json" },
+      timeout: { type: "integer", description: "Seconds to wait (default 30, max 120)" } }, required: ["url"] } },
+  // Handled by runs.js (the session's task list is shown above the message box); listed here for settings and a category.
+  { name: "todo", approval: false,
+    description: "Keep a short task list for a task with several steps; the user sees it. Send the whole list each time, each item with status pending, in_progress (one at a time) or done. Create it when a task has 3 or more steps and update it as you finish each one. Don't use it for small tasks.",
+    parameters: { type: "object", properties: {
+      items: { type: "array", description: "The whole list, in order", items: { type: "object", properties: {
+        text: { type: "string", description: "The step, a few words" },
+        status: { type: "string", enum: ["pending", "in_progress", "done"] } }, required: ["text", "status"] } } }, required: ["items"] } },
   // Handled by runs.js (the reply waits for the answers); listed here so it has settings and a category.
   { name: "ask_user", approval: false,
     description: "Ask the user 1-4 multiple-choice questions and wait for the answers. Use it only for a big task where the request leaves real choices open and a wrong guess would be costly to redo: ask everything at once, before you start. Don't ask about things you can find out with your other tools, and don't use it for small tasks. Put the option you recommend first and mark it recommended. The user can also answer in their own words.",
@@ -240,6 +383,26 @@ const schemas = [
           recommended: { type: "boolean", description: "true for the option you recommend (at most one)" } }, required: ["label"] } },
         multiple: { type: "boolean", description: "true if the user may pick several options" } }, required: ["question", "options"] } } },
       required: ["questions"] } },
+  { name: "run_script", approval: true,
+    description: "Run a script given as text, saved to a temp file and run with its interpreter (no shell quoting to worry about). Use it for anything that needs code: calculations, data, images, file conversions. Returns the exit code, stdout and stderr. The user must approve.",
+    parameters: { type: "object", properties: {
+      language: { type: "string", enum: process.platform === "win32" ? ["python", "powershell", "node", "cmd"] : ["python", "powershell", "node", "bash"], description: "Default python" },
+      code: { type: "string", description: "The whole script" },
+      cwd: { type: "string", description: "Working folder (optional)" },
+      timeout: { type: "integer", description: "Seconds before it is stopped (default 120, max 600)" } }, required: ["code"] } },
+  { name: "run_background", approval: true,
+    description: "Start a long-running command in the background (a build, a dev server, a big download) and return right away with an id and its first output. Use check_background to see new output and stop_background to stop it. The user must approve.",
+    parameters: { type: "object", properties: {
+      command: { type: "string", description: "The command line to run" },
+      cwd: { type: "string", description: "Working folder (optional)" } }, required: ["command"] } },
+  { name: "check_background", approval: false,
+    description: "Show what a background command printed since you last checked, and whether it is still running. Without an id, lists the background commands.",
+    parameters: { type: "object", properties: {
+      id: { type: "string", description: "The id run_background returned, e.g. bg1" },
+      tail: { type: "integer", description: "Instead of new output, the last N characters of output" } } } },
+  { name: "stop_background", approval: false,
+    description: "Stop a background command (and anything it started).",
+    parameters: { type: "object", properties: { id: { type: "string", description: "The id run_background returned" } }, required: ["id"] } },
   { name: "run_command", approval: true,
     description: "Run a shell command (cmd.exe on Windows) and return its output. 60s timeout. The user must approve.",
     parameters: { type: "object", properties: {
@@ -274,9 +437,17 @@ const META = {
   image_search: ["Images", "Image search"],
   show_image: ["Images", "Show images"],
   run_command: ["System", "Run commands"],
+  run_script: ["System", "Run scripts"],
+  run_background: ["System", "Start background commands"],
+  check_background: ["System", "Check background commands"],
+  stop_background: ["System", "Stop background commands"],
+  edit_file: ["File Access", "Edit files"],
+  search_text: ["File Access", "Search inside files"],
+  http_request: ["Web", "Call web APIs"],
   ask_user: ["Questions", "Ask questions"],
+  todo: ["Tasks", "Task list"],
 };
-const CATEGORIES = ["File Access", "Web", "Images", "System", "Questions", "Skills"];
+const CATEGORIES = ["File Access", "Web", "Images", "System", "Questions", "Tasks", "Skills"];
 const CFG_FILE = require("./paths").tools;
 const fsSync = require("fs");
 
