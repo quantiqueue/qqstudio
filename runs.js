@@ -191,7 +191,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
 
   async function step(run) {
     const { model } = run;
-    const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null };
+    const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
     let think0 = null, think1 = null, timings = null, failed = false, gotChunk = false, lastSave = Date.now();
     let looped = false, finish = null, checkedAt = 0, usage = null, ppTotal = 0;
@@ -255,16 +255,23 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const d = j.choices && j.choices[0] && j.choices[0].delta;
           if (!d) continue;
           const ev = { type: "delta" };
+          if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
+            const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
+            g.total = timings?.predicted_n > g.total ? timings.predicted_n : g.total + 1;
+            if (d.reasoning_content && !d.content && !d.tool_calls) g.thinking = true;
+            else if (g.thinking) { g.thinking = false; g.base = g.total - 1; g.t0 = Date.now(); } // count and time the reply from where thinking ended
+            g.n = g.total - g.base;
+          }
           if (d.reasoning_content) {
             if (think0 === null) think0 = Date.now();
             cur.reasoning += d.reasoning_content; ev.r = d.reasoning_content;
             if (!cur.content) phase("Thinking");
           }
+          if ((d.content || d.tool_calls) && think0 !== null && think1 === null) think1 = Date.now(); // a tool call also ends thinking
           if (d.content) {
-            if (think0 !== null && think1 === null) think1 = Date.now();
             cur.content += d.content; ev.c = d.content; cur.phase = null;
           }
-          if (ev.r || ev.c) emit(run, ev);
+          if (ev.r || ev.c) { ev.n = cur.gen.n; cur.gen.sent = Date.now(); emit(run, ev); }
           const total = cur.content.length + cur.reasoning.length;
           if (total - checkedAt >= 300) {
             checkedAt = total;
@@ -277,6 +284,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
             if (tc.function?.name) calls[i].function.name += tc.function.name;
             if (tc.function?.arguments) calls[i].function.arguments += tc.function.arguments;
             phase("Preparing tool call" + (calls[i].function.name ? ` · ${calls[i].function.name}` : ""));
+            cur.gen.tool = calls[i].function.name || cur.gen.tool;
+          }
+          if (d.tool_calls && (!cur.gen.toolSent || Date.now() - cur.gen.sent >= 250)) { // tool-call arguments stream silently otherwise
+            cur.gen.sent = Date.now(); cur.gen.toolSent = true;
+            emit(run, { type: "delta", n: cur.gen.n, tool: cur.gen.tool || "" });
           }
           if (Date.now() - lastSave > SAVE_EVERY_MS && (cur.content || cur.reasoning)) {
             lastSave = Date.now();
@@ -296,9 +308,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       run.abort = null;
     }
     const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
-    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    // Reply only: time from its first token (after thinking) and its own token count. Thinking has its own "Thought for" line.
+    const g = cur.gen, replied = g && !g.thinking;
+    if (g && timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.n = g.total - g.base; }
+    const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
     const meta = `${model} · ${secs}s` +
-      (timings?.predicted_per_second ? ` · ${timings.predicted_n} tok @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") +
+      (replied ? ` · ${g.n} tok` + (timings?.predicted_per_second ? ` @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") : "") +
       (run.stopped ? " · stopped" : looped ? " · stopped: repeating" : finish === "length" ? " · cut off (length limit)" : "");
     const thinkSecs = think0 === null ? null : +(((think1 ?? Date.now()) - think0) / 1000).toFixed(1);
     const tb = run.think.budget, note = (run.think.message || "").trim();
@@ -498,7 +513,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const run = runs.get(id);
     if (!run) { res.writeHead(204); return res.end(); } // 204 tells EventSource not to reconnect
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur: run.cur, tool: run.tool, pending: run.pending })}\n\n`);
+    const cur = run.cur && { ...run.cur, gen: run.cur.gen && { n: run.cur.gen.n, ms: Date.now() - run.cur.gen.t0, tool: run.cur.gen.tool } };
+    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending })}\n\n`);
     run.clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
     req.on("close", () => { clearInterval(ping); run.clients.delete(res); });

@@ -161,7 +161,7 @@
   .thoughts .think { margin:8px 0 0; }
   #log > .thoughts + .msg.assistant { margin-top:8px; }
   /* a reply box with nothing in it yet (only thinking so far) stays hidden */
-  .msg.assistant:not(:has(.phase)):not(:has(.meta)):has(> .md:empty):not(.error) { display:none; }
+  .msg.assistant:not(:has(.phase)):not(:has(.meta)):not(:has(.activity)):has(> .md:empty):not(.error) { display:none; }
   details.compacted > summary { list-style:none; display:flex; align-items:center; gap:10px; color:var(--muted); font-size:12px; cursor:pointer; }
   details.compacted > summary::-webkit-details-marker { display:none; }
   details.compacted > summary .line { flex:1; height:1px; background:var(--line); }
@@ -194,6 +194,9 @@
   .phase + * { margin-top:6px; }
   .phase .spin { width:12px; height:12px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; flex:none; }
   summary.think-sum .spin { display:inline-block; vertical-align:-2px; width:10px; height:10px; margin-right:7px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  .activity { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; margin-top:8px; font-variant-numeric:tabular-nums; }
+  .activity .spin { width:10px; height:10px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; flex:none; }
+  .md:empty + .activity { margin-top:0; }
   .phase .bar { width:120px; height:4px; background:var(--bg); border-radius:2px; overflow:hidden; }
   .phase .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
   @keyframes spin { to { transform:rotate(360deg); } }
@@ -929,6 +932,13 @@ function assistantBox() {
   const contentEl = box.appendChild(el("div", "md"));
   let mdRaf = 0, mdText = "";
   let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false, thinkTimer = null, phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
+  let actEl = null, actN = 0, actTool = "", actT0 = 0, actTimer = null; // "Generating N tokens for Ns" while tokens stream
+  const fmtSecs = (s) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
+  const drawAct = () => {
+    if (!actEl) return;
+    const secs = Math.floor((performance.now() - actT0) / 1000);
+    actEl.lastChild.textContent = `Generating ${actN.toLocaleString()} token${actN === 1 ? "" : "s"} for ${fmtSecs(secs)}` + (actTool ? ` · ${actTool}` : "");
+  };
   const drawPhase = () => {
     if (!phaseEl) return;
     const secs = Math.floor((performance.now() - phaseT0) / 1000);
@@ -964,6 +974,20 @@ function assistantBox() {
       phasePct = pct;
       drawPhase();
     },
+    // Live activity line at the bottom of the reply; hidden while the "Thinking…" line is the status.
+    activity(n, tool = "", ms = null) {
+      actN = n ?? actN; if (tool) actTool = tool;
+      if (thinkEl && thinkT1 === null) { if (!tool) return; thinkT1 = performance.now(); drawThink(); } // a tool call ends thinking
+      if (!actT0) actT0 = performance.now() - (ms ?? 0); // starts after thinking, like the server's count
+      if (!actEl) {
+        this.clearPhase();
+        actEl = box.appendChild(el("div", "activity"));
+        actEl.appendChild(el("span", "spin")); actEl.appendChild(el("span"));
+        actTimer = setInterval(drawAct, 500);
+      }
+      drawAct();
+    },
+    clearActivity() { clearInterval(actTimer); actTimer = null; actEl?.remove(); actEl = null; },
     clearPhase() { clearInterval(phaseTimer); phaseTimer = null; phaseEl?.remove(); phaseEl = null; phaseText = ""; },
     thinking(text) {
       if (thinkT0 === null) thinkT0 = performance.now();
@@ -983,9 +1007,9 @@ function assistantBox() {
     setThinkSecs(secs) { thinkSecsFixed = secs; },
     setBudgetHit(v) { budgetHit = v; },
     thinkSecs() { return thinkT0 === null ? null : +(((thinkT1 ?? performance.now()) - thinkT0) / 1000).toFixed(1); },
-    error(text) { cancelAnimationFrame(mdRaf); mdRaf = 0; box.classList.add("error"); contentEl.classList.remove("md"); contentEl.style.whiteSpace = "pre-wrap"; contentEl.textContent = text; },
+    error(text) { this.clearActivity(); cancelAnimationFrame(mdRaf); mdRaf = 0; box.classList.add("error"); contentEl.classList.remove("md"); contentEl.style.whiteSpace = "pre-wrap"; contentEl.textContent = text; },
     finish(text, meta) {
-      this.clearPhase();
+      this.clearPhase(); this.clearActivity();
       clearInterval(thinkTimer); thinkTimer = null;
       if (thinkEl) {
         const secs = thinkSecsFixed !== undefined ? thinkSecsFixed : this.thinkSecs(); // saved chats without timing -> "Thought"
@@ -1505,7 +1529,8 @@ function onRunEvent(ev, id) {
         live.content = ev.cur.content || ""; live.reasoning = ev.cur.reasoning || "";
         if (live.reasoning) b.thinking(live.reasoning);
         if (live.content) b.content(live.content);
-        else if (ev.cur.phase) b.phase(ev.cur.phase, ev.cur.pct);
+        else if (ev.cur.phase && !ev.cur.gen?.tool) b.phase(ev.cur.phase, ev.cur.pct);
+        if (ev.cur.gen) b.activity(ev.cur.gen.n, ev.cur.gen.tool || "", ev.cur.gen.ms);
       }
       if (ev.tool) liveTool(ev.tool.tc, ev.tool.status);
       pendingEls.clear();
@@ -1513,11 +1538,12 @@ function onRunEvent(ev, id) {
       break;
     }
     case "step": liveStep().phase("Sending request"); break;
-    case "phase": if (live?.box && !live.content) live.box.phase(ev.text, ev.pct); break;
+    case "phase": if (live?.box && !live.content && !ev.text.startsWith("Preparing tool call")) live.box.phase(ev.text, ev.pct); break; // tool calls show in the activity line
     case "delta": {
       const b = live?.box || liveStep();
       if (ev.r) { live.reasoning += ev.r; b.thinking(live.reasoning); }
       if (ev.c) { live.content += ev.c; b.content(live.content); b.clearPhase(); }
+      if (ev.n) b.activity(ev.n, ev.tool || "");
       follow();
       break;
     }
