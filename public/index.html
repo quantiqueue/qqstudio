@@ -157,6 +157,15 @@
   .hl-kw { color:#ff7b72; } .hl-str { color:#a5d6ff; } .hl-num, .hl-lit { color:#79c0ff; } .hl-com { color:#8b949e; font-style:italic; }
   .hl-fn { color:#d2a8ff; } .hl-ty, .hl-var { color:#ffa657; } .hl-bi { color:#79c0ff; } .hl-meta { color:#d2a8ff; } .hl-tag { color:#7ee787; } .hl-attr { color:#79c0ff; }
   .hl-ins { color:#aff5b4; background:rgba(46,160,67,.15); display:inline-block; min-width:100%; } .hl-del { color:#ffdcd7; background:rgba(248,81,73,.15); display:inline-block; min-width:100%; }
+  /* Fold: thinking, tool calls and narration between two replies, collapsed into one line. */
+  details.fold > summary { list-style:none; cursor:pointer; color:var(--muted); font-size:13px; display:flex; align-items:center; gap:8px; padding:0 14px; user-select:none; }
+  details.fold > summary::-webkit-details-marker { display:none; }
+  details.fold > summary:hover { color:var(--text); }
+  details.fold > summary .car { font-size:10px; width:10px; transition:transform .15s; }
+  details.fold[open] > summary .car { transform:rotate(90deg); }
+  details.fold > summary .spin { display:inline-block; vertical-align:-2px; width:10px; height:10px; margin-right:7px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  .fold-body { display:flex; flex-direction:column; gap:10px; margin:10px 0 0 19px; padding-left:12px; border-left:2px solid var(--line); }
+  .fold-body > .thoughts + .msg.assistant { margin-top:-4px; }
   .thoughts { padding:0 14px; }
   .thoughts .think { margin:8px 0 0; }
   #log > .thoughts + .msg.assistant { margin-top:8px; }
@@ -170,6 +179,10 @@
   .uwrap.pending .msg.user { opacity:.7; border:1px dashed #3b4356; }
   .uwrap.pending .acts { display:none; }
   .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; }
+  /* Under a reply: "330 tokens in 1m 2s" while it runs (pulsing dot), "Generated 1,337 tokens in 3m 40s" when done. */
+  .runfoot { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; padding:0 14px; font-variant-numeric:tabular-nums; }
+  .runfoot .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; animation:runpulse 1.4s ease-in-out infinite; }
+  @keyframes runpulse { 0%, 100% { opacity:.25; transform:scale(.8); } 50% { opacity:1; transform:scale(1); } }
   .stopline { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px; padding:0 14px; }
   .stopline button { font-size:12px; padding:3px 12px; }
   .think { color:var(--muted); font-size:13px; border-left:2px solid var(--line); padding-left:10px; margin-bottom:8px; white-space:pre-wrap; }
@@ -213,6 +226,23 @@
   .media .imgs { margin-top:0; }
   .tool pre { margin:6px 0 0; white-space:pre-wrap; word-break:break-all; font:12px/1.45 ui-monospace,Consolas,monospace; color:#c9cede; max-height:320px; overflow:auto; }
   .tool .actions { margin-top:8px; display:flex; gap:8px; }
+  /* ask_user: questions with options; recommended first. Pending = yellow edge, like an approval. */
+  .qcard { border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:#12151b; font-size:13px; }
+  .qcard.pending { border-color:#e3b04b; }
+  .qcard .qh { color:var(--muted); font-size:12px; margin-bottom:8px; }
+  .qcard .q + .q { margin-top:14px; }
+  .qcard .qt { font-weight:600; margin-bottom:6px; } .qcard .qt small { color:var(--muted); font-weight:400; margin-left:6px; }
+  .qcard .opts { display:flex; flex-direction:column; gap:6px; }
+  .qcard .opt { display:block; text-align:left; width:100%; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:transparent; color:inherit; font:inherit; cursor:pointer; }
+  .qcard .opt:hover:not(:disabled) { border-color:var(--accent); }
+  .qcard .opt.sel { border-color:var(--accent); background:rgba(110,150,255,.12); }
+  .qcard .opt:disabled { cursor:default; } .qcard.done .opt:not(.sel) { opacity:.45; }
+  .qcard .opt .lb { font-weight:600; } .qcard .opt .rec { font-size:11px; color:var(--accent); margin-left:6px; font-weight:400; }
+  .qcard .opt .ds { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
+  .qcard .other { width:100%; margin-top:2px; box-sizing:border-box; }
+  .qcard .own { color:var(--muted); margin-top:6px; } .qcard .own b { color:var(--text, inherit); font-weight:600; }
+  .qcard .qsum { display:flex; gap:10px; padding:3px 0; } .qcard .qsum .qq { color:var(--muted); flex:1; } .qcard .qsum .qv { font-weight:600; text-align:right; }
+  .qcard .qa { display:flex; gap:10px; align-items:center; margin-top:12px; } .qcard .qa .muted { color:var(--muted); font-size:12px; }
   .tool.denied .name { color:#d9727b; }
   .tool .badge { color:var(--muted); flex:none; }
   .imgs { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px, 1fr)); gap:8px; margin-top:8px; }
@@ -272,9 +302,9 @@
   .mm-row .ic { font-size:15px; line-height:1.2; }
   .mm-row small { display:block; color:var(--muted); margin-top:2px; line-height:1.35; }
   /* flat controls: no border or fill until hovered */
-  .toolbar #plus, .toolbar #model, .toolbar #think, .toolbar #modeBtn { background:transparent; border-color:transparent; color:var(--muted); transition:background .12s, color .12s; }
-  .toolbar #plus:hover, .toolbar #model:hover, .toolbar #think:hover, .toolbar #modeBtn:hover,
-  .toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #model:focus-visible, .toolbar #think:focus-visible { background:#252a35; color:var(--text); outline:none; }
+  .toolbar #plus, .toolbar #model, .toolbar #effortBtn, .toolbar #modeBtn { background:transparent; border-color:transparent; color:var(--muted); transition:background .12s, color .12s; }
+  .toolbar #plus:hover, .toolbar #model:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover,
+  .toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #effortBtn.open, .toolbar #model:focus-visible { background:#252a35; color:var(--text); outline:none; }
   .toolbar #modeBtn { font-size:13px; padding:0 10px; }
   .toolbar #modeBtn.auto { color:#f0c674; }
   .toolbar select option { background:var(--panel); color:var(--text); }
@@ -282,7 +312,11 @@
   .seg.sm button.on[data-v="on"] { background:#1d2b45; color:#9cc0ff; }
   .pm-row .nm small.tag { color:#4fc98a; }
   .seg.sm button.on[data-v="off"] { background:#2a1d20; color:#d9a0a6; }
-  .toolbar select.think-sel { min-width:0; width:auto; }
+  .effort-btn { width:auto !important; padding:0 10px !important; font-size:13px; white-space:nowrap; }
+  .effort-menu { width:200px; }
+  .em-row { display:block; width:100%; padding:6px 14px; border:none; border-radius:0; background:none; color:var(--text); text-align:left; font-size:13px; }
+  .em-row:hover { background:#1b1f27; } .em-row.on { background:#1f2a3d; } .em-row.on::after { content:" ✓"; color:var(--accent); }
+  .em-sep { height:1px; background:var(--line); margin:6px 0; }
   /* one height for every control in the composer toolbar */
   .toolbar { --h:30px; }
   .toolbar select, .toolbar button.icon, .toolbar .seg, .toolbar .toolslink { height:var(--h); box-sizing:border-box; line-height:1; }
@@ -339,14 +373,10 @@
         <div id="plusMenu" class="plus-menu" hidden></div>
       </div>
       <select id="model" title="Loadout for this session (engine, model and settings)"><option value="">loading…</option></select>
-      <select id="think" class="think-sel" title="Thinking effort for this session">
-        <option value="default">Default</option>
-        <option value="off">Off</option>
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-        <option value="max">Max</option>
-      </select>
+      <div class="plus-wrap">
+        <button type="button" id="effortBtn" class="icon effort-btn" title="Effort and thinking for this session"></button>
+        <div id="effortMenu" class="plus-menu effort-menu" hidden></div>
+      </div>
       <div class="plus-wrap">
         <button type="button" id="modeBtn" class="icon mode-btn" title="Tool approval for this session"></button>
         <div id="modeMenu" class="plus-menu mode-menu" hidden></div>
@@ -389,10 +419,134 @@ let renaming = false;
 let running = false, pendingApproval = null, listTimer = null;
 let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
-function blankChat(workspace) { return { id: null, workspace: workspace || defaultWs, title: "New session", mode: "manual", think: "default", skills: {}, mcp: {}, cats: {}, messages: [] }; }
+// The effort and thinking new sessions start at (Settings > Sessions); var, as sessions are created before the config loads.
+var newEffort = "medium", newBudget = "unlimited";
+function blankChat(workspace) { return { id: null, workspace: workspace || defaultWs, title: "New session", mode: "manual", effort: newEffort || "medium", thinkBudget: newBudget || "unlimited", skills: {}, mcp: {}, cats: {}, messages: [] }; }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function el(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
-function add(node) { log.querySelector(".welcome")?.remove(); log.appendChild(node); follow(); return node; }
+function add(node) {
+  log.querySelector(".welcome")?.remove();
+  log.insertBefore(node, foot && foot.el.isConnected ? foot.el : null); // the live reply footer stays at the bottom
+  if (fold && fold.live && node !== fold.el) foldLive(fold, false); // shown outside the fold: its work is done
+  follow(); return node;
+}
+// ---------- reply footer: tokens generated and time since the reply started (all steps; keeps counting while it waits
+// for an approval or a tool) ----------
+let foot = null; // { el, t0, tokens, timer } while a reply runs
+const fmtDur = (ms) => { const s = Math.floor(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`; };
+const fmtTok = (n) => `${(n || 0).toLocaleString("en-US")} token${n === 1 ? "" : "s"}`;
+function footStart(ms = 0, tokens = 0) {
+  footStop();
+  const e = el("div", "runfoot");
+  e.appendChild(el("span", "dot")); e.appendChild(el("span"));
+  log.appendChild(e);
+  foot = { el: e, t0: performance.now() - ms, tokens };
+  const draw = () => { if (foot) foot.el.lastChild.textContent = `${fmtTok(foot.tokens)} in ${fmtDur(performance.now() - foot.t0)}`; };
+  foot.draw = draw; draw();
+  foot.timer = setInterval(draw, 500);
+  follow();
+}
+function footTokens(n) { if (foot && n >= foot.tokens) { foot.tokens = n; foot.draw(); } }
+function footStop() { if (foot) { clearInterval(foot.timer); foot = null; } }
+const footDone = (stat) => el("div", "runfoot", `Generated ${fmtTok(stat.tokens)} in ${fmtDur(stat.ms)}`);
+// The reply ended: the live footer becomes "Generated … in …" (the server's totals when given).
+// ---------- ask_user: the model's questions, answered by clicking options (or typing a message) ----------
+let pendingQuestion = null; // { id, card, sendText(text) } while a reply waits for answers
+// questions: [{question, header, multiple, options: [{label, description, recommended}]}]
+// done: { answers: [{choices, other}] } or { text } shows it answered (a short summary); onSubmit(answer) for a live card,
+// which shows one question at a time ("Question 1 / 3"): picking an option of a single-choice question moves on.
+function questionCard(questions, done, onSubmit) {
+  const card = el("div", "qcard" + (done ? " done" : " pending"));
+  if (done) {
+    card.appendChild(el("div", "qh", "Questions"));
+    if (done.text) { const own = card.appendChild(el("div", "own", "Answered in your own words: ")); own.appendChild(el("b", null, done.text)); return card; }
+    questions.forEach((q, i) => {
+      const a = done.answers?.[i] || {}, parts = [...(a.choices || [])];
+      if (a.other) parts.push(`“${a.other}”`);
+      const row = card.appendChild(el("div", "qsum"));
+      row.appendChild(el("span", "qq", q.question));
+      row.appendChild(el("span", "qv", parts.join(", ") || "no answer"));
+    });
+    return card;
+  }
+  const state = questions.map(() => ({ picks: new Set(), other: "" }));
+  const answered = (s) => s.picks.size > 0 || !!s.other.trim();
+  let at = 0;
+  const head = card.appendChild(el("div", "qh"));
+  const body = card.appendChild(el("div", "q"));
+  const row = card.appendChild(el("div", "qa"));
+  const back = row.appendChild(el("button", null, "Back")); back.type = "button";
+  const next = row.appendChild(el("button", "primary")); next.type = "button";
+  row.appendChild(el("span", "muted", "or type your answer in the message box"));
+  const last = () => at === questions.length - 1;
+  const sync = () => { next.textContent = last() ? "Send answers" : "Next"; next.disabled = last() ? !state.every(answered) : !answered(state[at]); };
+  const go = (i) => { at = i; show(); };
+  function show() {
+    const q = questions[at], s = state[at];
+    head.textContent = (questions.length > 1 ? `Question ${at + 1} / ${questions.length}` : "Question") + (q.header ? ` · ${q.header}` : "") + " · waiting for your answer";
+    body.innerHTML = "";
+    const qt = body.appendChild(el("div", "qt", q.question));
+    if (q.multiple) qt.appendChild(el("small", null, "pick any"));
+    const opts = body.appendChild(el("div", "opts")), btns = [];
+    q.options.forEach((o) => {
+      const b = opts.appendChild(el("button", "opt" + (s.picks.has(o.label) ? " sel" : ""))); b.type = "button";
+      b.appendChild(el("span", "lb", o.label));
+      if (o.recommended) b.appendChild(el("span", "rec", "Recommended"));
+      if (o.description) b.appendChild(el("span", "ds", o.description));
+      b.onclick = () => {
+        if (q.multiple) s.picks.has(o.label) ? s.picks.delete(o.label) : s.picks.add(o.label);
+        else { s.picks = new Set([o.label]); s.other = ""; other.value = ""; }
+        btns.forEach((x, k) => x.classList.toggle("sel", s.picks.has(q.options[k].label)));
+        sync();
+        if (!q.multiple && !last()) setTimeout(() => { if (questions[at] === q) go(at + 1); }, 180); // single choice: on to the next
+      };
+      btns.push(b);
+    });
+    const other = opts.appendChild(el("input", "other")); other.placeholder = "Other…"; other.spellcheck = true; other.value = s.other;
+    other.oninput = () => { s.other = other.value; if (!q.multiple && other.value.trim()) { s.picks.clear(); btns.forEach((x) => x.classList.remove("sel")); } sync(); };
+    other.onkeydown = (e) => { if (e.key === "Enter" && !next.disabled) { e.preventDefault(); next.click(); } };
+    back.hidden = at === 0;
+    sync();
+    follow();
+  }
+  back.onclick = () => go(at - 1);
+  next.onclick = () => {
+    if (!last()) return go(at + 1);
+    next.disabled = true;
+    onSubmit({ answers: state.map((s) => ({ choices: [...s.picks], other: s.other.trim() })) });
+  };
+  show();
+  return card;
+}
+// A live question: show the card and send the answers to the server.
+function liveQuestion(ev) {
+  if (pendingQuestion?.id === ev.id) return;
+  const sid = chat.id;
+  const send = async (a) => {
+    try {
+      const r = await fetch(`/api/runs/${encodeURIComponent(sid)}/answer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: ev.id, ...a }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    } catch (e) { status.textContent = "Could not send the answers: " + e.message; }
+  };
+  const card = add(questionCard(ev.questions, null, send));
+  pendingQuestion = { id: ev.id, card, questions: ev.questions, sendText: (text) => send({ text }) };
+  qCards.set(ev.id, { card, questions: ev.questions });
+  loadList(); follow();
+}
+// Answered (here or in another tab): the card shows the choices, read-only.
+function answeredQuestion(id, answers) {
+  const q = qCards.get(id);
+  if (q) { const c = questionCard(q.questions, answers); q.card.replaceWith(c); q.card = c; }
+  if (pendingQuestion?.id === id) pendingQuestion = null;
+  loadList();
+}
+const qCards = new Map(); // ask_user call id -> { card, questions }
+function footEnd(stat) {
+  if (!foot) return;
+  const s = stat && stat.ms != null ? stat : { tokens: foot.tokens, ms: performance.now() - foot.t0 };
+  const e = foot.el; footStop();
+  if (e.isConnected) e.replaceWith(footDone(s));
+}
 // ---------- scroll: follow new output only while the user is at the bottom ----------
 // Scrolling up (wheel, touch, scrollbar, keys) stops following; getting back to the bottom, or the ↓ button, resumes it.
 // Only a *decrease* in scrollTop counts as the user leaving, so content growing under a programmatic scroll can't unstick it.
@@ -422,27 +576,72 @@ function stripUi(m) { return Object.fromEntries(Object.entries(m).filter(([k]) =
 function prettyArgs(s) { try { return JSON.stringify(JSON.parse(s || "{}"), null, 2); } catch { return s; } }
 function showWelcome() { log.innerHTML = ""; log.appendChild(el("div", "welcome", "Start a new session.")); }
 
-// ---------- per-chat thinking level ----------
-// default: send nothing (model decides) · off: no thinking · low/medium/high: effort hint + token budget · max: no budget.
-let thinkCfg = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "" };
-fetch("/api/config").then((r) => r.json()).then((c) => { if (c.thinking) thinkCfg = c.thinking; updateThinkTitle(); }).catch(() => {});
-function thinkParams(level) {
-  if (!level || level === "default") return { budget: null, body: {} };
-  if (level === "off") return { budget: 0, body: { chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0 } };
-  const budget = level === "max" ? -1 : thinkCfg.budgets[level];
-  const body = { chat_template_kwargs: { reasoning_effort: level === "max" ? "high" : level }, reasoning_budget_tokens: budget, thinking_budget_tokens: budget };
+// ---------- per-session effort and thinking budget (two separate choices) ----------
+// Effort: a hint the model's chat template reads (reasoning_effort); Auto sends nothing, Off turns thinking off.
+// Thinking: a token cap llama-server enforces; Auto sends nothing, Off = no thinking, Unlimited = no cap.
+const EFFORT_OPTS = [["default", "Auto"], ["off", "Off"], ["low", "Low"], ["medium", "Medium"], ["high", "High"], ["max", "Max"]];
+const BUDGET_KEYS = ["auto", "off", "low", "medium", "high", "unlimited"];
+let thinkCfg = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
+fetch("/api/config").then((r) => r.json()).then((c) => {
+  if (c.thinking) { thinkCfg = c.thinking; newEffort = c.thinking.effort || "medium"; newBudget = c.thinking.budget || "unlimited"; }
+  if (!chat.id && !chat.messages.length) { chat.effort = newEffort; chat.thinkBudget = newBudget; } // a new session opened before this loaded
+  renderThink();
+}).catch(() => {});
+const fmtBudget = (n) => (n % 1024 === 0 ? n / 1024 + "k" : n >= 1000 ? +(n / 1000).toFixed(1) + "k" : String(n));
+const budgetLabel = (k) => (k === "auto" ? "Auto" : k === "off" ? "Off" : k === "unlimited" ? "Unlimited" : fmtBudget(thinkCfg.budgets[k] || 0));
+// Sessions from before the split had one "think" level: it becomes the same effort plus the matching budget.
+const effortOf = (c) => c.effort || c.think || "default";
+const budgetOf = (c) => c.thinkBudget || ({ default: "auto", off: "off", max: "unlimited" }[c.think] || (c.think ? c.think : "auto"));
+function thinkParams(c) {
+  const effort = effortOf(c), key = budgetOf(c);
+  if (effort === "off" || key === "off") return { budget: 0, body: { chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0 } };
+  const body = {};
+  if (effort !== "default") body.chat_template_kwargs = { reasoning_effort: effort }; // max: templates that don't know it may use their default
+  let budget = null;
+  if (key === "unlimited") budget = -1;
+  else if (key !== "auto") budget = thinkCfg.budgets[key];
+  if (budget !== null) { body.reasoning_budget_tokens = budget; body.thinking_budget_tokens = budget; }
   if (budget > 0 && thinkCfg.message) body.reasoning_budget_message = thinkCfg.message;
   return { budget, body };
 }
-function updateThinkTitle() {
-  const b = thinkCfg.budgets;
-  $("think").title = `Thinking for this session\nDefault: model decides\nOff: no thinking\nLow / Medium / High: effort hint + cap of ${b.low} / ${b.medium} / ${b.high} tokens\nMax: no cap\n(Budgets: Settings > Engine)`;
+// The toolbar button ("Medium · 4k") and its menu: Effort, then Thinking.
+function renderThink() {
+  const e = effortOf(chat), k = budgetOf(chat);
+  $("effortBtn").textContent = EFFORT_OPTS.find((x) => x[0] === e)[1] + (k === "auto" ? "" : " · " + budgetLabel(k));
+  $("effortBtn").title = `Effort: ${EFFORT_OPTS.find((x) => x[0] === e)[1]} · Thinking: ${budgetLabel(k)}\nEffort is a hint the model's template reads; thinking tokens cap how long it may think.\n(Defaults and caps: Settings > Sessions)`;
+  renderEffortMenu();
 }
-function renderThink() { $("think").value = chat.think || "default"; }
-$("think").onchange = () => {
-  chat.think = $("think").value;
-  if (chat.id) fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ think: chat.think }) }).catch(() => {});
-};
+function renderEffortMenu() {
+  const menu = $("effortMenu");
+  if (menu.hidden) return;
+  menu.innerHTML = "";
+  const section = (title, opts, cur, field) => {
+    menu.appendChild(el("h4", null, title));
+    for (const [v, label] of opts) {
+      const r = menu.appendChild(el("button", "em-row" + (v === cur ? " on" : ""), label)); r.type = "button";
+      r.onclick = (ev) => { ev.stopPropagation(); setThink(field, v); };
+    }
+  };
+  section("Effort", EFFORT_OPTS, effortOf(chat), "effort");
+  menu.appendChild(el("div", "em-sep"));
+  section("Thinking", BUDGET_KEYS.map((k) => [k, budgetLabel(k)]), budgetOf(chat), "thinkBudget");
+}
+function setThink(field, v) {
+  chat.effort = effortOf(chat); chat.thinkBudget = budgetOf(chat); // a pre-split session gets both fields now
+  chat[field] = v;
+  if (chat.id) fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ effort: chat.effort, thinkBudget: chat.thinkBudget }) }).catch(() => {});
+  renderThink();
+}
+function toggleEffort(force) {
+  const menu = $("effortMenu"), open = force ?? menu.hidden;
+  if (open) { togglePlus(false); toggleMode(false); }
+  menu.hidden = !open;
+  $("effortBtn").classList.toggle("open", open);
+  renderEffortMenu();
+}
+$("effortBtn").onclick = (e) => { e.stopPropagation(); toggleEffort(); };
+$("effortMenu").onclick = (e) => e.stopPropagation();
+
 
 // ---------- per-chat mode (manual = ask per Settings, auto = never ask) ----------
 const MODES = [
@@ -474,7 +673,7 @@ function renderModeMenu() {
 function toggleMode(force) {
   const menu = $("modeMenu");
   const open = force ?? menu.hidden;
-  if (open) togglePlus(false);
+  if (open) { togglePlus(false); toggleEffort(false); }
   menu.hidden = !open;
   $("modeBtn").classList.toggle("open", open);
   renderModeMenu();
@@ -590,13 +789,16 @@ async function loadTools() {
 // Per-chat Auto | On | Off for skills, MCP servers and built-in tool categories (Settings is the ceiling).
 // Auto: skills are listed by name (load_skill); MCP servers and categories are listed as one line each and the model
 // turns them on with enable_tools. Groups it turned on are kept in chat.loaded ("mcp:<server>", "cat:<category>").
-const CATS = ["File Access", "Web", "Images", "System"];
+const CATS = ["File Access", "Web", "Images", "System", "Questions"];
 const modeOf = (v) => (v === false || v === "off" ? "off" : v === true || v === "on" || v === "pinned" ? "on" : "auto"); // old chats: false / "pinned"
 const skillMode = (name) => modeOf((chat.skills || {})[name]);
 const mcpMode = (server) => modeOf((chat.mcp || {})[server]);
 const catMode = (cat) => modeOf((chat.cats || {})[cat]);
 const isLoaded = (key) => (chat.loaded || []).includes(key);
-const groupOn = (mode, key) => mode === "on" || (mode === "auto" && isLoaded(key));
+// What the page sends (instructions, tool list) depends only on these settings, not on which Auto groups the model
+// turned on: those stay listed for enable_tools and the server runs their tools through call_tool (runs.js), so the
+// top of the prompt doesn't change between messages and llama-server can reuse its cache.
+const groupOn = (mode) => mode === "on";
 const mcpOn = (server) => groupOn(mcpMode(server), "mcp:" + server);
 const catOn = (cat) => groupOn(catMode(cat), "cat:" + cat);
 function activeTools() {
@@ -614,7 +816,7 @@ function deferredGroups() {
   if (toolInfo.enabled === false) return [];
   const out = [], win = toolInfo.platform === "win32";
   for (const sv of mcpServers) {
-    if (sv.status !== "ready" || mcpMode(sv.name) !== "auto" || isLoaded("mcp:" + sv.name)) continue;
+    if (sv.status !== "ready" || mcpMode(sv.name) !== "auto") continue;
     const tools = toolInfo.tools.filter((t) => t.enabled && t.server === sv.name);
     if (!tools.length) continue;
     const short = tools.map((t) => t.name.replace(/^.*?__/, ""));
@@ -627,9 +829,10 @@ function deferredGroups() {
     Web: "search the web, read web pages and download files",
     Images: "search for images and show images to the user",
     System: `run ${win ? "cmd.exe" : "shell"} commands`,
+    Questions: "ask the user multiple-choice questions before a big task that leaves real choices open",
   };
   for (const cat of CATS) {
-    if (catMode(cat) !== "auto" || isLoaded("cat:" + cat)) continue;
+    if (catMode(cat) !== "auto") continue;
     const tools = toolInfo.tools.filter((t) => t.enabled && !t.server && t.category === cat);
     if (!tools.length) continue;
     out.push({ key: "cat:" + cat, name: cat, desc: CAT_DESC[cat] || cat, tools,
@@ -664,6 +867,7 @@ function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGro
     const im = [on.has("image_search") && "image_search (thumbnails are displayed automatically)", on.has("show_image") && "show_image for a specific image URL or local file"].filter(Boolean);
     lines.push(`To show the user pictures, use ${im.join(" or ")}.`);
   }
+  if (on.has("ask_user")) lines.push("Before a big task that leaves real choices open, ask the user with ask_user (once, all questions together); for anything else, just proceed.");
   if (on.has("run_command")) lines.push(`You can run ${win ? "cmd.exe" : "shell"} commands with run_command; use it when no specific tool fits.`);
   const servers = [...new Set(specs.filter((t) => t.server).map((t) => t.server))];
   if (servers.length) lines.push(`You also have tools from connected services: ${servers.join(", ")} (tool names start with the service name).`);
@@ -927,8 +1131,69 @@ function openLightbox(src) { const lb = $("lightbox"), img = lb.querySelector("i
 document.addEventListener("click", (e) => { if (e.target.closest("#lightbox")) $("lightbox").style.display = "none"; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("lightbox").style.display = "none"; });
 
+// ---------- folds: the work between two pieces of text (thinking, tool calls, stats of steps without text) in one line ----------
+// "Reasoning… · 3 tool calls · 14s" while it runs, "Reasoned for 42s · 6 tool calls" after. A fold stays open for new
+// work only while it is the last thing in the session; anything shown outside it (a reply, a question, an approval,
+// an image the model chose to show) ends it, and later work starts a new one.
+let fold = null; // { el, body, label, t0, start, end, ms, live, timer }
+const lastChild = () => { let n = log.lastElementChild; if (n && foot && n === foot.el) n = n.previousElementSibling; return n; };
+const fmtSecs = (ms) => (ms < 10000 ? (ms / 1000).toFixed(1) + "s" : fmtDur(ms));
+function curFold() {
+  if (fold && fold.el.isConnected && lastChild() === fold.el) return fold;
+  foldClose();
+  const d = el("details", "fold");
+  const s = d.appendChild(el("summary"));
+  s.appendChild(el("span", "car", "▸"));
+  const label = s.appendChild(el("span", "fl"));
+  const body = d.appendChild(el("div", "fold-body"));
+  add(d);
+  fold = d._fold = { el: d, body, label, t0: performance.now(), start: null, end: null, ms: null, live: false, timer: null };
+  foldDraw(fold);
+  return fold;
+}
+function toFold(node) { const f = curFold(); f.body.appendChild(node); foldDraw(f); follow(); return node; }
+const foldOf = (node) => node && node.closest && node.closest("details.fold")?._fold;
+function foldDraw(f) {
+  if (!f) return;
+  const cards = [...f.body.querySelectorAll(":scope > .tool")];
+  const errs = cards.filter((c) => /error|bad arguments/.test(c.querySelector(".badge")?.textContent || "")).length;
+  const bits = [];
+  if (cards.length) bits.push(`${cards.length} tool call${cards.length === 1 ? "" : "s"}`);
+  if (errs) bits.push(`${errs} error${errs === 1 ? "" : "s"}`);
+  // The spinner element is kept between redraws (rebuilding it restarts its animation, which looks jittery).
+  if (!f.spinEl) { f.spinEl = f.label.appendChild(el("span", "spin")); f.textEl = f.label.appendChild(document.createTextNode("")); }
+  f.spinEl.style.display = f.live ? "" : "none";
+  if (f.live) f.textEl.nodeValue = ["Reasoning…", ...bits, fmtDur(performance.now() - f.t0)].join(" · ");
+  else {
+    const ms = f.start != null && f.end != null ? f.end - f.start : f.ms;
+    f.textEl.nodeValue = [ms != null && ms > 0 ? `Reasoned for ${fmtSecs(ms)}` : "Reasoned", ...bits].join(" · ");
+  }
+}
+// Saved sessions: the fold's time comes from its steps' start/end (runs.js _t0/_at).
+function foldTime(f, start, end) {
+  if (!f) return;
+  if (start && (f.start == null || start < f.start)) f.start = start;
+  if (end && (f.end == null || end > f.end)) f.end = end;
+  foldDraw(f);
+}
+function foldLive(f, on) {
+  if (!f || f.live === on) return;
+  f.live = on;
+  if (on) { if (f.start) f.t0 = performance.now() - (Date.now() - f.start); f.timer = setInterval(() => foldDraw(f), 500); }
+  else { clearInterval(f.timer); f.timer = null; f.ms = performance.now() - f.t0; f.start = f.end = null; }
+  foldDraw(f);
+}
+function foldTidy(f) { if (f && !f.body.children.length) { clearInterval(f.timer); f.el.remove(); if (fold === f) fold = null; } }
+function foldClose() { if (fold) { foldLive(fold, false); foldTidy(fold); } fold = null; }
+// A step's text, an approval or a question moves out of the fold: everything the model writes is shown.
+function promote(node) {
+  const f = foldOf(node);
+  if (!f) return;
+  add(node);
+  foldLive(f, false); foldTidy(f);
+}
 function assistantBox() {
-  const box = add(el("div", "msg assistant"));
+  const box = toFold(el("div", "msg assistant"));
   const contentEl = box.appendChild(el("div", "md"));
   let mdRaf = 0, mdText = "";
   let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false, thinkTimer = null, phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
@@ -951,9 +1216,10 @@ function assistantBox() {
   const drawThink = () => {
     if (!thinkSum) return;
     if (thinkT1 !== null) { clearInterval(thinkTimer); thinkTimer = null; const t = +((thinkT1 - thinkT0) / 1000).toFixed(1); thinkSum.textContent = `Thought for ${t < 60 ? t + "s" : Math.round(t / 60) + " min"}`; return; }
-    const secs = Math.floor((performance.now() - thinkT0) / 1000);
-    thinkSum.innerHTML = ""; thinkSum.appendChild(el("span", "spin"));
-    thinkSum.appendChild(document.createTextNode("Thinking…" + (secs >= 1 ? ` ${secs}s` : "")));
+    const secs = Math.floor((performance.now() - thinkT0) / 1000), txt = "Thinking…" + (secs >= 1 ? ` ${secs}s` : "");
+    // Only the text changes between redraws; a new spinner each time would restart its animation (jitter).
+    if (thinkSum.firstChild?.className === "spin") thinkSum.lastChild.nodeValue = txt;
+    else { thinkSum.textContent = ""; thinkSum.appendChild(el("span", "spin")); thinkSum.appendChild(document.createTextNode(txt)); }
   };
   return {
     // Status line shown until the reply text starts streaming.
@@ -1004,6 +1270,7 @@ function assistantBox() {
     content(text) { if (text && thinkT0 !== null && thinkT1 === null) { thinkT1 = performance.now(); drawThink(); } mdText = text;
       if (!mdRaf) mdRaf = requestAnimationFrame(() => { mdRaf = 0; contentEl.innerHTML = mdRender(mdText); });
     },
+    node: box,
     setThinkSecs(secs) { thinkSecsFixed = secs; },
     setBudgetHit(v) { budgetHit = v; },
     thinkSecs() { return thinkT0 === null ? null : +(((thinkT1 ?? performance.now()) - thinkT0) / 1000).toFixed(1); },
@@ -1029,6 +1296,17 @@ function assistantBox() {
   };
 }
 
+// call_tool runs a tool on request (lazytools.js): show that tool and its own arguments, not the wrapper.
+function shownCall(tc) {
+  const f = tc.function;
+  if (f.name !== "call_tool") return { name: f.name, args: f.arguments };
+  try {
+    const a = JSON.parse(f.arguments || "{}");
+    let v = a.arguments ?? a.args ?? a.parameters;
+    if (v === undefined) { const { name, ...rest } = a; v = rest; }
+    return { name: String(a.name || f.name), args: typeof v === "string" ? v : JSON.stringify(v) };
+  } catch { return { name: f.name, args: f.arguments }; } // still streaming or malformed
+}
 // Tools whose only job is to display something: when they succeed, show just the result (no tool line).
 const QUIET_TOOLS = new Set(["show_image"]);
 
@@ -1042,8 +1320,11 @@ function argSummary(argsText) {
     return Object.keys(o).length === 1 ? t : `${k}: ${t}`;
   }).join(" · ").replace(/\s+/g, " ").slice(0, 160);
 }
+// Tools whose images are meant for the user (shown outside the fold); other tools' images are the model's working
+// material and stay inside it.
+const DISPLAY_TOOLS = new Set(["show_image", "image_search"]);
 function toolCard(name, argsText) {
-  const card = add(el("div", "tool"));
+  const card = toFold(el("div", "tool"));
   const det = card.appendChild(el("details"));
   const sum = det.appendChild(el("summary"));
   sum.appendChild(el("span", "name", name));
@@ -1052,13 +1333,15 @@ function toolCard(name, argsText) {
   det.appendChild(el("div", "lbl", "Arguments"));
   det.appendChild(el("pre", null, prettyArgs(argsText)));
   return {
-    hide() { card.remove(); },
-    badge(t) { badgeEl.textContent = t ? "· " + t : ""; card.classList.toggle("denied", t === "denied"); },
+    node: card,
+    hide() { const f = foldOf(card); card.remove(); foldTidy(f); },
+    badge(t) { badgeEl.textContent = t ? "· " + t : ""; card.classList.toggle("denied", t === "denied"); foldDraw(foldOf(card)); },
     result(text, images) {
       det.appendChild(el("div", "lbl", `Result (${text.length} chars)`));
       det.appendChild(el("pre", null, text.length > 6000 ? text.slice(0, 6000) + "\n…" : text));
       if (images && images.length) {
-        const media = add(el("div", "media"));
+        const media = el("div", "media");
+        if (DISPLAY_TOOLS.has(name)) add(media); else card.after(media); // next to its card, inside the fold
         media.appendChild(renderImages(images, images.some((i) => i.big)));
       }
     },
@@ -1098,6 +1381,9 @@ function userBubble(msg) {
 
 // live = true while a run is going: tool calls still waiting for a result get a card the run events will fill in.
 function renderChat(live = false) {
+  footStop(); pendingQuestion = null; qCards.clear();
+  if (fold) clearInterval(fold.timer);
+  fold = null;
   log.innerHTML = "";
   cards = new Map();
   if (!chat.messages.length) return showWelcome();
@@ -1106,20 +1392,32 @@ function renderChat(live = false) {
     if (m._summary) add(summaryDivider(m));
     else if (m.role === "user") userBubble(m);
     else if (m.role === "assistant") {
+      const calls = (m.tool_calls || []).length > 0;
       if (m.content || m._reasoning) {
         const b = assistantBox();
         if (m._reasoning) { b.thinking(m._reasoning); b.setThinkSecs(m._thinkSecs ?? null); b.setBudgetHit(!!m._budgetHit); }
         b.content(m.content || "");
         b.finish(m.content || "", m._meta);
+        const f = foldOf(b.node), text = !!m.content; // text is shown outside the fold; a step without text stays in
+        if (m._t0) foldTime(f, m._t0, text ? m._t0 + (m._thinkSecs || 0) * 1000 : m._at);
+        else if (f) { f.ms = (f.ms || 0) + (m._thinkSecs || 0) * 1000 + (text ? 0 : (parseFloat((m._meta || "").match(/· ([\d.]+)s/)?.[1]) || 0) * 1000); foldDraw(f); } // older sessions: an estimate
+        if (text) promote(b.node);
       }
       for (const tc of m.tool_calls || []) {
-        const t = toolCard(tc.function.name, tc.function.arguments);
-        const r = results.get(tc.id);
+        const sc = shownCall(tc), r0 = results.get(tc.id);
+        if (sc.name === "ask_user" && (r0?._answers || (live && !r0))) { // questions: answered, or still waiting (the snapshot shows the card)
+          if (r0?._answers) qCards.set(tc.id, { card: add(questionCard(r0._answers.questions, r0._answers)), questions: r0._answers.questions });
+          continue;
+        }
+        const t = toolCard(sc.name, sc.args);
+        const r = r0;
         if (!r) { if (live) { cards.set(tc.id, t); t.badge("waiting"); } else t.badge("no result"); continue; }
         t.badge(r._status || "done");
+        foldTime(foldOf(t.node), null, r._at);
         if (r._status !== "denied" && r._status !== "cancelled") t.result(r.content, r._images);
-        if (QUIET_TOOLS.has(tc.function.name) && (r._status || "done") === "done" && r._images?.length) t.hide();
+        if (QUIET_TOOLS.has(sc.name) && (r._status || "done") === "done" && r._images?.length) t.hide();
       }
+      if (m._run) add(footDone(m._run));
     }
   }
   const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
@@ -1143,7 +1441,7 @@ function stopLine(text) {
   const d = el("div", "stopline");
   d.appendChild(el("span", null, text));
   const b = d.appendChild(el("button", null, "Continue")); b.type = "button";
-  b.title = "Keep going from here (uses the thinking level picked below)";
+  b.title = "Keep going from here (uses the effort and thinking picked below)";
   b.onclick = () => { if (running) return; d.remove(); startRun(chat); };
   return d;
 }
@@ -1251,7 +1549,7 @@ let wsOpen = {};
 try { wsOpen = JSON.parse(localStorage.getItem("qq.wsOpen") || "{}"); } catch {}
 const isOpen = (id) => wsOpen[id] ?? true;
 function setOpen(id, v) { wsOpen[id] = v; try { localStorage.setItem("qq.wsOpen", JSON.stringify(wsOpen)); } catch {} }
-const dotOf = (c) => c.waiting ? ["waiting", "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
+const dotOf = (c) => c.waiting ? ["waiting", c.waiting === "question" ? "Waiting for your answers" : "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
 const ago = (t) => { const s = (Date.now() - t) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 86400 * 30 ? `${Math.floor(s / 86400)} d ago` : new Date(t).toLocaleDateString(); };
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`;
 
@@ -1484,6 +1782,9 @@ async function endRun(id, reload) {
   }
   if (liveUsage?.chat === id) { liveUsage = null; setTimeout(updateCtx); } // saved messages carry the exact counts now
   if (live?.box) live.box.finish(live.content || "", ""); // a step the server ended without a reply: stop its timers
+  footEnd(null); // ended without a "done" (e.g. the connection closed)
+  foldClose();
+  pendingQuestion = null;
   live = null; pendingApproval = null; running = false;
   setBusy(false);
   loadList();
@@ -1504,9 +1805,10 @@ function tcById(id) {
 }
 function liveTool(tc, status) {
   let t = cards.get(tc.id);
-  if (!t) { t = toolCard(tc.function.name, tc.function.arguments); cards.set(tc.id, t); }
+  if (!t) { const sc = shownCall(tc); t = toolCard(sc.name, sc.args); cards.set(tc.id, t); }
   if (status === "approval" && !t.asking) {
     t.asking = true;
+    promote(t.node); // needs you: shown outside the fold
     t.badge("needs approval");
     const id = chat.id;
     t.approve().then((ok) => {
@@ -1533,17 +1835,22 @@ function onRunEvent(ev, id) {
         if (ev.cur.gen) b.activity(ev.cur.gen.n, ev.cur.gen.tool || "", ev.cur.gen.ms);
       }
       if (ev.tool) liveTool(ev.tool.tc, ev.tool.status);
+      if (ev.question) liveQuestion(ev.question);
+      if (live.box && live.content) promote(live.box.node); // text streaming right now
+      if (fold && lastChild() === fold.el) foldLive(fold, true);
+      if (ev.stat) footStart(ev.stat.ms, ev.stat.tokens);
       pendingEls.clear();
       for (const p of ev.pending || []) pendingBubble(p);
       break;
     }
-    case "step": liveStep().phase("Sending request"); break;
+    case "step": liveStep().phase("Sending request"); foldLive(foldOf(live.box.node), true); break;
     case "phase": if (live?.box && !live.content && !ev.text.startsWith("Preparing tool call")) live.box.phase(ev.text, ev.pct); break; // tool calls show in the activity line
     case "delta": {
       const b = live?.box || liveStep();
       if (ev.r) { live.reasoning += ev.r; b.thinking(live.reasoning); }
-      if (ev.c) { live.content += ev.c; b.content(live.content); b.clearPhase(); }
+      if (ev.c) { live.content += ev.c; b.content(live.content); b.clearPhase(); promote(b.node); } // text is always shown
       if (ev.n) b.activity(ev.n, ev.tool || "");
+      if (ev.tot != null) footTokens(ev.tot);
       follow();
       break;
     }
@@ -1554,19 +1861,29 @@ function onRunEvent(ev, id) {
       if (m._thinkSecs != null) b.setThinkSecs(m._thinkSecs);
       b.setBudgetHit(!!m._budgetHit);
       b.finish(m.content || "", m._meta);
+      if (m.content) promote(b.node);
       live.box = null;
+      if (ev.tot != null) footTokens(ev.tot);
       break;
     }
-    case "failed": (live?.box || liveStep()).error(ev.text); if (live) live.box = null; break;
+    case "failed": { const b = live?.box || liveStep(); b.error(ev.text); promote(b.node); if (live) live.box = null; break; }
     case "tool": liveTool(ev.tc, ev.status); break;
+    case "question": liveQuestion(ev); break;
+    case "answered": answeredQuestion(ev.id, ev.answers); break;
     case "tool_result": {
       const m = ev.msg;
       chat.messages.push(m);
+      if (m._answers || qCards.has(m.tool_call_id)) { // ask_user: the card already shows the answers (or cancelled)
+        if (m._answers) answeredQuestion(m.tool_call_id, m._answers);
+        else { const q = qCards.get(m.tool_call_id); q.card.className = "qcard done"; q.card.innerHTML = ""; q.card.appendChild(el("div", "qh", "Questions · " + (m._status || "cancelled"))); if (pendingQuestion?.id === m.tool_call_id) pendingQuestion = null; }
+        follow();
+        break;
+      }
       const t = liveTool(tcById(m.tool_call_id));
       const st = m._status || "done";
       t.badge(st);
       if (st !== "denied" && st !== "cancelled") t.result(m.content, m._images);
-      if (QUIET_TOOLS.has(tcById(m.tool_call_id).function.name) && st === "done" && m._images?.length) t.hide();
+      if (QUIET_TOOLS.has(shownCall(tcById(m.tool_call_id)).name) && st === "done" && m._images?.length) t.hide();
       follow();
       break;
     }
@@ -1585,7 +1902,12 @@ function onRunEvent(ev, id) {
     case "usage":
       lastUsage = { prompt: ev.prompt, completion: ev.completion, model: ev.model };
       liveUsage = { chat: id, prompt: ev.prompt, completion: ev.completion }; updateCtx(); break;
-    case "done": if (es) { es.close(); es = null; } endRun(id, false); break;
+    case "done": {
+      const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
+      if (lastA && ev.ms != null) lastA._run = { tokens: ev.tokens, ms: ev.ms };
+      footEnd(ev);
+      if (es) { es.close(); es = null; } endRun(id, false); break;
+    }
   }
 }
 
@@ -1597,7 +1919,7 @@ async function startRun(c) {
     const specs = activeTools(), deferred = deferredGroups();
     const pinned = (await Promise.all(skillList.filter((x) => skillMode(x.name) === "on")
       .map((x) => fetch("/api/skills/get?name=" + encodeURIComponent(x.name)).then((r) => (r.ok ? r.json() : null)).catch(() => null)))).filter(Boolean);
-    const tp = thinkParams(c.think);
+    const tp = thinkParams(c);
     const r = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
       chatId: c.id, model: modelSel.value, system: systemPrompt(specs, pinned, deferred), tools: specs.map((s) => s.spec),
       deferred: deferred.map((g) => ({ key: g.key, name: g.name, note: g.note, tools: g.tools.map((t) => t.spec) })),
@@ -1647,6 +1969,7 @@ function pendingBubble(p) {
 async function steer() {
   if (attachments.some((a) => a.busy)) { status.textContent = "Waiting for the image to finish attaching…"; return; }
   const text = input.value.trim(), images = attachments.map((a) => ({ src: a.src, full: a.src }));
+  if (pendingQuestion && text && !images.length) { input.value = ""; autosize(); pendingQuestion.sendText(text); return; } // answers the questions
   if (!text && !images.length) return;
   const id = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), sid = chat.id;
   input.value = ""; attachments = []; renderAttachments(); autosize();
@@ -1705,7 +2028,7 @@ function patchChat(fields) {
 function togglePlus(force) {
   const m = $("plusMenu");
   const open = force ?? m.hidden;
-  if (open) toggleMode(false);
+  if (open) { toggleMode(false); toggleEffort(false); }
   m.hidden = !open;
   $("plus").classList.toggle("open", open);
   if (open) { renderPlus(); loadTools().then(renderPlus); }
@@ -1761,19 +2084,27 @@ function renderPlus() {
 }
 $("plus").onclick = (e) => { e.stopPropagation(); togglePlus(); };
 $("plusMenu").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); });
-document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); });
+document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); if (!$("effortMenu").hidden) toggleEffort(false); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); if (!$("effortMenu").hidden) toggleEffort(false); });
 
 // ---------- context meter ----------
 let lastUsage = null, liveUsage = null, ctxSize = {}, ctxTimer = null; // liveUsage: exact counts from the run in progress
 const estTokens = (str) => Math.ceil(str.length / 3.6);
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n));
+// Tool definitions sent with each request. Large MCP servers are "on request" (lazytools.js): a compact list (about
+// 22 tokens a tool) plus tool_info/call_tool instead of every definition; tools the session uses a lot get full details.
+function toolTokens(specs) {
+  const at = toolInfo.lazyAt || 0, size = toolInfo.serverTokens || {}, full = new Set(chat.promoted || []);
+  const onRequest = (t) => t.server && at > 0 && (size[t.server] || 0) >= at && !full.has(t.name);
+  const sent = specs.filter((t) => !onRequest(t)), n = specs.length - sent.length;
+  return estTokens(JSON.stringify(sent.map((t) => t.spec))) + (n ? 300 + n * 22 : 0);
+}
 function updateCtx() {
   clearTimeout(ctxTimer);
   ctxTimer = setTimeout(async () => {
     const specs = activeTools();
     const pinnedChars = skillList.filter((s) => skillMode(s.name) === "on").length * 1500; // rough until loaded
-    const sys = estTokens(systemPrompt(specs, [])) + estTokens(JSON.stringify(specs.map((t) => t.spec))) + Math.ceil(pinnedChars / 3.6);
+    const sys = estTokens(systemPrompt(specs, [])) + toolTokens(specs) + Math.ceil(pinnedChars / 3.6);
     const model = modelSel.value;
     // Exact when possible: llama-server's count for the last request in this session (prompt + what it wrote), plus an
     // estimate of only what came after it. Images count roughly 1,000 tokens each for a vision model.

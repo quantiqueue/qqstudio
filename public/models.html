@@ -299,19 +299,16 @@
   <section data-tab="sessions">
     <h2>Sessions</h2>
     <div class="lead">Settings for every session: how much a model may think and write per call, and when long sessions are compacted.</div>
-    <h2 style="margin-top:22px; font-size:15px">Thinking</h2>
-    <div class="lead">Thinking token caps for the 💡 levels picked in a session. Per-request budgets need llama.cpp b9982+.</div>
+    <h2 style="margin-top:22px; font-size:15px">Effort &amp; Token Budgets</h2>
+    <div class="lead">What new sessions start at; each session can change both from its effort button. Effort is a hint the model's chat template reads (models that don't support it ignore it). Thinking caps how long the model may think: 1k, 4k, 16k or Unlimited (caps need llama.cpp b9982+).</div>
     <div class="srv">
-      <table class="tlevels">
-        <tr><td>Default</td><td class="muted">model decides</td></tr>
-        <tr><td>Off</td><td class="muted">no thinking</td></tr>
-        <tr><td>Low</td><td><input type="text" id="tbLow" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
-        <tr><td>Medium</td><td><input type="text" id="tbMed" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
-        <tr><td>High</td><td><input type="text" id="tbHigh" inputmode="numeric"> <span class="muted">tokens</span></td></tr>
-        <tr><td>Max</td><td class="muted">no cap</td></tr>
-      </table>
+      <div class="field"><label for="defEffort">Default Effort</label><select id="defEffort">
+        <option value="default">Auto</option><option value="off">Off</option><option value="low">Low</option>
+        <option value="medium">Medium</option><option value="high">High</option><option value="max">Max</option>
+      </select></div>
+      <div class="field"><label for="defBudget">Default Thinking</label><select id="defBudget"></select></div>
       <div class="field"><label for="replyTok">Reply tokens</label><input type="text" id="replyTok" inputmode="numeric" placeholder="no cap" style="max-width:120px"><span class="muted">per model call, on top of the thinking budget</span></div>
-      <div class="muted" style="margin:-4px 0 10px 108px">Caps the text and tool-call arguments one call can write. Default and Max thinking get 4× this. Leave blank for no cap.</div>
+      <div class="muted" style="margin:-4px 0 10px 108px">Caps the text and tool-call arguments one call can write. Auto and Unlimited thinking get 4× this. Leave blank for no cap.</div>
       <div class="field"><label for="tbMsg">Cut-off note</label><input type="text" id="tbMsg" placeholder="optional, e.g. Time is up, answer now." spellcheck="false"></div>
       <div class="muted" style="margin:-4px 0 10px 108px">Inserted into the model's thinking when the budget runs out, to nudge it to answer.</div>
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
@@ -403,6 +400,10 @@
     <h2>Tools</h2>
     <div class="lead">Choose what the model may do. "Ask first" shows an Allow / Deny prompt in the chat before the tool runs.</div>
     <label class="master"><input type="checkbox" id="toolsMaster"> Allow the model to use tools <span class="muted" id="toolsSaved"></span></label>
+    <div class="srv lazy-box">
+      <div class="field"><label for="lazyAt">Tools on request</label><span class="muted">for MCP servers over</span><input type="text" id="lazyAt" inputmode="numeric" placeholder="off" style="max-width:80px"><span class="muted">tokens</span><button id="lazySave" class="load">Save</button><span class="muted" id="lazyOut"></span></div>
+      <div class="muted" style="margin:-4px 0 0 108px">A server whose tool definitions are larger than this is listed to the model by name only, and the model asks for a tool's details when it needs them. This saves context and keeps the prompt cache valid when the server is turned on. Leave blank to always send full details.</div>
+    </div>
     <div id="toolCats"></div>
   </section>
 </main>
@@ -609,13 +610,28 @@ function confirmNewKey() { // two clicks instead of a blocking confirm() dialog
 lanLoad();
 
 // ---------- thinking budgets ----------
-function showThinking(t) { $("tbLow").value = t.budgets.low; $("tbMed").value = t.budgets.medium; $("tbHigh").value = t.budgets.high; }
+const fmtBudget = (n) => (n % 1024 === 0 ? n / 1024 + "k" : n >= 1000 ? +(n / 1000).toFixed(1) + "k" : String(n));
+function showThinking(t) {
+  $("defEffort").value = t.effort || "medium";
+  const sel = $("defBudget"); sel.innerHTML = "";
+  for (const [v, label] of [["auto", "Auto"], ["off", "Off"], ["low", fmtBudget(t.budgets.low)], ["medium", fmtBudget(t.budgets.medium)], ["high", fmtBudget(t.budgets.high)], ["unlimited", "Unlimited"]])
+    sel.appendChild(Object.assign(document.createElement("option"), { value: v, textContent: label }));
+  sel.value = t.budget || "unlimited";
+}
+// The two defaults are saved as soon as they change.
+const saveDefault = async (patch) => {
+  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thinking: patch }) }).catch(() => null);
+  $("tbMsgOut").textContent = r && r.ok ? "Saved" : "Error";
+  setTimeout(() => ($("tbMsgOut").textContent = ""), 1500);
+};
+$("defEffort").onchange = () => saveDefault({ effort: $("defEffort").value });
+$("defBudget").onchange = () => saveDefault({ budget: $("defBudget").value });
 fetch("/api/config").then((r) => r.json()).then((c) => {
   const t = c.thinking || { budgets: {} };
   showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("maskSecrets").checked = c.maskSecrets !== false;
 }).catch(() => {});
 $("tbSave").onclick = async () => {
-  const thinking = { budgets: { low: +$("tbLow").value, medium: +$("tbMed").value, high: +$("tbHigh").value }, message: $("tbMsg").value };
+  const thinking = { message: $("tbMsg").value };
   const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ thinking, replyTokens: $("replyTok").value.trim() }) });
   const c = await r.json();
   showThinking(c.thinking); $("replyTok").value = c.replyTokens || "";
@@ -636,8 +652,17 @@ $("caSave").onclick = async () => {
 let toolCfg = null;
 async function loadToolCfg() {
   try { toolCfg = await (await fetch("/api/tools/settings")).json(); } catch { return; }
+  $("lazyAt").value = toolCfg.lazyAt || "";
   renderTools();
 }
+$("lazySave").onclick = async () => {
+  try {
+    const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lazyToolsAt: $("lazyAt").value.trim() }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    await loadToolCfg();
+    $("lazyOut").textContent = "saved"; setTimeout(() => ($("lazyOut").textContent = ""), 1500);
+  } catch (e) { $("lazyOut").textContent = "Could not save: " + e.message; }
+};
 async function saveTools(patch) {
   try {
     toolCfg = await (await fetch("/api/tools/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) })).json();
@@ -666,6 +691,12 @@ function renderTools() {
     cb.onchange = () => saveTools({ tools: Object.fromEntries(tools.map((t) => [t.name, { enabled: cb.checked }])) });
     head.appendChild(el("span", null, cat));
     head.appendChild(el("span", "count", `${n}/${tools.length} on`));
+    const srvName = tools[0].server, tok = srvName && toolCfg.serverTokens ? toolCfg.serverTokens[srvName] : null;
+    if (tok) {
+      const lazyOn = toolCfg.lazyAt > 0 && tok >= toolCfg.lazyAt;
+      const sz = head.appendChild(el("span", "count", `≈${tok >= 1000 ? (tok / 1000).toFixed(1) + "k" : tok} tokens${lazyOn ? " · on request" : ""}`));
+      sz.title = lazyOn ? "Listed to the model by name only; it asks for details when it needs them" : "Sent in full when the server is on";
+    }
     for (const t of tools) {
       const row = box.appendChild(el("div", "tl" + (t.enabled ? "" : " off")));
       const en = row.appendChild(el("input", "en")); en.type = "checkbox"; en.checked = t.enabled;

@@ -3,8 +3,11 @@
 // chat file as it streams; any number of pages can watch a run through an event stream and stop it.
 const fs = require("fs");
 const secrets = require("./secrets");
+const lazy = require("./lazytools");
 
-const MAX_IMAGES = 4; // most recent images re-sent to a vision model on each step; older ones become a short note
+// Images re-sent to a vision model on each step: the newest 4 to 8. Older ones become a short note, 4 at a time, so the
+// conversation sent doesn't change at every new image (that would make llama-server read it again from there).
+const MAX_IMAGES = 8, IMAGE_STEP = 4;
 const SAVE_EVERY_MS = 1500;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Text the model keeps repeating (a common failure of small models): the same sentence many times, or the same chunk
@@ -28,10 +31,65 @@ const enableSpec = (names) => ({ type: "function", function: {
   description: "Turn on a group of tools listed in your instructions. Its tools can be called right after this returns.",
   parameters: { type: "object", properties: { name: { type: "string", enum: names, description: "Name of the tool group" } }, required: ["name"] },
 } });
+// ask_user's questions as small models write them: {questions:[…]}, one question at the top level, options as strings.
+function normQuestions(args) {
+  let qs = Array.isArray(args.questions) ? args.questions : args.question ? [args] : [];
+  qs = qs.slice(0, 4).map((q) => {
+    const opts = (Array.isArray(q.options) ? q.options : []).slice(0, 4)
+      .map((o) => (typeof o === "string" ? { label: o } : o && typeof o === "object" ? { label: String(o.label ?? o.name ?? ""), description: o.description ? String(o.description) : "", recommended: o.recommended === true } : null))
+      .filter((o) => o && o.label.trim());
+    opts.sort((a, b) => b.recommended - a.recommended); // the recommended option first
+    return { question: String(q.question || "").trim(), header: String(q.header || "").slice(0, 16), multiple: q.multiple === true, options: opts };
+  }).filter((q) => q.question && q.options.length >= 2);
+  return qs.length ? { value: qs } : { error: "ask_user needs questions: [{question, options: [{label, description, recommended}, …]}] with 1-4 questions of 2-4 options each." };
+}
+// The answers as the model gets them.
+function answerText(qs, a) {
+  if (a.text) return `The user answered in their own words: "${a.text}"`;
+  return "The user's answers:\n" + qs.map((q, i) => {
+    const x = (a.answers || [])[i] || {}, picks = (x.choices || []).filter((c) => q.options.some((o) => o.label === c));
+    const parts = picks.map((c) => c + (q.options.find((o) => o.label === c)?.recommended ? " (your recommendation)" : ""));
+    if (x.other) parts.push(`their own answer: "${x.other}"`);
+    return `${i + 1}. ${q.question} → ${parts.join("; ") || "(no answer)"}`;
+  }).join("\n");
+}
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, samplingFor = () => ({}), ensureEngine = async () => {} }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {} }) {
   const runs = new Map(); // chatId -> run
+
+  // ---------- prompt cache ----------
+  // llama-server keeps each slot's last prompt and reuses its matching start. A request can land on any slot, and one
+  // whose start doesn't match is read in full (~25 s for 50k tokens), so each session is pinned to a slot (id_slot):
+  // the one it used last, unless another running reply has it; otherwise the slot used least recently.
+  const slotOf = new Map(), slotUsed = new Map(); // chatId -> slot, slot -> last use
+  async function pickSlot(run, avoid = null) {
+    const n = await nSlots(run.model).catch(() => null);
+    if (!n || n < 2) return undefined;
+    const busy = new Set([...runs.values()].filter((r) => r !== run && r.slot !== undefined).map((r) => r.slot));
+    if (avoid !== null) busy.add(avoid);
+    let s = avoid === null ? slotOf.get(run.id) : undefined;
+    if (s === undefined || s >= n || busy.has(s)) {
+      const owned = new Set([...slotOf].filter(([c]) => c !== run.id).map(([, x]) => x));
+      const free = [...Array(n).keys()].filter((x) => !busy.has(x));
+      free.sort((a, b) => (owned.has(a) - owned.has(b)) || ((slotUsed.get(a) || 0) - (slotUsed.get(b) || 0)));
+      s = free[0];
+    }
+    if (s !== undefined) { slotUsed.set(s, Date.now()); if (avoid === null) slotOf.set(run.id, s); }
+    return s;
+  }
+  // What changed since this session's previous request, to say why llama-server read the prompt again.
+  const lastPrompt = new Map(); // chatId -> part hashes [instructions, tool list, message 1, …]
+  const hash = (x) => require("crypto").createHash("md5").update(typeof x === "string" ? x : JSON.stringify(x)).digest("hex");
+  function promptChange(run, body) {
+    const parts = [hash(body.messages[0].content), hash(body.tools || []), ...body.messages.slice(1).map(hash)];
+    const prev = lastPrompt.get(run.id);
+    lastPrompt.set(run.id, parts);
+    if (!prev) return "first request";
+    const i = parts.findIndex((p, k) => p !== prev[k]);
+    if (i === -1 || i >= prev.length) return null; // only added at the end
+    return i === 0 ? "the instructions changed" : i === 1 ? "the tool list changed" : `message ${i - 1} (${body.messages[i - 1].role}) changed`;
+  }
 
   const readChat = async (id) => JSON.parse(await fs.promises.readFile(chatFile(id), "utf8"));
   function emit(run, ev) {
@@ -66,9 +124,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       return note ? { ...base, content: (typeof base.content === "string" && base.content ? base.content + "\n\n" : "") + note } : base;
     });
     if (!run.vision) return plain;
-    const keep = new Set(); // newest MAX_IMAGES image refs
-    for (let i = run.messages.length - 1; i >= 0 && keep.size < MAX_IMAGES; i--)
-      for (const im of [...(run.messages[i]._images || [])].reverse()) { if (keep.size >= MAX_IMAGES) break; keep.add(im); }
+    const refs = run.messages.flatMap((m) => m._images || []);
+    const cut = refs.length <= MAX_IMAGES ? 0 : Math.ceil((refs.length - MAX_IMAGES) / IMAGE_STEP) * IMAGE_STEP;
+    const keep = new Set(refs.slice(cut));
     const parts = async (imgs) => {
       const out = []; let omitted = 0, unreadable = 0;
       for (const im of imgs) {
@@ -169,7 +227,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       run.abort = new AbortController();
       const r = await fetch(`${llama.url()}/v1/chat/completions`, {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: run.abort.signal,
-        body: JSON.stringify({ model: run.model, stream: false, max_tokens: 3000, temperature: 0.3,
+        body: JSON.stringify({ model: run.model, stream: false, max_tokens: 3000, temperature: 0.3, ...((s) => (s === undefined ? {} : { id_slot: s }))(await pickSlot(run, run.slot ?? -1)),
           chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0,
           messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Summarize this conversation so far:\n\n${text}` }] }),
       });
@@ -186,7 +244,16 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     run.messages.splice(keep, 0, msg);
     console.log(`[run] ${run.id} compacted ${older.length} messages at ${size}/${run.nCtx} tokens`);
     emit(run, { type: "compacted", at: keep, msg });
-    await save(run);
+    // The prompt is read again from here on anyway: tools on request the session has used get their full details now
+    // (their tool_info results were just summarized away), and keep them in later replies.
+    // Groups the model turned on (their enable_tools results may have just been summarized) are listed in the instructions.
+    const add = [...run.used].filter((n) => run.lazy.has(n) && !run.promoted.has(n));
+    for (const n of add) run.promoted.add(n);
+    for (const n of run.lazy.keys()) run.listed.add(n);
+    setTools(run);
+    setSystem(run);
+    if (add.length) console.log(`[run] ${run.id} full details for ${add.length} tools on request: ${add.join(", ")}`);
+    await save(run, null, { promoted: [...run.promoted], inPrompt: [...run.loaded] });
   }
 
   async function step(run) {
@@ -194,7 +261,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
     let think0 = null, think1 = null, timings = null, failed = false, gotChunk = false, lastSave = Date.now();
-    let looped = false, finish = null, checkedAt = 0, usage = null, ppTotal = 0;
+    let looped = false, finish = null, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
     const calls = [];
     emit(run, { type: "step", model });
     const phase = (text, pct = null) => {
@@ -227,6 +294,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         max_tokens: run.maxTokens,
       };
       if (run.tools.length) body.tools = run.tools;
+      if (run.slot === undefined) run.slot = await pickSlot(run);
+      if (run.slot !== undefined) body.id_slot = run.slot;
+      changed = promptChange(run, body);
       const r = await fetch(`${llama.url()}/v1/chat/completions`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: run.abort.signal,
       });
@@ -247,9 +317,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (!gotChunk) { gotChunk = true; polling = false; if (!cur.content) phase("Reading prompt"); }
           const pp = j.prompt_progress;
           if (pp && pp.total && pp.total !== ppTotal) { ppTotal = pp.total; emit(run, { type: "usage", prompt: pp.total, completion: 0, model, reading: true }); } // exact prompt size, early
+          if (pp && pp.total && cached === null) cached = { cache: pp.cache || 0, total: pp.total };
           if (pp && pp.total && !cur.content && !cur.reasoning) {
             const done = Math.max(0, pp.processed - (pp.cache || 0)), todo = Math.max(1, pp.total - (pp.cache || 0));
-            phase(`Reading prompt · ${pp.processed}/${pp.total} tokens`, Math.min(100, Math.round((done / todo) * 100)));
+            const k = (n) => n.toLocaleString("en-US");
+            phase(pp.cache ? `Reading prompt · ${k(done)}/${k(todo)} new tokens · ${k(pp.cache)} cached` : `Reading prompt · ${k(pp.processed)}/${k(pp.total)} tokens`,
+              Math.min(100, Math.round((done / todo) * 100)));
           }
           if (j.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
           const d = j.choices && j.choices[0] && j.choices[0].delta;
@@ -271,7 +344,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (d.content) {
             cur.content += d.content; ev.c = d.content; cur.phase = null;
           }
-          if (ev.r || ev.c) { ev.n = cur.gen.n; cur.gen.sent = Date.now(); emit(run, ev); }
+          if (ev.r || ev.c) { ev.n = cur.gen.n; ev.tot = run.genDone + cur.gen.total; cur.gen.sent = Date.now(); emit(run, ev); }
           const total = cur.content.length + cur.reasoning.length;
           if (total - checkedAt >= 300) {
             checkedAt = total;
@@ -288,7 +361,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           }
           if (d.tool_calls && (!cur.gen.toolSent || Date.now() - cur.gen.sent >= 250)) { // tool-call arguments stream silently otherwise
             cur.gen.sent = Date.now(); cur.gen.toolSent = true;
-            emit(run, { type: "delta", n: cur.gen.n, tool: cur.gen.tool || "" });
+            emit(run, { type: "delta", n: cur.gen.n, tot: run.genDone + cur.gen.total, tool: cur.gen.tool || "" });
           }
           if (Date.now() - lastSave > SAVE_EVERY_MS && (cur.content || cur.reasoning)) {
             lastSave = Date.now();
@@ -308,9 +381,16 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       run.abort = null;
     }
     const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
+    { // prompt cache report: how much llama-server reused, and what changed when it read a lot again
+      const total = timings?.prompt_n != null && timings?.cache_n != null ? timings.prompt_n + timings.cache_n : cached?.total;
+      const hit = timings?.cache_n ?? cached?.cache;
+      if (total) console.log(`[run] ${run.id} prompt ${total} tokens, ${hit ?? "?"} cached${run.slot !== undefined ? ` (slot ${run.slot})` : ""}` +
+        (hit != null && total - hit > 2000 && changed ? ` · read again: ${changed}` : ""));
+    }
     // Reply only: time from its first token (after thinking) and its own token count. Thinking has its own "Thought for" line.
     const g = cur.gen, replied = g && !g.thinking;
     if (g && timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.n = g.total - g.base; }
+    run.genDone += g ? g.total : 0; // the whole reply's count (all steps, thinking included) for the footer
     const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
     const meta = `${model} · ${secs}s` +
       (replied ? ` · ${g.n} tok` + (timings?.predicted_per_second ? ` @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") : "") +
@@ -318,32 +398,77 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const thinkSecs = think0 === null ? null : +(((think1 ?? Date.now()) - think0) / 1000).toFixed(1);
     const tb = run.think.budget, note = (run.think.message || "").trim();
     const budgetHit = !!(cur.reasoning && tb > 0 && (cur.reasoning.length / 3.6 >= tb * 0.9 || (note && cur.reasoning.trim().endsWith(note))));
-    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, thinkSecs, budgetHit, looped };
+    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, thinkSecs, budgetHit, looped, t0 };
+  }
+
+  // The instructions: the page's system prompt plus the compact list of tools on request (minus those with full details).
+  // Both are built in a fixed order (the order servers list their tools), so the same session state always gives the
+  // same prompt: a different order would make llama-server read everything after it again.
+  const byOrder = (run) => (a, b) => (run.order.get(a.name) ?? 1e9) - (run.order.get(b.name) ?? 1e9);
+  function setSystem(run) {
+    run.system = run.baseSystem + lazy.section([...run.lazy.values()].filter((t) => run.listed.has(t.name) && !run.promoted.has(t.name)).sort(byOrder(run)));
+  }
+  // The tool list: the page's tools, then tools on request that got full details, then tool_info / call_tool.
+  function setTools(run) {
+    const full = [...run.lazy.values()].filter((t) => run.promoted.has(t.name)).sort(byOrder(run)).map((t) => t.spec);
+    run.tools = [...run.baseTools, ...full, ...(run.viaCall ? [lazy.INFO_SPEC, lazy.CALL_SPEC] : [])];
+    run.allowed = new Set(run.tools.map((t) => t.function.name));
   }
 
   // Moves a deferred group's tools into the run (usable from the next step) and remembers it for the chat.
+  // A group on request only joins the pool call_tool draws from; its compact list is the result, so the tool list
+  // sent with each request doesn't change.
   async function enableTools(run, args) {
     const want = String(args.name || "").trim().toLowerCase();
     const g = [...run.deferred.values()].find((x) => x.name.toLowerCase() === want);
     if (!g) return { status: "error", text: `ERROR: no tool group named "${args.name}". Available: ${[...run.deferred.values()].map((x) => x.name).join(", ") || "none"}.` };
-    if (run.loaded.has(g.key)) return { status: "done", text: `${g.name} is already on; call its tools directly.` };
-    const have = new Set(run.tools.map((t) => t.function.name));
-    for (const t of g.tools) if (!have.has(t.function.name)) { run.tools.push(t); run.allowed.add(t.function.name); }
+    if (run.loaded.has(g.key)) return { status: "done", text: `${g.name} is already on. Run its tools with call_tool (tool_info gives their parameters).` };
+    // Its tools join the pool call_tool draws from; the tool list sent with each request stays the same.
+    const ts = g.tools.map((s) => run.byName.get(s.function.name)).filter(Boolean).map((t) => ({ ...t, group: g.name }));
+    for (const t of ts) run.lazy.set(t.name, t);
     run.loaded.add(g.key);
     emit(run, { type: "loaded", loaded: [...run.loaded] });
     await save(run, null, { loaded: [...run.loaded] });
-    console.log(`[run] ${run.id} enabled ${g.key} (${g.tools.length} tools)`);
-    return { status: "done", text: `${g.name} is on: ${g.tools.length} tool${g.tools.length === 1 ? "" : "s"} can be called now (${g.tools.map((t) => t.function.name).join(", ")}).` + (g.note ? " " + g.note : "") };
+    console.log(`[run] ${run.id} enabled ${g.key} (${ts.length} tools, through call_tool)`);
+    const text = g.lazy ? `${g.name} is on. ${lazy.section(ts).trim()}` // big: names only, details from tool_info
+      : `${g.name} is on. Run its tools with call_tool {"name": "<tool>", "arguments": {…}}:\n\n` + lazy.info(ts.map((t) => t.name), run.lazy).text.replace(/\n\nRun one with call_tool.*$/s, "");
+    return { status: "done", text: text + (g.note ? "\n\n" + g.note : "") };
+  }
+
+  // Shows the questions in the session (a card with the options) and waits for the answers, however long it takes, like an
+  // approval. Typing a message instead answers too. Stop cancels.
+  async function askUser(run, tc, args) {
+    const q = normQuestions(args);
+    if (q.error) return { status: "bad arguments", text: "ERROR: " + q.error };
+    const answers = await new Promise((resolve) => {
+      run.question = { id: tc.id, tc, questions: q.value, resolve };
+      emit(run, { type: "question", id: tc.id, tc, questions: q.value });
+    });
+    run.question = null;
+    if (run.stopped || !answers) return { status: "cancelled", text: "Cancelled by user." };
+    emit(run, { type: "answered", id: tc.id, answers });
+    console.log(`[run] ${run.id} questions answered`);
+    return { status: "done", text: answerText(q.value, answers), answers: { questions: q.value, ...answers } };
   }
 
   async function callTool(run, tc) {
-    const name = tc.function.name;
+    let name = tc.function.name;
     let args;
     try { args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {}; }
     catch (e) { return { status: "bad arguments", text: `ERROR: arguments were not valid JSON (${e.message}). Call the tool again with valid JSON arguments.` }; }
     if (name === "enable_tools" && run.allowed.has(name)) return enableTools(run, args);
-    if (!run.allowed.has(name)) return { status: "error", text: `ERROR: the tool "${name}" is not available in this chat.` };
+    if (name === "tool_info" && run.allowed.has(name)) { const r = lazy.info(args.names ?? args.name, run.lazy); return { status: r.ok ? "done" : "error", text: r.text }; }
+    // A tool on request, through call_tool or (when the model skips that) called directly by its name.
+    if ((name === "call_tool" && run.allowed.has(name)) || (!run.allowed.has(name) && run.lazy.size && !lazy.resolve(name, run.lazy).error)) {
+      const viaCall = name === "call_tool";
+      const r = lazy.resolve(viaCall ? args.name : name, run.lazy);
+      if (r.error) return { status: "error", text: "ERROR: " + r.error };
+      if (viaCall) { const a = lazy.innerArgs(args); if (a.error) return { status: "bad arguments", text: "ERROR: " + a.error }; args = a.value; }
+      name = r.tool.name;
+      run.used.add(name);
+    } else if (!run.allowed.has(name)) return { status: "error", text: `ERROR: the tool "${name}" is not available in this chat.` };
     if (!isEnabled(name)) return { status: "error", text: `ERROR: the tool "${name}" is disabled in Settings > Tools.` };
+    if (name === "ask_user") return askUser(run, tc, args);
     const spec = toolList().find((t) => t.name === name);
     if (spec && spec.approval) {
       let mode = "manual";
@@ -426,12 +551,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         run.cur = null;
         // A step with only thinking (e.g. stopped mid-thought) is still saved, so the page closes it.
         if (r.failed || (!r.content && !r.toolCalls.length && !r.reasoning)) break;
-        const msg = { role: "assistant", content: r.content, _meta: r.meta };
+        const msg = { role: "assistant", content: r.content, _meta: r.meta, _t0: r.t0, _at: Date.now() }; // step start/end: "Reasoned for 42s"
         if (r.usage) { msg._usage = { ...r.usage, model: run.model }; msg._ctxFrom = lastSummary(run.messages); } // exact counts from llama-server (context meter, compaction)
         if (r.reasoning) { msg._reasoning = r.reasoning; if (r.thinkSecs != null) msg._thinkSecs = r.thinkSecs; if (r.budgetHit) msg._budgetHit = true; }
         if (r.toolCalls.length) msg.tool_calls = r.toolCalls;
         run.messages.push(msg);
-        emit(run, { type: "assistant", msg });
+        emit(run, { type: "assistant", msg, tot: run.genDone });
         await save(run);
         if (r.looped) { emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty for this model in models.ini." }); break; }
         if (!r.toolCalls.length) { if (run.pending.length && !run.stopped) continue; break; } // a steer arrived as it finished: keep going
@@ -439,8 +564,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         for (const tc of r.toolCalls) { // every tool call needs a result, even if cancelled
           const res = run.stopped ? { status: "cancelled", text: "Cancelled by user." } : await callTool(run, tc);
           sig.push(tc.function.name, tc.function.arguments, res.text);
-          const tm = { role: "tool", tool_call_id: tc.id, content: res.text, _status: res.status };
+          const tm = { role: "tool", tool_call_id: tc.id, content: res.text, _status: res.status, _at: Date.now() };
           if (res.images?.length) tm._images = res.images;
+          if (res.answers) tm._answers = res.answers; // the card shows them when the session is opened again
           run.messages.push(tm);
           run.tool = null;
           emit(run, { type: "tool_result", msg: tm });
@@ -456,10 +582,13 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       emit(run, { type: "failed", text: "Error: " + e.message });
     } finally {
       run.cur = null; run.tool = null;
+      const stat = { tokens: run.genDone, ms: Date.now() - run.t0 };
+      const last = run.messages.slice(run.startLen).reverse().find((m) => m.role === "assistant");
+      if (last) last._run = stat; // "Generated N tokens in 3m 40s" under the reply when the session is opened again
       if (run.pending.length && !run.deleted) await applyPending(run, true).catch(() => {}); // stopped with steers pending: the page starts a new reply with them
       await save(run, null, run.clients.size ? {} : { unread: true }); // nobody watching: mark it for the sidebar
       runs.delete(run.id);
-      emit(run, { type: "done" });
+      emit(run, { type: "done", ...stat });
       for (const c of run.clients) c.end();
       console.log(`[run] ${run.id} finished${run.stopped ? " (stopped)" : ""}`);
     }
@@ -470,6 +599,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     run.stopped = true;
     if (run.abort) run.abort.abort();
     if (run.approval) run.approval.resolve(false);
+    if (run.question) run.question.resolve(null);
   }
 
   // Output cap per model call (Settings > Engine): reply tokens on top of the thinking budget. With no thinking cap
@@ -493,18 +623,51 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (g && g.key && g.name && Array.isArray(g.tools) && g.tools.length)
         deferred.set(g.key, { key: String(g.key), name: String(g.name), note: String(g.note || ""), tools: g.tools.filter((t) => t?.function?.name) });
     if (deferred.size) tools.push(enableSpec([...deferred.values()].map((g) => g.name)));
+    // Tools on request (lazytools.js): large MCP servers are listed by name; details come from tool_info.
+    const all = toolList(), byName = new Map(all.map((t) => [t.name, t]));
+    const at = lazy.threshold(getConfig()), cost = lazy.serverTokens(all);
+    const isLazy = (server) => at > 0 && (cost[server] || 0) >= at;
+    const promoted = new Set(Array.isArray(chat.promoted) ? chat.promoted : []);
+    const lazyPool = new Map();
+    for (let i = tools.length - 1; i >= 0; i--) {
+      const t = byName.get(tools[i].function.name);
+      if (t && t.server && isLazy(t.server)) { lazyPool.set(t.name, t); tools.splice(i, 1); } // promoted ones are added back by setTools
+    }
+    // Groups on Auto stay listed (enable_tools) even after the model turned them on, and their tools are served through
+    // call_tool, so the instructions and the tool list at the top of the prompt don't change and llama-server's prompt
+    // cache stays valid. They move into the prompt itself only at compaction, which reads the prompt again anyway.
+    const loaded = new Set(Array.isArray(chat.loaded) ? chat.loaded : []);
+    const inPrompt = new Set(Array.isArray(chat.inPrompt) ? chat.inPrompt : []);
+    const listed = new Set([...lazyPool.keys()]); // tools named in the instructions' "Tools on request" section
+    for (const g of deferred.values()) {
+      g.lazy = g.key.startsWith("mcp:") && isLazy(g.name);
+      if (!loaded.has(g.key)) continue;
+      for (const s of g.tools) {
+        const t = byName.get(s.function.name);
+        if (!t) continue;
+        lazyPool.set(t.name, { ...t, group: g.name });
+        if (inPrompt.has(g.key)) listed.add(t.name);
+      }
+    }
     const budget = body.think?.budget;
     const run = {
-      id, model: body.model, system: String(body.system || ""), tools, vision: visionOf(body.model), imgCache: new Map(),
-      allowed: new Set(tools.map((t) => t && t.function && t.function.name).filter(Boolean)),
+      id, model: body.model, baseSystem: String(body.system || ""), system: "", baseTools: tools, tools: [], allowed: new Set(),
+      vision: visionOf(body.model), imgCache: new Map(),
+      lazy: lazyPool, promoted, listed, used: new Set(), byName, order: new Map(all.map((t, i) => [t.name, i])),
+      viaCall: lazyPool.size > 0 || deferred.size > 0, // tool_info / call_tool are offered
       think: { body: body.think?.body || {}, budget: body.think?.budget ?? null, message: body.think?.message || "" },
-      deferred, loaded: new Set(Array.isArray(chat.loaded) ? chat.loaded : []),
+      deferred, loaded,
       maxTokens: outputCap(budget),
+      t0: Date.now(), genDone: 0, // for "N tokens in 1m 2s" under the reply
       messages: (chat.messages || []).filter((m) => !m._partial),
+      startLen: (chat.messages || []).filter((m) => !m._partial).length,
       clients: new Set(), pending: [], cur: null, tool: null, approval: null, abort: null, stopped: false, deleted: false,
     };
+    setTools(run);
+    setSystem(run);
     runs.set(id, run);
-    console.log(`[run] ${id} started (${run.model}, ${tools.length} tools${deferred.size ? `, ${deferred.size} on Auto` : ""}${run.vision ? ", vision" : ""})`);
+    if (lazyPool.size) console.log(`[run] ${id} ${lazyPool.size - [...lazyPool.keys()].filter((n) => promoted.has(n)).length} tools on request (${[...new Set([...lazyPool.values()].map((t) => t.group || t.server))].join(", ")})`);
+    console.log(`[run] ${id} started (${run.model}, ${run.tools.length} tools${deferred.size ? `, ${deferred.size} on Auto` : ""}${run.vision ? ", vision" : ""})`);
     loop(run);
     return run;
   }
@@ -514,7 +677,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (!run) { res.writeHead(204); return res.end(); } // 204 tells EventSource not to reconnect
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const cur = run.cur && { ...run.cur, gen: run.cur.gen && { n: run.cur.gen.n, ms: Date.now() - run.cur.gen.t0, tool: run.cur.gen.tool } };
-    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending })}\n\n`);
+    const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0) };
+    const question = run.question && { id: run.question.id, tc: run.question.tc, questions: run.question.questions };
+    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending, stat, question })}\n\n`);
     run.clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
     req.on("close", () => { clearInterval(ping); run.clients.delete(res); });
@@ -523,7 +688,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   // /api/runs routes.
   async function handle(req, res, { readBody, sendJson }) {
     const u = new URL(req.url, "http://x");
-    const m = u.pathname.match(/^\/api\/runs(?:\/([^/]+)(?:\/(events|stop|approve|steer))?)?$/);
+    const m = u.pathname.match(/^\/api\/runs(?:\/([^/]+)(?:\/(events|stop|approve|steer|answer))?)?$/);
     if (!m) return sendJson(res, 404, { error: "Not found" });
     const [, id, action] = m;
     try {
@@ -535,6 +700,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         const run = runs.get(id);
         if (!run || run.stopped) return sendJson(res, 409, { error: "No reply in progress" }); // the page sends it as a normal message
         return sendJson(res, 200, { ok: true, id: steer(run, JSON.parse(await readBody(req))).id });
+      }
+      if (id && action === "answer" && req.method === "POST") { // {id, answers: [{choices: [labels], other}]} or {id, text}
+        const b = JSON.parse(await readBody(req)), run = runs.get(id);
+        if (!run || !run.question || run.question.id !== b.id) return sendJson(res, 409, { error: "No question waiting" });
+        const a = b.text ? { text: String(b.text).trim() } : { answers: (Array.isArray(b.answers) ? b.answers : []).map((x) => ({
+          choices: (Array.isArray(x?.choices) ? x.choices : []).map(String), other: x?.other ? String(x.other).trim() : "" })) };
+        run.question.resolve(a);
+        return sendJson(res, 200, { ok: true });
       }
       if (id && action === "approve" && req.method === "POST") {
         const b = JSON.parse(await readBody(req)), run = runs.get(id);
@@ -551,7 +724,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     handle,
     has: (id) => runs.has(id),
     anyActive: () => runs.size > 0,
-    waiting: (id) => !!runs.get(id)?.approval,
+    waiting: (id) => (runs.get(id)?.approval ? "approval" : runs.get(id)?.question ? "question" : false), // the sidebar's yellow dot
     stop: (id) => stop(runs.get(id)),
     deleted: (id) => { const r = runs.get(id); if (r) { r.deleted = true; stop(r); } },
     modeChanged: (id, mode) => { const r = runs.get(id); if (mode === "auto" && r && r.approval) r.approval.resolve(true); },

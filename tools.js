@@ -227,6 +227,19 @@ const schemas = [
     parameters: { type: "object", properties: {
       url: { type: "string", description: "Full http(s) URL of the file" },
       path: { type: "string", description: "Destination file path or folder" } }, required: ["url", "path"] } },
+  // Handled by runs.js (the reply waits for the answers); listed here so it has settings and a category.
+  { name: "ask_user", approval: false,
+    description: "Ask the user 1-4 multiple-choice questions and wait for the answers. Use it only for a big task where the request leaves real choices open and a wrong guess would be costly to redo: ask everything at once, before you start. Don't ask about things you can find out with your other tools, and don't use it for small tasks. Put the option you recommend first and mark it recommended. The user can also answer in their own words.",
+    parameters: { type: "object", properties: {
+      questions: { type: "array", description: "1 to 4 questions", items: { type: "object", properties: {
+        question: { type: "string", description: "The question, ending with a question mark" },
+        header: { type: "string", description: "Very short label for the question (max 12 characters), e.g. \"Style\"" },
+        options: { type: "array", description: "2 to 4 choices", items: { type: "object", properties: {
+          label: { type: "string", description: "The choice, 1-5 words" },
+          description: { type: "string", description: "What choosing it means, one short line" },
+          recommended: { type: "boolean", description: "true for the option you recommend (at most one)" } }, required: ["label"] } },
+        multiple: { type: "boolean", description: "true if the user may pick several options" } }, required: ["question", "options"] } } },
+      required: ["questions"] } },
   { name: "run_command", approval: true,
     description: "Run a shell command (cmd.exe on Windows) and return its output. 60s timeout. The user must approve.",
     parameters: { type: "object", properties: {
@@ -261,8 +274,9 @@ const META = {
   image_search: ["Images", "Image search"],
   show_image: ["Images", "Show images"],
   run_command: ["System", "Run commands"],
+  ask_user: ["Questions", "Ask questions"],
 };
-const CATEGORIES = ["File Access", "Web", "Images", "System", "Skills"];
+const CATEGORIES = ["File Access", "Web", "Images", "System", "Questions", "Skills"];
 const CFG_FILE = require("./paths").tools;
 const fsSync = require("fs");
 

@@ -12,6 +12,7 @@ const PUBLIC = path.join(__dirname, "public");
 const DATA = require("./paths"); // must load first: migrates old data into %USERPROFILE%\.qqstudio
 const ws = require("./workspaces");
 ws.init(); // makes Default, moves the old chats\ folder into it
+const lazyTools = require("./lazytools");
 const { ROOTS, addRoot, removeRoot, runTool, toolList, toolSettings, saveToolSettings, isEnabled, resolveSafe, IMAGE_EXT } = require("./tools");
 const hf = require("./hf");
 const presets = require("./presets");
@@ -323,7 +324,7 @@ function updateChat(file, fn) {
   tail.then(() => { if (chatQueues.get(file) === tail) chatQueues.delete(file); });
   return next;
 }
-const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, samplingFor: loadouts.samplingFor, ensureEngine });
+const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine });
 
 async function writeChat(file, obj) {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`; // unique: runs and the page can save at once
@@ -503,18 +504,20 @@ async function handleWorkspaces(req, res) {
 }
 
 // ---- Context size of a loaded model (best effort; never triggers a load) ----
-async function nCtx(model) {
+async function modelProps(model, pick) {
   for (const u of [`${llama.url()}/props?model=${encodeURIComponent(model)}&autoload=false`, `${llama.url()}/props`]) {
     try {
       const r = await fetch(u, { signal: AbortSignal.timeout(2000) });
       if (!r.ok) continue;
-      const j = await r.json();
-      const n = j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx;
+      const n = pick(await r.json());
       if (n) return n;
     } catch {}
   }
   return null;
 }
+function nCtx(model) { return modelProps(model, (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx); }
+// Parallel slots of the loaded model (llama-server --parallel); each keeps its own prompt cache.
+function nSlots(model) { return modelProps(model, (j) => j.total_slots); }
 async function handleCtx(req, res) {
   sendJson(res, 200, { n_ctx: await nCtx(new URL(req.url, "http://x").searchParams.get("model") || "") });
 }
@@ -537,14 +540,21 @@ async function handleMcp(req, res) {
   } catch (e) { sendJson(res, 400, { error: e.message }); }
 }
 
+// Tools on request (lazytools.js): the threshold and each MCP server's estimated size, for the pages.
+const lazyInfo = () => ({ lazyAt: lazyTools.threshold(getConfig()), serverTokens: lazyTools.serverTokens(toolList()) });
 // ---- General user config (config.json) ----
-const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "" };
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true }; // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
+// Effort (a hint the chat template reads) and thinking budget (a token cap) are separate. budgets: the three fixed caps a
+// session's Thinking menu offers (1k / 4k / 16k); effort / budget: what new sessions start at.
+const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
+const EFFORTS = ["default", "off", "low", "medium", "high", "max"]; // "default" is shown as Auto (nothing sent)
+const BUDGETS = ["auto", "off", "low", "medium", "high", "unlimited"]; // low/medium/high: the caps in budgets
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000 }; // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
   const t = c.thinking || {};
   delete c.lanAccess; delete c.lanKey; // served by /api/server (local requests only)
-  return { ...CONFIG_DEFAULTS, ...c, thinking: { budgets: { ...THINK_DEFAULTS.budgets, ...(t.budgets || {}) }, message: t.message ?? THINK_DEFAULTS.message}, dataDir: DATA.home };
+  return { ...CONFIG_DEFAULTS, ...c, thinking: { budgets: THINK_DEFAULTS.budgets, message: t.message ?? THINK_DEFAULTS.message,
+    effort: EFFORTS.includes(t.effort) ? t.effort : EFFORTS.includes(t.level) ? t.level : THINK_DEFAULTS.effort, budget: BUDGETS.includes(t.budget) ? t.budget : THINK_DEFAULTS.budget }, dataDir: DATA.home };
 }
 async function handleConfig(req, res) {
   if (req.method === "GET") return sendJson(res, 200, getConfig());
@@ -555,15 +565,13 @@ async function handleConfig(req, res) {
     if (typeof patch.modelsFolder === "string") cur.modelsFolder = patch.modelsFolder.trim();
     if (typeof patch.maskSecrets === "boolean") cur.maskSecrets = patch.maskSecrets;
     if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
+    if ("lazyToolsAt" in patch) { const v = patch.lazyToolsAt === "" || patch.lazyToolsAt == null ? 0 : Math.round(Number(patch.lazyToolsAt)); if (Number.isFinite(v) && v >= 0) cur.lazyToolsAt = v; }
     if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }
     if (patch.thinking && typeof patch.thinking === "object") {
       const t = cur.thinking || {};
-      const b = { ...(t.budgets || {}) };
-      for (const k of ["low", "medium", "high"]) {
-        const v = Math.round(Number(patch.thinking.budgets?.[k]));
-        if (Number.isFinite(v) && v > 0) b[k] = v;
-      }
-      cur.thinking = { budgets: b, message: typeof patch.thinking.message === "string" ? patch.thinking.message : t.message || "" };
+      cur.thinking = { message: typeof patch.thinking.message === "string" ? patch.thinking.message : t.message || "",
+        effort: EFFORTS.includes(patch.thinking.effort) ? patch.thinking.effort : t.effort ?? t.level,
+        budget: BUDGETS.includes(patch.thinking.budget) ? patch.thinking.budget : t.budget };
     }
     DATA.writeJson(DATA.config, cur);
     return sendJson(res, 200, getConfig());
@@ -596,7 +604,7 @@ async function handleChats(req, res) {
       c.id = id;
       const placed = ws.placeSession(id, c.workspace); // a new session goes into the workspace it names (else Default)
       c.workspace = ws.workspaceOf(id);
-      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; return c; }); // keep groups the model turned on
+      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; return c; }); // keep groups the model turned on, tools given full details
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "PATCH") {
@@ -609,7 +617,9 @@ async function handleChats(req, res) {
         if (typeof patch.model === "string") c.model = patch.model;
         for (const k of ["skills", "mcp", "cats"]) if (patch[k] && typeof patch[k] === "object") c[k] = patch[k];
         if (Array.isArray(patch.loaded)) c.loaded = patch.loaded.filter((x) => typeof x === "string");
-        if (["default", "off", "low", "medium", "high", "max"].includes(patch.think)) c.think = patch.think;
+        if (EFFORTS.includes(patch.think)) c.think = patch.think; // before effort/thinkBudget were separate
+        if (EFFORTS.includes(patch.effort)) c.effort = patch.effort;
+        if (BUDGETS.includes(patch.thinkBudget)) c.thinkBudget = patch.thinkBudget;
         return c;
       });
       if (!done) return sendJson(res, 404, { error: "Chat not found" });
@@ -917,10 +927,10 @@ const server = http.createServer((req, res) => {
     if (HOT && req.method === "GET" && req.url === "/__reload") return handleReloadStream(req, res);
     if (req.method === "GET" && req.url === "/api/models") return handleModels(res);
     if (req.method === "GET" && req.url === "/api/tools")
-      return sendJson(res, 200, { enabled: toolSettings().enabled, tools: toolList(), roots: ROOTS, platform: process.platform, cwd: ROOTS[0] });
-    if (req.method === "GET" && req.url === "/api/tools/settings") return sendJson(res, 200, toolSettings());
+      return sendJson(res, 200, { enabled: toolSettings().enabled, tools: toolList(), roots: ROOTS, platform: process.platform, cwd: ROOTS[0], ...lazyInfo() });
+    if (req.method === "GET" && req.url === "/api/tools/settings") return sendJson(res, 200, { ...toolSettings(), ...lazyInfo() });
     if (req.method === "PUT" && req.url === "/api/tools/settings")
-      return readBody(req).then((b) => sendJson(res, 200, saveToolSettings(JSON.parse(b)))).catch((e) => sendJson(res, 400, { error: e.message }));
+      return readBody(req).then((b) => sendJson(res, 200, { ...saveToolSettings(JSON.parse(b)), ...lazyInfo() })).catch((e) => sendJson(res, 400, { error: e.message }));
     if (req.method === "POST" && req.url === "/api/tool") return handleTool(req, res);
     if (req.url === "/api/chats" || req.url.startsWith("/api/chats/")) return handleChats(req, res);
     if (req.url === "/api/config") return handleConfig(req, res);
