@@ -114,6 +114,13 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return files.length === 1 ? `[Attached image saved at ${files[0]}]` : `[Attached images saved at:\n${files.map((f) => "- " + f).join("\n")}]`;
   }
 
+  // "[Attached file saved at C:\\…\\report.pdf]" for files the user attached that aren't pictures (read_file reads them).
+  function filesNote(files) {
+    const list = (files || []).map((f) => f && f.path).filter(Boolean);
+    if (!list.length) return "";
+    return list.length === 1 ? `[Attached file saved at ${list[0]}]` : `[Attached files saved at:\n${list.map((f) => "- " + f).join("\n")}]`;
+  }
+
   // The conversation as the model gets it. For vision models, images pasted by the user go into their message and
   // images returned by tools follow the tool results as one user message (tool messages can't carry images).
   // Every model (vision or not) is told where pasted images are saved, so it can hand the file to a tool.
@@ -122,7 +129,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     run = { ...run, messages: all.slice(lastSummary(all)) }; // compacted turns are replaced by their summary
     const plain = run.messages.map((m) => {
       const base = stripUi(m);
-      const note = m.role === "user" && pathNote(m._images);
+      const note = m.role === "user" && [pathNote(m._images), filesNote(m._files)].filter(Boolean).join("\n");
       return note ? { ...base, content: (typeof base.content === "string" && base.content ? base.content + "\n\n" : "") + note } : base;
     });
     if (!run.vision) return plain;
@@ -557,22 +564,49 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     } else await updateChat(chatFile(parent.id), (disk) => (disk ? { ...disk, messages: [...(disk.messages || []), { role: "user", content: text, _agentReport: meta }], unread: true, updated: Date.now() } : null));
   }
 
+  // tool_info for any tool this session offers: tools on request, tools already in the list, and tools of groups not
+  // turned on yet (with how to turn them on). A group's name gives all its tools.
+  const groupOf = (run, name) => [...run.deferred.values()].find((g) => !run.loaded.has(g.key) && g.tools.some((t) => t.function.name === name || t.function.name.endsWith("__" + name)));
+  function toolInfo(run, args) {
+    const pool = new Map(run.lazy);
+    for (const t of run.tools) { const e = run.byName.get(t.function.name); if (e && !pool.has(e.name)) pool.set(e.name, e); }
+    const off = new Map(); // tool name -> group still to turn on
+    for (const g of run.deferred.values()) for (const t of g.tools) { const e = run.byName.get(t.function.name); if (e && !pool.has(e.name)) { pool.set(e.name, e); if (!run.loaded.has(g.key)) off.set(e.name, g.name); } }
+    for (const n of ["tool_info", "call_tool", "enable_tools"]) pool.delete(n);
+    let names = Array.isArray(args.names) ? args.names : String(args.names ?? args.name ?? "").split(/[,\s]+/);
+    names = names.flatMap((n) => { // a group name: its tools
+      const g = [...run.deferred.values()].find((x) => x.name.toLowerCase() === String(n).trim().toLowerCase());
+      return g ? g.tools.map((t) => t.function.name) : [n];
+    });
+    const r = lazy.info(names, pool);
+    const need = [...new Set(names.map((n) => lazy.resolve(n, pool).tool?.name).filter((n) => off.has(n)).map((n) => off.get(n)))];
+    return { status: r.ok ? "done" : "error", text: r.text + (r.ok && need.length ? `\n\nTurn on first: ${need.map((g) => `enable_tools {"name": "${g}"}`).join(", ")}.` : "") };
+  }
+
   async function callTool(run, tc) {
     let name = tc.function.name;
     let args;
     try { args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {}; }
     catch (e) { return { status: "bad arguments", text: `ERROR: arguments were not valid JSON (${e.message}). Call the tool again with valid JSON arguments.` }; }
     if (name === "enable_tools" && run.allowed.has(name)) return enableTools(run, args);
-    if (name === "tool_info" && run.allowed.has(name)) { const r = lazy.info(args.names ?? args.name, run.lazy); return { status: r.ok ? "done" : "error", text: r.text }; }
+    if (name === "tool_info" && run.allowed.has(name)) return toolInfo(run, args);
     // A tool on request, through call_tool or (when the model skips that) called directly by its name.
     if ((name === "call_tool" && run.allowed.has(name)) || (!run.allowed.has(name) && run.lazy.size && !lazy.resolve(name, run.lazy).error)) {
-      const viaCall = name === "call_tool";
-      const r = lazy.resolve(viaCall ? args.name : name, run.lazy);
-      if (r.error) return { status: "error", text: "ERROR: " + r.error };
+      const viaCall = name === "call_tool", want = String((viaCall ? args.name : name) ?? "").trim();
+      const listed = viaCall && run.allowed.has(want) && !["call_tool", "tool_info"].includes(want); // an ordinary tool, run through call_tool anyway
+      const r = listed ? { tool: { name: want } } : lazy.resolve(want, run.lazy);
+      if (r.error) {
+        const g = groupOf(run, want);
+        return { status: "error", text: g ? `ERROR: ${want} is in the "${g.name}" tool group, which isn't on yet. Call enable_tools {"name": "${g.name}"} first.` : "ERROR: " + r.error };
+      }
       if (viaCall) { const a = lazy.innerArgs(args); if (a.error) return { status: "bad arguments", text: "ERROR: " + a.error }; args = a.value; }
       name = r.tool.name;
-      run.used.add(name);
-    } else if (!run.allowed.has(name)) return { status: "error", text: `ERROR: the tool "${name}" is not available in this chat.` };
+      if (!listed) run.used.add(name);
+      if (name === "enable_tools") return enableTools(run, args);
+    } else if (!run.allowed.has(name)) {
+      const g = groupOf(run, name); // a tool from a group the model hasn't turned on yet: say how
+      return { status: "error", text: g ? `ERROR: ${name} is in the "${g.name}" tool group, which isn't on yet. Call enable_tools {"name": "${g.name}"} first, then call it.` : `ERROR: the tool "${name}" is not available in this chat.` };
+    }
     if (!isEnabled(name)) return { status: "error", text: `ERROR: the tool "${name}" is disabled in Settings > Tools.` };
     if (name === "ask_user") return askUser(run, tc, args);
     if (name === "todo") return todoTool(run, args);
