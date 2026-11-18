@@ -164,6 +164,8 @@ function clean(input, prev = {}) {
   if (typeof input.name === "string") l.name = input.name.trim().slice(0, 80);
   if (typeof input.engine === "string") l.engine = input.engine;
   if (typeof input.model === "string") l.model = input.model;
+  if (typeof input.modelPath === "string") { if (input.modelPath) l.modelPath = input.modelPath; else delete l.modelPath; } // set by the server only
+  if (typeof input.hfRepo === "string") { if (input.hfRepo) l.hfRepo = input.hfRepo; else delete l.hfRepo; }
   if (typeof input.vision === "boolean") l.vision = input.vision;
   if (typeof input.other === "string") l.other = input.other.trim().slice(0, 2000);
   if (input.load && typeof input.load === "object") {
@@ -188,7 +190,7 @@ function clean(input, prev = {}) {
   }
   if (!l.name) throw Object.assign(new Error("The loadout needs a name"), { status: 400 });
   if (!llama.byId(l.engine)) throw Object.assign(new Error("Pick an engine"), { status: 400 });
-  if (!l.model || !(localModels().some((m) => m.name === l.model) || l.modelPath)) throw Object.assign(new Error("Pick a model from the models folder"), { status: 400 });
+  if (!l.model || !(localModels().some((m) => m.name === l.model) || l.modelPath || l.hfRepo)) throw Object.assign(new Error("Pick a model from the models folder, or one the engine lists"), { status: 400 });
   if (l.load?.["model-draft"] && !localModels().some((m) => m.name === l.load["model-draft"])) throw Object.assign(new Error("The draft model isn't in the models folder"), { status: 400 });
   return l;
 }
@@ -228,8 +230,8 @@ function removeForModel(name) { const n = list().length; data.loadouts = list().
 function sectionLines(l, models) {
   const m = models.find((x) => x.name === l.model);
   const file = m ? m.model : l.modelPath;
-  if (!file) return null;
-  const out = [`[${l.id}]`, `model = ${file}`];
+  if (!file && !l.hfRepo) return null;
+  const out = [`[${l.id}]`, file ? `model = ${file}` : `hf-repo = ${l.hfRepo}`]; // hf-repo: from llama.cpp's download cache
   if (l.vision && m && m.mmproj) out.push(`mmproj = ${m.mmproj}`);
   for (const [k, v] of Object.entries(l.load || {})) {
     if (k === "model-draft") { const dm = models.find((x) => x.name === v); if (dm) out.push(`model-draft = ${dm.model}`); continue; }

@@ -37,6 +37,9 @@
   .ws-row .run-dot.running { animation:pulse 1.2s ease-in-out infinite; } .ws-row .run-dot.waiting { background:#e3b04b; } .ws-row .run-dot.unread { background:#4fc98a; }
   .ws-sessions .chat-item { padding-left:22px; }
   .ws-sessions .empty-list { padding:4px 10px 4px 24px; }
+  .view-all { display:block; background:none; border:none; color:var(--muted); font-size:12px; padding:5px 10px 5px 24px; min-height:28px; cursor:pointer; text-align:left; }
+  .view-all:hover { color:var(--text); }
+  .wsv-list .view-all { width:100%; padding:9px 14px; background:var(--panel); border-top:1px solid var(--line); }
   .logwrap[hidden], #form[hidden], .crumbs[hidden], .wsview[hidden] { display:none !important; }
   /* breadcrumb */
   /* floats over the top-left of the session; takes no space from it */
@@ -758,7 +761,7 @@ async function loadModels() {
         parent = groups.get(m.engineName); parent.label = m.engineName;
       }
       const name = m.name || m.id;
-      const o = parent.appendChild(el("option", null, (m.vision ? "👁 " : "") + name + (m.status === "loaded" ? "  · loaded" : m.status === "loading" ? "  · loading" : "")));
+      const o = parent.appendChild(el("option", null, name + (m.status === "loaded" ? "  · loaded" : m.status === "loading" ? "  · loading" : "")));
       o.title = [m.engineName && `Engine: ${m.engineName}`, m.vision && "Can see images", m.id !== name && `id: ${m.id}`].filter(Boolean).join("\n");
       o.value = m.id;
     }
@@ -1771,7 +1774,7 @@ async function renderWsView() {
   if (!sessions.length) v.appendChild(el("div", "wsv-empty", "No sessions yet."));
   else {
     const l = v.appendChild(el("div", "wsv-list"));
-    for (const c of sessions) {
+    for (const c of capped("view:" + id, sessions)) {
       const it = l.appendChild(el("div", "wsv-item"));
       const dot = dotOf(c);
       if (dot) { const sp = it.appendChild(el("span", "run-dot " + dot[0])); sp.title = dot[1]; sp.style.cssText = "width:7px;height:7px;border-radius:50%;flex:none;background:" + (dot[0] === "waiting" ? "#e3b04b" : dot[0] === "unread" ? "#4fc98a" : "var(--accent)"); }
@@ -1780,6 +1783,7 @@ async function renderWsView() {
       it.appendChild(el("small", null, ago(c.updated || 0)));
       it.onclick = () => loadChat(c.id);
     }
+    viewAll(l, "view:" + id, sessions.length, renderWsView);
   }
   const h = v.appendChild(el("h3"));
   h.appendChild(el("span", null, "Files"));
@@ -1869,6 +1873,19 @@ $("wsDialog").addEventListener("mousedown", (e) => { if (e.target === $("wsDialo
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("wsDialog").hidden) $("wsDialog").hidden = true; });
 $("newWs").onclick = () => wsDialog();
 
+// Long session lists show the 10 most recent (plus the open one) and a "View all (N)" link; "Show fewer" folds them back.
+const LIST_MAX = 10, showAll = new Set(); // keys: "side:<workspace>", "view:<workspace>"
+function capped(key, sessions) {
+  if (sessions.length <= LIST_MAX || showAll.has(key)) return sessions;
+  const top = sessions.slice(0, LIST_MAX), cur = sessions.find((c) => c.id === chat.id);
+  if (cur && !top.includes(cur)) top.push(cur);
+  return top;
+}
+function viewAll(box, key, total, rerender) {
+  if (total <= LIST_MAX) return;
+  const b = box.appendChild(el("button", "view-all", showAll.has(key) ? "Show fewer" : `View all (${total})`)); b.type = "button";
+  b.onclick = (e) => { e.stopPropagation(); showAll.has(key) ? showAll.delete(key) : showAll.add(key); rerender(); };
+}
 function renderList() {
   const list = $("chatList");
   list.innerHTML = "";
@@ -1892,7 +1909,8 @@ function renderList() {
     if (!open) continue;
     const box = list.appendChild(el("div", "ws-sessions"));
     if (!sessions.length) box.appendChild(el("div", "empty-list", "No sessions yet."));
-    for (const c of sessions) box.appendChild(sessionItem(c));
+    for (const c of capped("side:" + w.id, sessions)) box.appendChild(sessionItem(c));
+    viewAll(box, "side:" + w.id, sessions.length, renderList);
   }
 }
 function sessionItem(c) {

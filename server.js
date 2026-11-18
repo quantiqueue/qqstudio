@@ -402,6 +402,31 @@ async function handleEngines(req, res) {
 }
 
 // ---- Loadouts ----
+// Models the engine lists that aren't in the models folder ("external"), e.g. ones llama.cpp downloaded with -hf into
+// its own cache. A loadout can use one: by the file path the engine reports, or else by its Hugging Face name (hf-repo).
+async function externalModels() {
+  try {
+    const r = await fetch(`${llama.url()}/models`, { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return [];
+    const body = await r.json();
+    const local = new Set(loadouts.localModels().map((m) => m.name)), los = new Set(loadouts.list().map((l) => l.id));
+    return (body.data || body.models || []).map((m) => ({ name: m.id || m.name || m.model, path: m.path || (m.meta && m.meta.path) || null }))
+      .filter((m) => m.name && !local.has(m.name) && !los.has(m.name));
+  } catch { return []; }
+}
+// The page sends only the model's name; where an external model's file is comes from the engine, never from the page.
+async function withSource(input, prev) {
+  delete input.modelPath; delete input.hfRepo;
+  const model = typeof input.model === "string" ? input.model : prev?.model;
+  if (!model || loadouts.localModels().some((m) => m.name === model)) { input.modelPath = ""; input.hfRepo = ""; return input; }
+  const ext = (await externalModels()).find((m) => m.name === model);
+  if (ext) {
+    if (ext.path && /\.gguf$/i.test(ext.path)) { input.modelPath = ext.path; input.hfRepo = ""; }
+    else if (/^[\w.-]+\/[\w.-]+(:[\w.-]+)?$/.test(ext.name)) { input.modelPath = ""; input.hfRepo = ext.name; }
+    else throw Object.assign(new Error(`The engine lists "${model}" but doesn't say where its file is.`), { status: 400 });
+  } // not listed now (engine stopped): an existing loadout keeps the source it had
+  return input;
+}
 // GET/POST /api/loadouts · PUT/DELETE /api/loadouts/<id> · GET /api/loadouts/<id>/preview
 async function handleLoadouts(req, res) {
   const id = decodeURIComponent(new URL(req.url, "http://x").pathname.split("/")[3] || "");
@@ -411,7 +436,8 @@ async function handleLoadouts(req, res) {
       const engs = [];
       for (const e of llama.all()) engs.push({ id: e.id, name: e.name, active: e.id === llama.active()?.id, support: await loadouts.fieldSupport(e) });
       return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
-        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model) })), defaultCtx: loadouts.DEFAULT_CTX });
+        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model) })),
+        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX });
     }
     if (id && sub === "preview" && req.method === "GET") { const l = loadouts.get(id); if (!l) return sendJson(res, 404, { error: "No such loadout" }); return sendJson(res, 200, { ini: loadouts.iniFor(l.engine) }); }
     const busy = runs.anyActive(); // don't restart under a reply in progress; the page shows "restart to apply"
@@ -420,10 +446,10 @@ async function handleLoadouts(req, res) {
       const r = await regenPresets(true);
       return { restarted: r.restarted, restartNeeded: false };
     };
-    if (!id && req.method === "POST") { const l = loadouts.create(JSON.parse((await readBody(req)) || "{}")); return sendJson(res, 200, { loadout: l, ...(await apply(l.engine)) }); }
+    if (!id && req.method === "POST") { const l = loadouts.create(await withSource(JSON.parse((await readBody(req)) || "{}"))); return sendJson(res, 200, { loadout: l, ...(await apply(l.engine)) }); }
     if (id && !sub && req.method === "PUT") {
       const prev = loadouts.get(id);
-      const l = loadouts.update(id, JSON.parse((await readBody(req)) || "{}"));
+      const l = loadouts.update(id, await withSource(JSON.parse((await readBody(req)) || "{}"), prev));
       const a = await apply(l.engine);
       if (prev && prev.engine !== l.engine) await apply(prev.engine);
       return sendJson(res, 200, { loadout: l, ...a });

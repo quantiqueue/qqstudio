@@ -146,6 +146,7 @@
   .tag.q { background:#1d2b45; color:#9cc0ff; }
   .tag.ok { background:#173326; color:var(--green); }
   .tag.vis { background:#33291a; color:var(--amber); }
+  .tag.ext { background:#3a2414; color:#f0995a; }
   .size { color:var(--muted); width:72px; text-align:right; white-space:nowrap; }
   .job { display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--line); background:var(--panel); font-size:13px; }
   .job:first-child { border-top:none; }
@@ -453,8 +454,16 @@ async function refresh() {
   try { local = new Map((await fetch("/api/models/local").then((r) => r.json())).models.map((m) => [m.id, m])); } catch { local = new Map(); }
   // Files in the models folder the engine doesn't list (engine stopped, or not restarted since) can still be deleted.
   for (const id of local.keys()) if (!models.some((m) => m.id === id)) models.push({ id, status: "not loaded", localOnly: true });
-  // Custom loadouts (ids that aren't file names) live on the Loadouts tab, not here.
+  // Custom loadouts (ids that aren't file names) live on the Loadouts tab, not here. A file loaded through one of them
+  // shows as loaded here, and Eject unloads that loadout.
+  const byId = new Map(models.map((m) => [m.id, m])), up = (x) => x && (x.status === "loaded" || x.status === "loading");
   models = models.filter((m) => local.has(m.id) || !loList.some((l) => l.id === m.id));
+  for (const m of models) m.external = router && !m.localOnly && !local.has(m.id); // listed by the engine, not in the models folder (e.g. downloaded with -hf)
+  for (const m of models) {
+    if (up(m)) continue;
+    const l = loList.find((l) => l.model === m.id && l.id !== m.id && up(byId.get(l.id)));
+    if (l) { m.status = byId.get(l.id).status; m.via = { id: l.id, name: l.name }; }
+  }
   render();
 }
 
@@ -474,28 +483,29 @@ function render() {
   const order = { loaded: 0, loading: 1 };
   for (const m of [...models].sort((a, b) => (order[a.status] ?? 2) - (order[b.status] ?? 2) || a.id.localeCompare(b.id))) {
     const state = m.failed ? "failed" : m.status;
-    const row = el("div", "row " + state);
+    const row = el("div", "row " + String(state).replace(/\s+/g, "-")); // "not loaded" must not get the .loaded class
     row.appendChild(el("span", "dot"));
     const name = row.appendChild(el("div", "name"));
     const idRow = name.appendChild(el("div", "idrow"));
     idRow.appendChild(el("div", "id", m.id)).title = m.id;
+    if (m.external) idRow.appendChild(el("span", "tag ext", "external")).title = "The engine lists this model, but it isn't in the models folder (for example, llama.cpp downloaded it with -hf into its own cache)";
     const lf = local.get(m.id);
-    if (lf) { // which loadouts use this file; create one
+    if (lf || m.external) { // which loadouts use this file; create one
       const uses = loList.filter((l) => l.model === m.id);
       const ub = name.appendChild(el("div", "used-by"));
       if (!uses.length) ub.textContent = "No loadout yet";
-      else { ub.appendChild(document.createTextNode("Loadouts: ")); uses.forEach((l, k) => { if (k) ub.appendChild(document.createTextNode(", ")); const a = ub.appendChild(el("a", null, l.name)); a.onclick = () => { location.hash = "#loadouts"; loEditOpen(l.id); }; }); }
+      else { ub.appendChild(document.createTextNode("Loadouts: ")); uses.forEach((l, k) => { if (k) ub.appendChild(document.createTextNode(", ")); const a = ub.appendChild(el("a", null, l.name + (m.via?.id === l.id ? " (loaded)" : ""))); a.onclick = () => { location.hash = "#loadouts"; loEditOpen(l.id); }; }); }
     }
     if (m.path || lf) name.appendChild(el("div", "sub", (lf ? fmtBytes(lf.size) + " · " : "") + (m.path || lf.path)));
-    row.appendChild(el("span", "state", busy.has(m.id) ? "working…" : state));
+    if (busy.has(m.id) || (m.via && busy.has(m.via.id))) row.appendChild(el("span", "state", "working…")); // the dot shows loaded / loading / failed
 
-    if (router && !m.localOnly) {
-      const isUp = m.status === "loaded" || m.status === "loading";
-      const btn = row.appendChild(el("button", isUp ? "eject" : "load", isUp ? "⏏ Eject" : "Load"));
-      btn.disabled = busy.has(m.id);
-      btn.onclick = () => act(isUp ? "unload" : "load", m.id);
+    if (router && (m.status === "loaded" || m.status === "loading")) { // loading happens from a session's loadout
+      const btn = row.appendChild(el("button", "eject", "⏏ Eject"));
+      btn.disabled = busy.has(m.id) || (m.via && busy.has(m.via.id));
+      if (m.via) btn.title = `Loaded through the loadout "${m.via.name}"`;
+      btn.onclick = () => act("unload", m.via ? m.via.id : m.id);
     }
-    if (lf) {
+    if (lf || m.external) {
       const mk = row.appendChild(el("button", null, "＋ Loadout"));
       mk.title = "Create a loadout for this model with default settings, on the active engine";
       mk.onclick = async () => {
@@ -841,7 +851,7 @@ async function loLoad() {
   if (typeof render === "function" && models) render();
 }
 function loSummary(l) {
-  const parts = [l.model];
+  const parts = [l.model + (l.hfRepo || l.modelPath ? " · external" : "")];
   if (l.load?.["ctx-size"]) parts.push(`ctx ${Number(l.load["ctx-size"]).toLocaleString()}`);
   if (l.load?.["n-gpu-layers"]) parts.push(`GPU layers ${l.load["n-gpu-layers"]}`);
   if (l.vision) parts.push("vision");
@@ -896,7 +906,9 @@ function loEditOpen(id, base) {
   const sel = (opts, val, blank) => { const s2 = el("select"); if (blank) s2.appendChild(el("option", null, blank)).value = ""; for (const o of opts) { const op = s2.appendChild(el("option", null, o.label ?? o)); op.value = o.value ?? o; } s2.value = val ?? ""; return s2; };
   const nameIn = txt(v.name, "e.g. Flash-Next 64K"); field(grid0, "Name", nameIn);
   const engIn = sel(loMeta.engines.map((e) => ({ label: e.name + (e.active ? " (active)" : ""), value: e.id })), v.engine); field(grid0, "Engine", engIn);
-  const modelIn = sel(loMeta.models.map((m) => ({ label: m.name, value: m.name })), v.model); field(grid0, "Model", modelIn);
+  const ext = [...(loMeta.external || [])];
+  if (v.model && !loMeta.models.some((m) => m.name === v.model) && !ext.some((m) => m.name === v.model)) ext.push({ name: v.model });
+  const modelIn = sel([...loMeta.models.map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model); field(grid0, "Model", modelIn);
   const visIn = el("input"); visIn.type = "checkbox"; visIn.checked = !!v.vision;
   const visF = field(grid0, "Vision", visIn, "Load the model's vision projector (mmproj) so it can see images");
   const groups = {};
@@ -1300,7 +1312,7 @@ pollDownloads();
 
 $("ejectAll").onclick = async () => {
   const loaded = models.filter((m) => m.status === "loaded" || m.status === "loading");
-  for (const m of loaded) await act("unload", m.id);
+  for (const m of loaded) await act("unload", m.via ? m.via.id : m.id);
 };
 $("refresh").onclick = refresh;
 refresh();
