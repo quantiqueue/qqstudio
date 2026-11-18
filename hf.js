@@ -43,9 +43,10 @@ async function files(repo, folder) {
   const groups = new Map();
   for (const f of all) {
     const base = f.path.replace(/-\d{5}-of-\d{5}(\.gguf)$/i, "$1");
-    const g = groups.get(base) || { name: path.posix.basename(base), paths: [], size: 0 };
+    const g = groups.get(base) || { name: path.posix.basename(base), paths: [], size: 0, sizes: {} };
     g.paths.push(f.path);
-    g.size += (f.lfs && f.lfs.size) || f.size || 0;
+    g.sizes[repo + "/" + f.path] = (f.lfs && f.lfs.size) || f.size || 0;
+    g.size += g.sizes[repo + "/" + f.path];
     groups.set(base, g);
   }
   const dir = folder ? targetDir(folder, repo) : null;

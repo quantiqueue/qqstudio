@@ -16,7 +16,7 @@ const RUN_FILE = path.join(ENGINES_DIR, "running.json"); // the loadout process 
 const LOG_DIR = path.join(P.home, "logs", "loadouts");   // <loadout id>.log
 const BASE_PORT = 9931;
 const PORT = Number(process.env.LLAMA_PORT) || BASE_PORT; // one process at a time, so one port
-const RELEASES_API = process.env.LLAMA_RELEASES_API || "https://api-github-com.ali360.cloudns.ch/repos/ggml-org/llama.cpp/releases?per_page=8"; // env: a stand-in for testing
+const RELEASES_API = process.env.LLAMA_RELEASES_API || "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=8"; // env: a stand-in for testing
 
 // ---------- settings ----------
 let data = load();
@@ -63,7 +63,8 @@ const byId = (id) => data.engines.find((e) => e.id === id) || null;
 const engineDir = (e) => path.join(ENGINES_DIR, e.id);
 const logFile = (loadoutId) => path.join(LOG_DIR, String(loadoutId).replace(/[^A-Za-z0-9._-]/g, "_") + ".log");
 // Engine for new loadouts: the one running now, else the one used last, else the first.
-const defaultEngine = () => byId(cur.engine) || byId(data.lastEngine) || data.engines[0] || null;
+const isLlamaCpp = (e) => e && (e.type || "llama.cpp") === "llama.cpp";
+const defaultEngine = () => [byId(cur.engine), byId(data.lastEngine), ...data.engines].find(isLlamaCpp) || null; // Strata loadouts come later
 
 // ---------- process ----------
 const subcmd = (exe) => (path.basename(exe).toLowerCase().replace(/\.exe$/, "") === "llama" ? ["serve"] : []); // "llama serve" vs llama-server.exe
@@ -98,12 +99,15 @@ async function kill(p) {
 }
 function writeRun() {
   try {
-    if (cur.pid) fs.writeFileSync(RUN_FILE, JSON.stringify({ loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: cur.pid, sig: cur.sig, startedAt: cur.startedAt }));
+    if (cur.pid || (cur.strata && cur.state === "running")) fs.writeFileSync(RUN_FILE, JSON.stringify({ loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: cur.pid, strata: !!cur.strata, sig: cur.sig, startedAt: cur.startedAt }));
     else fs.unlinkSync(RUN_FILE);
   } catch {}
 }
 
+// A loadout process is up (llama-server's PID, or a Strata launch qqstudio started and hasn't seen fail).
+const up = () => !!cur.pid || (!!cur.strata && cur.state === "running");
 async function stopNow() {
+  if (cur.strata) return stopStrata();
   const p = cur.pid, e = byId(cur.engine);
   if (p && (await isLlama(p, e?.exe))) { await kill(p); console.log(`[loadouts] stopped ${cur.name} (pid ${p})`); }
   cur = { ...cur, pid: null, state: "stopped", error: null, child: null };
@@ -116,7 +120,8 @@ function launch(spec) {
   return (busy = busy.then(async () => {
     const e = byId(spec.engine);
     if (!e) throw new Error(`The loadout "${spec.name}" has no engine. Pick one in Settings > Loadouts.`);
-    if (cur.pid) await stopNow();
+    if (up() || cur.strata) await stopNow();
+    if (e.type === "strata") return launchStrata(e, spec);
     for (let i = 0; i < 25 && (await health()) !== "unreachable"; i++) await new Promise((r) => setTimeout(r, 200)); // the old one letting go of the port
     cur = { loadout: spec.loadout, name: spec.name, engine: e.id, pid: null, sig: spec.sig, state: "stopped", error: null, startedAt: null, child: null };
     if ((await health()) !== "unreachable") {
@@ -160,17 +165,18 @@ function stop() { return (busy = busy.then(stopNow)); }
 
 // The loadout process now: state "loaded" | "loading" | "failed" | "stopped", with the loadout id and engine.
 async function status() {
+  if (cur.strata) return strataStatus();
   if (cur.pid && !alive(cur.pid)) { cur.pid = null; writeRun(); if (cur.state === "running") { cur.state = "error"; cur.error = cur.error || "llama-server exited (see the log)"; } }
   const h = cur.pid ? await health() : "unreachable";
   const state = cur.pid ? (h === "ready" ? "loaded" : "loading") : cur.state === "error" ? "failed" : "stopped";
   return { state, loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: cur.pid, sig: cur.sig, error: cur.error, startedAt: cur.startedAt, url: url(), health: h };
 }
-const current = () => ({ loadout: cur.pid ? cur.loadout : null, engine: cur.pid ? cur.engine : null, sig: cur.pid ? cur.sig : null });
+const current = () => ({ loadout: up() ? cur.loadout : null, engine: up() ? cur.engine : null, sig: up() ? cur.sig : null });
 
 async function list() {
   const s = await status();
-  const out = data.engines.map((e) => ({ ...e, inUse: !!s.pid && s.engine === e.id, downloaded: isInside(engineDir(e), e.exe) }));
-  return { engines: out, autostart: data.autostart, running: s, jobs: [...jobs.values()] };
+  const out = data.engines.map((e) => ({ ...e, type: e.type || "llama.cpp", inUse: up() && s.engine === e.id, downloaded: e.type === "strata" || isInside(engineDir(e), e.exe) }));
+  return { engines: out, autostart: data.autostart, running: s, jobs: [...jobs.values()].map(({ child, abort, ...j }) => j) };
 }
 
 function log(loadoutId, bytes = 64 * 1024) {
@@ -240,7 +246,18 @@ const labelOf = (b) => BACKEND_LABEL[b] || b.replace(/^cuda-/, "CUDA ").replace(
 const REL_FILE = path.join(ENGINES_DIR, "releases.json"); // {at, value, blockedUntil}
 const REL_TTL = 60 * 60 * 1000;
 let relCache = null, relRunning = null;
-function relLoad() { if (!relCache) { try { relCache = JSON.parse(fs.readFileSync(REL_FILE, "utf8")); } catch { relCache = {}; } } return relCache; }
+function relLoad() {
+  if (!relCache) { try { relCache = JSON.parse(fs.readFileSync(REL_FILE, "utf8")); } catch { relCache = {}; } }
+  // A saved list whose download links point anywhere but GitHub is dropped (an earlier build fetched it through a
+  // third-party mirror).
+  if (relCache.value && !(relCache.value.backends || []).every((b) => trustedUrl(b.asset?.url) && (!b.runtime || trustedUrl(b.runtime.url)))) relCache = {};
+  return relCache;
+}
+// Builds and Strata are only ever downloaded from GitHub itself (its release pages redirect to its own file hosts).
+function trustedUrl(u) {
+  try { const h = new URL(u).hostname.toLowerCase(); return new URL(u).protocol === "https:" && (h === "github.com" || h.endsWith(".github.com") || h.endsWith(".githubusercontent.com")); }
+  catch { return false; }
+}
 function relSave() { try { fs.mkdirSync(ENGINES_DIR, { recursive: true }); fs.writeFileSync(REL_FILE, JSON.stringify(relCache)); } catch {} }
 function releases({ force = false } = {}) {
   const c = relLoad(), now = Date.now();
@@ -256,7 +273,9 @@ function releases({ force = false } = {}) {
 async function releasesNow() {
   const headers = { "User-Agent": "qqstudio", Accept: "application/vnd.github+json" };
   if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  const r = await fetch(RELEASES_API, { headers, signal: AbortSignal.timeout(15000) });
+  let r;
+  try { r = await fetch(RELEASES_API, { headers, signal: AbortSignal.timeout(15000) }); }
+  catch (err) { throw new Error(`${err.message}${err.cause ? ` (${err.cause.code || err.cause.message})` : ""}`); }
   if (r.status === 403 || r.status === 429) {
     const reset = Number(r.headers.get("x-ratelimit-reset")) * 1000, retry = Number(r.headers.get("retry-after")) * 1000;
     relLoad().blockedUntil = reset > Date.now() ? reset : Date.now() + (retry || REL_TTL);
@@ -324,10 +343,11 @@ async function download({ build, backend, name }) {
   })();
   return job;
 }
-function cancel(id) { const j = jobs.get(id); if (j && !["done", "error", "cancelled"].includes(j.state)) { j.cancelled = true; j.abort?.abort(); } }
+function cancel(id) { const j = jobs.get(id); if (j && !["done", "error", "cancelled"].includes(j.state)) { j.cancelled = true; j.abort?.abort(); try { j.child?.kill(); } catch {} } }
 function clearJobs() { for (const [k, j] of jobs) if (["done", "error", "cancelled"].includes(j.state)) jobs.delete(k); }
 
 async function fetchTo(u, file, onBytes, job) {
+  if (!trustedUrl(u) && !process.env.LLAMA_RELEASES_API && !process.env.STRATA_RELEASES_API) throw new Error(`refusing to download from ${u}: not a GitHub address`);
   job.abort = new AbortController();
   const r = await fetch(u, { headers: { "User-Agent": "qqstudio" }, signal: job.abort.signal });
   if (!r.ok || !r.body) throw new Error(`download failed: HTTP ${r.status}`);
@@ -339,6 +359,275 @@ async function fetchTo(u, file, onBytes, job) {
     }
   } finally { await new Promise((res) => out.end(res)); }
 }
+// ---------- Strata (an engine type: https://github.com/Niko1221/Strata) ----------
+// qqstudio downloads Strata's Terminal ("Control": its own Python, the strata CLI and server) from the latest GitHub
+// release into engines\<id>\, then lets Strata fetch the GPU engine for this PC from its signed update feed
+// (`strata update`). The copy keeps its own state under engines\<id>\state (components, profiles, runtime, tuning,
+// settings), so it never touches a Strata app the user installed separately. See qqstudio/STRATA_PLAN.md.
+const STRATA_API = process.env.STRATA_RELEASES_API || "https://api.github.com/repos/Niko1221/Strata/releases/latest";
+const STRATA_ASSET = process.platform === "win32" ? /^strata-control-([\d.]+)-windows-x86_64\.zip$/ : /^strata-control-([\d.]+)-linux-x86_64\.zip$/;
+// Kept on disk like llama.cpp's list (engines\strata-release.json): after one good answer, a GitHub outage or rate
+// limit shows the last known release "(cached)" instead of an error.
+const STRATA_REL_FILE = path.join(ENGINES_DIR, "strata-release.json");
+let strataRel = (() => { try { const c = JSON.parse(fs.readFileSync(STRATA_REL_FILE, "utf8")); return trustedUrl(c.value?.asset?.url) ? c : null; } catch { return null; } })(), strataRelRunning = null; // {at, value}
+function strataRelease({ force = false } = {}) {
+  if (!force && strataRel && Date.now() - strataRel.at < REL_TTL) return Promise.resolve(strataRel.value);
+  if (!strataRelRunning) strataRelRunning = (async () => {
+    const headers = { "User-Agent": "qqstudio", Accept: "application/vnd.github+json" };
+    if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+    let r;
+    try { r = await fetch(STRATA_API, { headers, signal: AbortSignal.timeout(15000) }); }
+    catch (err) { throw new Error(`${err.message}${err.cause ? ` (${[err.cause.code || err.cause.message, err.cause.syscall, err.cause.hostname].filter(Boolean).join(" ")})` : ""}`); } // "fetch failed" alone says nothing
+    if (!r.ok) throw new Error(r.status === 403 || r.status === 429 ? "GitHub rate limit reached; try again later" : `GitHub answered ${r.status}`);
+    const rel = await r.json();
+    const a = (rel.assets || []).find((x) => STRATA_ASSET.test(x.name));
+    if (!a) throw new Error(`The latest Strata release (${rel.tag_name}) has no Terminal package for this system`);
+    const value = { release: rel.tag_name, control: a.name.match(STRATA_ASSET)[1], published: rel.published_at, url: rel.html_url,
+      asset: { name: a.name, size: a.size, url: a.browser_download_url } };
+    strataRel = { at: Date.now(), value };
+    try { fs.mkdirSync(ENGINES_DIR, { recursive: true }); fs.writeFileSync(STRATA_REL_FILE, JSON.stringify(strataRel)); } catch {}
+    return value;
+  })().finally(() => { strataRelRunning = null; });
+  return strataRelRunning.catch((err) => { if (strataRel) return { ...strataRel.value, stale: true, note: err.message }; throw err; });
+}
+const strataState = (e) => path.join(engineDir(e), "state");
+const strataPython = (root) => (process.platform === "win32" ? path.join(root, "python", "python.exe") : path.join(root, "python", "bin", "python3"));
+// The environment Strata runs in: its own Python only, and every per-user folder moved into this engine's state folder.
+function strataEnv(e) {
+  const s = strataState(e), env = { ...process.env };
+  delete env.PYTHONHOME; delete env.PYTHONPATH;
+  Object.assign(env, {
+    PYTHONUTF8: "1", PYTHONNOUSERSITE: "1",
+    // A call to a tool the request didn't declare comes back as a tool call, not as text: qqstudio declares only some tools
+    // (call_tool, enable_tools, …) and routes a call to any other name itself, as it does with llama.cpp.
+    STRATA_UNDECLARED_TOOL_CALLS: "call",
+    STRATA_COMPONENTS_DIR: path.join(s, "components"), STRATA_PROFILE_DIR: path.join(s, "profiles"), STRATA_RUNTIME_DIR: path.join(s, "runtime"),
+    STRATA_STATE_DIR: path.join(s, "state"), STRATA_INSTALL_DIR: path.join(s, "install"), STRATA_DATA_DIR: path.join(s, "data"),
+    STRATA_SETTINGS_FILE: path.join(s, "settings.json"),
+    LOCALAPPDATA: path.join(s, "local"), APPDATA: path.join(s, "roaming"), XDG_STATE_HOME: path.join(s, "local"), XDG_DATA_HOME: path.join(s, "data-home"),
+  });
+  for (const k of ["STRATA_COMPONENTS_DIR", "STRATA_PROFILE_DIR", "STRATA_RUNTIME_DIR", "STRATA_STATE_DIR", "STRATA_INSTALL_DIR", "STRATA_DATA_DIR", "LOCALAPPDATA", "APPDATA"])
+    fs.mkdirSync(env[k], { recursive: true });
+  return env;
+}
+// Runs `strata <args>` with this engine's Python and state; onEvent gets each JSON line it prints (--output jsonl).
+// Resolves with { code, last } (last: the final JSON object, if any) and keeps the output in state\strata.log.
+function strataRun(e, args, onEvent, job) {
+  return new Promise((resolve, reject) => {
+    const py = strataPython(e.root);
+    if (!fs.existsSync(py)) return reject(new Error(`Strata's Python is missing (${py}); download Strata again`));
+    fs.mkdirSync(strataState(e), { recursive: true });
+    const logPath = path.join(strataState(e), "strata.log");
+    fs.appendFileSync(logPath, `[harness] ${new Date().toISOString()} strata ${args.join(" ")}\n`);
+    const child = spawn(py, [path.join(e.root, "strata.py"), ...args], { cwd: e.root, env: strataEnv(e), windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    if (job) job.child = child;
+    let buf = "", last = null, errText = "";
+    child.stdout.on("data", (d) => {
+      fs.appendFileSync(logPath, d);
+      buf += d.toString("utf8");
+      const lines = buf.split(/\r?\n/); buf = lines.pop();
+      for (const l of lines) { let j; try { j = JSON.parse(l); } catch { continue; } last = j; if (onEvent) onEvent(j); }
+    });
+    child.stderr.on("data", (d) => { fs.appendFileSync(logPath, d); errText = (errText + d.toString("utf8")).slice(-2000); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (buf.trim()) { try { last = JSON.parse(buf); if (onEvent) onEvent(last); } catch {} }
+      resolve({ code, last, stderr: errText.trim() });
+    });
+  });
+}
+// The engine for this PC from Strata's feed (or an update of it). Progress goes into the job.
+async function strataUpdate(e, job, extra = []) {
+  job.state = "engine"; job.done = 0; job.total = 0; job.label = "Engine for this PC";
+  const r = await strataRun(e, ["update", "--yes", "--output", "jsonl", ...extra], (ev) => {
+    if (ev.event === "progress") { job.done = ev.done || 0; job.total = ev.total || 0; job.label = ev.label || job.label; }
+    else if (ev.event === "phase" || ev.event === "waiting") job.note = ev.message || job.note;
+  }, job);
+  if (job.cancelled) throw new Error("cancelled");
+  const out = r.last || {};
+  if (r.code !== 0 || out.ok === false) throw new Error(out.error?.message || r.stderr.split("\n").pop() || `strata update failed (exit ${r.code})`);
+  const eng = (out.results || []).find((x) => x.component === "engine");
+  const ctl = (out.results || []).find((x) => x.component === "control");
+  const after = eng?.installed_after || {};
+  if (after.version) e.engineVersion = after.version;
+  if (after.backend || after.family || after.target) e.backend = after.backend || after.target || after.family;
+  if (ctl?.installed_after) e.build = String(ctl.installed_after.version || ctl.installed_after);
+  e.updatedAt = Date.now();
+  save();
+  return out;
+}
+// Download Strata: the Terminal package, then the engine for this PC. Adds the engine when both are in.
+async function downloadStrata({ name } = {}) {
+  const rel = await strataRelease();
+  const label = String(name || "").trim() || "Strata";
+  const id = newId(label === "Strata" ? "strata" : label);
+  const dir = path.join(ENGINES_DIR, id);
+  fs.mkdirSync(dir, { recursive: true });
+  const job = { id, name: label, kind: "strata", build: rel.control, backend: "", state: "downloading", label: "Strata Terminal " + rel.control, done: 0, total: rel.asset.size, error: null, engine: null };
+  jobs.set(id, job);
+  (async () => {
+    const e = { id, name: label, type: "strata", root: path.join(dir, "terminal"), exe: "", backend: "", build: rel.control, engineVersion: "", release: rel.release, extraArgs: [] };
+    try {
+      const zip = path.join(dir, rel.asset.name);
+      await fetchTo(rel.asset.url, zip, (n) => (job.done += n), job);
+      if (job.cancelled) throw new Error("cancelled");
+      job.state = "unpacking";
+      fs.mkdirSync(e.root, { recursive: true });
+      await unzip(zip, e.root);
+      await fs.promises.unlink(zip).catch(() => {});
+      if (!fs.existsSync(path.join(e.root, "strata.py"))) { // some archives wrap everything in one folder
+        const sub = fs.readdirSync(e.root).map((n) => path.join(e.root, n)).find((p) => fs.existsSync(path.join(p, "strata.py")));
+        if (!sub) throw new Error("strata.py was not found in the download");
+        e.root = sub;
+      }
+      e.exe = path.join(e.root, "bin", process.platform === "win32" ? "strata.cmd" : "strata");
+      if (job.cancelled) throw new Error("cancelled");
+      await strataUpdate(e, job, ["--no-control"]); // the Terminal is the one just downloaded; fetch only the engine
+      data.engines.push(e);
+      save();
+      job.state = "done"; job.engine = id;
+      console.log(`[engines] downloaded Strata ${rel.control} (engine ${e.engineVersion || "?"}) -> ${e.root}`);
+    } catch (err) {
+      job.state = job.cancelled ? "cancelled" : "error"; job.error = job.cancelled ? null : err.message;
+      await rmRetry(dir).catch(() => {});
+    } finally { job.child = null; }
+  })();
+  const { child, abort, ...shown } = job; // the response: no process or controller objects
+  return shown;
+}
+// ---------- a loadout on Strata ----------
+// Load runs `strata launch … --no-tui` in the engine's own state: it adopts the model files, fetches what the model
+// still needs (its drafter, the first time), starts the server on qqstudio's port and returns once it serves. The server
+// itself is owned by Strata's runtime (it keeps running if this harness restarts). Eject runs `strata launch --stop`.
+function launchStrata(e, spec) {
+  const py = strataPython(e.root);
+  cur = { loadout: spec.loadout, name: spec.name, engine: e.id, pid: null, strata: true, sig: spec.sig, state: "running", error: null, startedAt: Date.now(), child: null, launching: true, progress: null };
+  const me = cur;
+  // Readable lines (not --output json, which says nothing until the end): a first start downloads the model or the drafter,
+  // tunes and loads for minutes, and these lines are the progress the session and the log show.
+  const args = [path.join(e.root, "strata.py"), "launch", ...spec.args, "--port", String(PORT), "--access", "local", "--no-tui", "--yes", "--restart",
+    "--save-preset", spec.loadout];
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const logPath = logFile(spec.loadout);
+  fs.writeFileSync(logPath, `[harness] ${new Date().toISOString()} loading ${spec.name} on ${e.name}: strata ${args.slice(1).map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}\n`);
+  let child;
+  try { child = spawn(py, args, { cwd: e.root, env: strataEnv(e), windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); }
+  catch (err) { me.state = "error"; me.error = err.message; return; }
+  me.child = child;
+  let buf = "", lines = [];
+  const onOut = (d) => {
+    fs.appendFileSync(logPath, d);
+    buf += d.toString("utf8");
+    const parts = buf.split(/\r?\n|\r/); buf = parts.pop();
+    for (const raw of parts) {
+      const l = raw.trim();
+      if (!l) continue;
+      lines.push(l); if (lines.length > 200) lines.shift();
+      me.progress = strataProgress(l, me.progress);
+    }
+  };
+  child.stdout.on("data", onOut); child.stderr.on("data", onOut);
+  child.on("error", (err) => { if (cur === me) { me.state = "error"; me.error = err.message; me.launching = false; writeRun(); } });
+  child.on("close", async (code) => {
+    if (cur !== me) return;
+    me.child = null;
+    if (buf.trim()) lines.push(buf.trim());
+    if (me.state !== "running") { me.launching = false; return; } // ejected meanwhile
+    const said = [...lines].reverse().find((l) => l.startsWith("[X]"));
+    if (code !== 0 || said) {
+      me.state = "error";
+      me.error = said ? said.slice(3).trim() : `strata launch ended with code ${code}: ${lines.slice(-1)[0] || "see the log"}`;
+    } else if ((await health()) !== "ready") { // e.g. "Strata couldn't find an engine for this computer": exit 0, nothing started
+      const warn = [...lines].reverse().find((l) => l.startsWith("[!]"));
+      me.state = "error"; me.error = `Strata didn't start: ${(warn || lines.slice(-1)[0] || "see the log").replace(/^\[!\]\s*/, "")}`;
+    }
+    me.launching = false; me.progress = null;
+    writeRun();
+  });
+  data.last = spec.loadout; data.lastEngine = e.id; save();
+  writeRun();
+  console.log(`[loadouts] loading ${spec.name} on Strata -> ${url()}`);
+}
+// One line of `strata launch` as progress: { text, pct } (pct from "… 12.3 of 66.4 GB" download lines, else null).
+function strataProgress(line, prev) {
+  const text = line.replace(/^\[[!X]\]\s*/, "").replace(/\s+\d+%\s*$/, "");
+  if (!text || /^https?:\/\//.test(text)) return prev;
+  const m = text.match(/([\d.]+) of ([\d.]+) GB/), pct = m && Number(m[2]) > 0 ? Math.min(100, (100 * Number(m[1])) / Number(m[2])) : null;
+  return { text: text.length > 160 ? text.slice(0, 157) + "…" : text, pct, at: Date.now() };
+}
+async function stopStrata() {
+  const e = byId(cur.engine), name = cur.name;
+  if (cur.child) { try { cur.child.kill(); } catch {} }
+  cur = { ...cur, state: "stopped", child: null, launching: false };
+  if (e && e.type === "strata") {
+    const r = await strataRun(e, ["launch", "--stop"]).catch((err) => ({ code: 1, stderr: err.message }));
+    console.log(`[loadouts] stopped ${name} on Strata${r.code ? ` (strata said: ${r.stderr || r.code})` : ""}`);
+    for (let i = 0; i < 25 && (await health()) !== "unreachable"; i++) await new Promise((r2) => setTimeout(r2, 200));
+  }
+  cur = { loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: null, sig: cur.sig, state: "stopped", error: null, startedAt: null, child: null };
+  writeRun();
+}
+async function strataStatus() {
+  const h = await health();
+  let state;
+  if (cur.state === "error") state = "failed";
+  else if (cur.state !== "running") state = "stopped";
+  else if (h === "ready" && !cur.launching) state = "loaded";
+  else if (cur.launching || h === "loading") state = "loading";
+  else { state = "failed"; cur.state = "error"; cur.error = cur.error || "Strata stopped serving (see the log)"; writeRun(); }
+  return { state, loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: null, strata: true, sig: cur.sig, error: cur.error, startedAt: cur.startedAt, url: url(), health: h,
+    progress: state === "loading" ? cur.progress || null : null };
+}
+
+// Strata's model catalog for this PC (its own catalog code, through strata_catalog.py): cached on disk, refreshed when asked
+// or when older than a day. Rows: {family, model, title, about, downloadGb, verdict, words, installed, recommended, …}.
+const catalogs = new Map(); // engine id -> {at, rows, computer, error} | Promise
+function strataCatalogFile(e) { return path.join(P.enginesDir, e.id, "catalog.json"); }
+function strataCatalog(id, fresh = false) {
+  const e = byId(id);
+  if (!e || e.type !== "strata") return Promise.reject(Object.assign(new Error("No such Strata engine"), { status: 404 }));
+  let c = catalogs.get(id);
+  if (!c) { try { c = JSON.parse(fs.readFileSync(strataCatalogFile(e), "utf8")); catalogs.set(id, c); } catch {} }
+  if (c && !(c instanceof Promise) && !fresh && Date.now() - c.at < 24 * 3600e3) return Promise.resolve(c);
+  if (c instanceof Promise) return c;
+  const job = new Promise((resolve) => {
+    const py = strataPython(e.root);
+    execFile(py, [path.join(__dirname, "strata_catalog.py"), e.root], { cwd: e.root, env: strataEnv(e), windowsHide: true, timeout: 120000, maxBuffer: 8 << 20 },
+      (err, stdout, stderr) => {
+        let j = null;
+        try { j = JSON.parse(String(stdout).trim().split(/\r?\n/).pop()); } catch {}
+        const out = j && j.ok ? { at: Date.now(), rows: j.rows || [], files: j.files || [], computer: j.computer || "", unavailable: j.unavailable || [], error: null }
+          : { at: Date.now(), rows: [], computer: "", error: j?.error || (err ? err.message : String(stderr).trim().split(/\r?\n/).pop() || "no answer") };
+        if (out.error && c && c.rows?.length) { catalogs.set(id, c); return resolve({ ...c, error: out.error, stale: true }); } // keep the last good list
+        catalogs.set(id, out);
+        if (!out.error) { try { fs.writeFileSync(strataCatalogFile(e), JSON.stringify(out)); } catch {} }
+        resolve(out);
+      });
+  });
+  catalogs.set(id, job);
+  return job;
+}
+// The last catalog known without running anything (for lists that must answer at once).
+function strataCatalogCached(id) { const c = catalogs.get(id); if (c && !(c instanceof Promise)) return c; const e = byId(id); if (!e) return null; try { const j = JSON.parse(fs.readFileSync(strataCatalogFile(e), "utf8")); catalogs.set(id, j); return j; } catch { return null; } }
+
+// Update an installed Strata (Terminal and engine) through its own updater.
+const strataBusy = new Set();
+async function updateStrata(id) {
+  const e = byId(id);
+  if (!e || e.type !== "strata") throw Object.assign(new Error("No such Strata engine"), { status: 404 });
+  if (strataBusy.has(id)) throw Object.assign(new Error("Already updating"), { status: 409 });
+  if (cur.pid && cur.engine === id) throw Object.assign(new Error("A loadout on this engine is loaded; eject it first"), { status: 409 });
+  const job = { id: "upd-" + id, name: e.name, kind: "strata", build: e.build, state: "engine", label: "Checking for updates", done: 0, total: 0, error: null, engine: id };
+  jobs.set(job.id, job); strataBusy.add(id);
+  (async () => {
+    try { await strataUpdate(e, job); job.state = "done"; job.label = "Up to date"; }
+    catch (err) { job.state = job.cancelled ? "cancelled" : "error"; job.error = job.cancelled ? null : err.message; }
+    finally { strataBusy.delete(id); job.child = null; }
+  })();
+  const { child, abort, ...shown } = job; // the response: no process or controller objects
+  return shown;
+}
+
 function findExe(dir) {
   const all = [];
   (function walk(d, depth) {
@@ -431,6 +720,11 @@ async function init() {
   try {
     const r = JSON.parse(fs.readFileSync(RUN_FILE, "utf8"));
     const e = byId(r.engine);
+    if (r.strata && e && e.type === "strata" && (await health()) !== "unreachable") { // Strata keeps serving on its own after a harness restart
+      cur = { loadout: r.loadout, name: r.name || r.loadout, engine: r.engine, pid: null, strata: true, sig: r.sig, state: "running", error: null, startedAt: r.startedAt || null, child: null, launching: false };
+      console.log(`[loadouts] picked up running ${cur.name} on Strata`);
+      return true;
+    }
     if (r.pid && e && (await isLlama(r.pid, e.exe))) {
       cur = { loadout: r.loadout, name: r.name || r.loadout, engine: r.engine, pid: r.pid, sig: r.sig, state: "running", error: null, startedAt: r.startedAt || null, child: null };
       console.log(`[loadouts] picked up running ${cur.name} (pid ${r.pid})`);
@@ -443,6 +737,7 @@ async function init() {
 
 module.exports = {
   init, launch, stop, status, current, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip,
+  strataRelease, downloadStrata, updateStrata, strataCatalog, strataCatalogCached,
   byId, all: () => data.engines, defaultEngine, subcmd,
   settings: () => ({ autostart: data.autostart, last: data.last }),
 };

@@ -147,6 +147,9 @@
   .tag.ok { background:#173326; color:var(--green); }
   .tag.vis { background:#33291a; color:var(--amber); }
   .tag.ext { background:#3a2414; color:#f0995a; }
+  .tag.strata { background:#1d2a3d; color:#7fb2ff; }
+  .lo-prog { color:var(--amber); }
+  .tag.strata.diff { background:#33291a; color:var(--amber); }
   .size { color:var(--muted); width:72px; text-align:right; white-space:nowrap; }
   .job { display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--line); background:var(--panel); font-size:13px; }
   .job:first-child { border-top:none; }
@@ -191,7 +194,26 @@
   .lo-f input[type=text], .lo-f select { flex:1; min-width:0; }
   .lo-f.unsup label { text-decoration:line-through; }
   .lo-f .hint { font-size:11px; color:var(--muted); }
-  .lo-form pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:12px; max-height:200px; overflow:auto; margin:6px 0 0; }
+  /* the loadout editor opens in a dialog; its buttons stay in view at the bottom */
+  .lo-modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .lo-modal[hidden] { display:none; }
+  .lo-dlg { width:min(720px, calc(100vw - 32px)); max-height:calc(100vh - 48px); overflow:auto; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 20px 50px rgba(0,0,0,.6); }
+  .lo-dlg .lo-form { border:none; margin:0; padding:18px 20px 0; }
+  .lo-dlg .lo-form .acts { position:sticky; bottom:0; background:var(--panel); margin:14px -20px 0; padding:12px 20px 16px; border-top:1px solid var(--line); }
+  /* the loadout editor: one setting per line, its explanation underneath */
+  .lo-rows { display:flex; flex-direction:column; gap:10px; }
+  .lo-row { display:flex; gap:14px; align-items:flex-start; font-size:13px; }
+  .lo-row > label { width:150px; flex:none; color:var(--muted); padding-top:5px; }
+  .lo-row .lo-in { flex:1; min-width:0; max-width:520px; }
+  .lo-row .lo-in input[type=text], .lo-row .lo-in select { width:100%; box-sizing:border-box; }
+  .lo-row .lo-in input[type=checkbox] { margin:6px 0 0; }
+  .lo-row .lo-help { font-size:11.5px; color:var(--muted); margin-top:3px; line-height:1.4; }
+  .lo-row.unsup > label { text-decoration:line-through; }
+  .lo-expert { margin-top:14px; border-top:1px solid var(--line); padding-top:10px; }
+  .lo-expert > summary { cursor:pointer; color:var(--muted); font-size:13px; user-select:none; }
+  .lo-expert > summary:hover { color:var(--text); }
+  .lo-expert[open] > summary { margin-bottom:10px; }
+  .lo-group { margin:8px 0 0; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; }
   .lo-form .err-text { color:#f0a3aa; font-size:13px; margin-top:8px; }
   .lo-form .acts { display:flex; gap:8px; align-items:center; margin-top:14px; }
   .used-by { font-size:12px; color:var(--muted); margin-top:2px; }
@@ -250,7 +272,7 @@
 <main>
   <section data-tab="engine">
     <h2>Engines</h2>
-    <div class="lead">llama.cpp builds that loadouts run on. There's nothing to start here: a loadout loads when a session uses it (or with Load on the Loadouts tab).</div>
+    <div class="lead">What loadouts run on: llama.cpp builds, which run any GGUF model, and Strata, a faster engine for a few models (Qwen3.8-Flash-Next and Qwen3.6-35B-A3B). There's nothing to start here: a loadout loads when a session uses it (or with Load on the Loadouts tab).</div>
     <div id="engList"><div class="srv muted">checking…</div></div>
 
     <h3 class="eng-h">Add an engine</h3>
@@ -261,6 +283,12 @@
         <span class="muted" id="engBuild"></span>
         <span class="spacer"></span>
         <button id="engDl" class="load" disabled>Download</button>
+      </div>
+      <div class="row2" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px">
+        <span>Download Strata</span>
+        <span class="muted" id="strataInfo">checking…</span>
+        <span class="spacer"></span>
+        <button id="strataDl" class="load" disabled>Download</button>
       </div>
       <div id="engJobs"></div>
       <div class="row2" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px">
@@ -329,7 +357,7 @@
     <h2>Loadouts</h2>
     <div class="lead">An engine, a model and how to run it. Sessions pick a loadout, and it loads when it's used. One loadout runs at a time: loading another unloads it. One model can have several (e.g. a long-context one and a fast one).</div>
     <div class="summary"><span id="loCount"></span><span class="spacer"></span><button id="loNew" class="load">＋ New loadout</button></div>
-    <div id="loEdit"></div>
+    <div id="loDlg" class="lo-modal" hidden><div class="lo-dlg" role="dialog" aria-modal="true" aria-label="Loadout"><div id="loEdit"></div></div></div>
     <div class="list" id="loList"><div class="empty">Loading…</div></div>
     <div class="eng-opts" style="margin-top:12px">
       <label><input type="checkbox" id="engAuto"> load the last used loadout when qqstudio starts</label>
@@ -482,6 +510,7 @@ function render() {
     const idRow = name.appendChild(el("div", "idrow"));
     idRow.appendChild(el("div", "id", m.id)).title = m.id;
     if (m.external) idRow.appendChild(el("span", "tag ext", "external")).title = "Not in the models folder: llama.cpp downloaded it with -hf into its own cache";
+    if ((loMeta?.strataModels || []).includes(m.id)) idRow.appendChild(el("span", "tag strata", "Strata")).title = "Strata can run this file too: make a loadout with the Strata engine";
     const lf = local.get(m.id);
     if (lf || m.external) { // which loadouts use this file; create one
       const uses = loList.filter((l) => l.model === m.id);
@@ -839,7 +868,8 @@ setInterval(() => { if (!document.hidden && location.hash === "#mcp") mcpLoad();
 // ---------- loadouts ----------
 let loList = [], loMeta = null, loEditing = null, loArmed = null; // loEditing: loadout id, "new", or null
 async function loLoad() {
-  try { loMeta = await (await fetch("/api/loadouts")).json(); loList = loMeta.loadouts || []; } catch { loMeta = null; loList = []; }
+  try { loMeta = await (await fetch("/api/loadouts")).json(); loList = loMeta.loadouts || []; }
+  catch { loMeta = null; loList = []; clearTimeout(loLoad.retry); loLoad.retry = setTimeout(loLoad, 2000); } // e.g. the harness restarting as the page opened
   loRender();
   if (typeof render === "function" && models) render();
 }
@@ -869,6 +899,7 @@ function loRender() {
     if (st) nm.appendChild(el("span", "lo-st", st === "loaded" ? "loaded" : st === "loading" ? "loading…" : "failed"));
     info.appendChild(el("div", "sub", loSummary(l))).title = loSummary(l);
     if (st === "failed" && run.error) info.appendChild(el("div", "err-text", run.error));
+    if (st === "loading" && run.progress?.text) info.appendChild(el("div", "sub lo-prog", run.progress.text + (run.progress.pct != null ? ` (${Math.floor(run.progress.pct)}%)` : "")));
     const b = (t, fn, cls) => { const x = row.appendChild(el("button", cls || null, t)); x.onclick = fn; return x; };
     if (st === "loaded" || st === "loading") b("⏏ Eject", () => loAct(l.id, "unload"), "eject").title = "Unload to free memory";
     else b("▶ Load", () => loAct(l.id, "load"), "load").title = run.loadout && run.state !== "stopped" && run.state !== "failed" ? `Unloads ${loList.find((x) => x.id === run.loadout)?.name || run.loadout} and loads this one` : "Load now, so the first reply doesn't wait";
@@ -894,57 +925,86 @@ async function loAct(id, a) {
   await srvRefresh();
   setTimeout(refresh, 800);
 }
-function loEditClose() { loEditing = null; $("loEdit").innerHTML = ""; }
-// The editor: name, engine, model, vision; load settings by group (hidden when the engine's build lacks them);
-// other flags; sampling; a preview of the preset lines.
+function loEditClose() { loEditing = null; $("loEdit").innerHTML = ""; $("loDlg").hidden = true; }
+// Esc closes the dialog (Cancel); clicking outside doesn't, so a stray click can't lose the edits.
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("loDlg").hidden) { e.preventDefault(); loEditClose(); } });
+// The editor: the basics (name, engine, model, vision when the model has a projector, context size) one per line, then
+// an "Expert settings" fold with every other setting the engine's build supports, one per line, sampling, and Other
+// flags last. Each line has a short explanation under it.
+const LO_HELP = {
+  name: "Shown in the session's loadout picker.",
+  engine: "The llama.cpp build that runs this loadout.",
+  model: "The model file it loads. External: downloaded by llama.cpp itself (with -hf).",
+  vision: "Also loads the model's vision projector, so it can see images. Uses some extra memory.",
+  other: "Any other llama-server flags, typed as on the command line, e.g. --rope-scaling yarn.",
+};
 function loEditOpen(id, base) {
   if (!loMeta) return;
-  const src = id === "new" ? (base || {}) : loList.find((l) => l.id === id);
+  const src = base || (id === "new" ? {} : loList.find((l) => l.id === id)); // base: a copy (Duplicate) or the form redrawn for another engine type
   if (!src) return;
   loEditing = id;
   const v = { name: src.name || "", engine: src.engine || loMeta.engines.find((e) => e.active)?.id || loMeta.engines[0]?.id, model: src.model || loMeta.models[0]?.name || "",
     vision: src.vision ?? true, load: { ...(src.load || {}) }, other: src.other || "", sampling: { ...(src.sampling || {}) } };
   if (id === "new" && !base) { const mm = loMeta.models.find((x) => x.name === v.model); v.load["ctx-size"] = String(mm?.maxCtx ? Math.min(mm.maxCtx, loMeta.defaultCtx) : loMeta.defaultCtx); }
   const box = $("loEdit"); box.innerHTML = "";
+  $("loDlg").hidden = false;
   const form = box.appendChild(el("div", "lo-form"));
   form.appendChild(el("h3", null, id === "new" ? "New loadout" : "Edit loadout"));
-  const grid0 = form.appendChild(el("div", "lo-grid"));
-  const field = (parent, label, input, hint, cls) => { const f = parent.appendChild(el("div", "lo-f" + (cls ? " " + cls : ""))); f.appendChild(el("label", null, label)); f.appendChild(input); if (hint) input.title = hint; return f; };
+  // One setting per line: label, input, and its explanation underneath.
+  const row = (parent, label, input, help, flag) => {
+    const r = parent.appendChild(el("div", "lo-row"));
+    const l = r.appendChild(el("label", null, label));
+    const right = r.appendChild(el("div", "lo-in"));
+    right.appendChild(input);
+    const h = right.appendChild(el("div", "lo-help", help || ""));
+    if (flag) l.title = flag;
+    return { row: r, label: l, help: h };
+  };
   const txt = (val, ph) => { const i = el("input"); i.type = "text"; i.value = val ?? ""; if (ph) i.placeholder = ph; i.spellcheck = false; return i; };
   const sel = (opts, val, blank) => { const s2 = el("select"); if (blank) s2.appendChild(el("option", null, blank)).value = ""; for (const o of opts) { const op = s2.appendChild(el("option", null, o.label ?? o)); op.value = o.value ?? o; } s2.value = val ?? ""; return s2; };
-  const nameIn = txt(v.name, "e.g. Flash-Next 64K"); field(grid0, "Name", nameIn);
-  const engIn = sel(loMeta.engines.map((e) => ({ label: e.name, value: e.id })), v.engine); field(grid0, "Engine", engIn);
+  const chk = (on) => { const i = el("input"); i.type = "checkbox"; i.checked = !!on; return i; };
+  const basics = form.appendChild(el("div", "lo-rows"));
+  const nameIn = txt(v.name, "e.g. Flash-Next 64K"); row(basics, "Name", nameIn, LO_HELP.name);
+  const engIn = sel(loMeta.engines.map((e) => ({ label: e.name, value: e.id })), v.engine);
+  const strata = loMeta.engines.find((e) => e.id === v.engine)?.type === "strata"; // Strata: its own settings and only the models it runs
+  const FIELDS = strata ? (loMeta.strataFields || []) : loMeta.fields;
+  if (strata && !(loMeta.strataModels || []).includes(v.model)) v.model = (loMeta.strataModels || [])[0] || ""; // only models Strata runs
+  row(basics, "Engine", engIn, LO_HELP.engine);
   const ext = [...(loMeta.external || [])];
   if (v.model && !loMeta.models.some((m) => m.name === v.model) && !ext.some((m) => m.name === v.model)) ext.push({ name: v.model });
-  const modelIn = sel([...loMeta.models.map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model); field(grid0, "Model", modelIn);
-  const visIn = el("input"); visIn.type = "checkbox"; visIn.checked = !!v.vision;
-  const visF = field(grid0, "Vision", visIn, "Load the model's vision projector (mmproj) so it can see images");
+  const modelIn = strata
+    ? sel(loMeta.models.filter((m) => (loMeta.strataModels || []).includes(m.name)).map((m) => ({ label: m.name, value: m.name })), v.model, (loMeta.strataModels || []).length ? null : "no Strata model in the models folder")
+    : sel([...loMeta.models.map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
+  row(basics, "Model", modelIn, strata ? "Files Strata can run (tagged Strata on the Models tab). Get more on Install Models: results Strata runs are tagged there too." : LO_HELP.model);
+  const visIn = chk(v.vision);
+  const visR = row(basics, "Vision", visIn, LO_HELP.vision, "--mmproj");
+  const inputs = {}; // load settings: key -> { f, inp, r }
+  const ctxF = FIELDS.find((f) => f.key === "ctx-size");
+  if (ctxF) { const inp = txt(v.load["ctx-size"], ""); inputs["ctx-size"] = { f: ctxF, inp, r: row(basics, ctxF.label, inp, ctxF.help, "--ctx-size") }; }
+  // Expert settings: everything else, folded.
+  const exp = form.appendChild(el("details", "lo-expert"));
+  const sum = exp.appendChild(el("summary"));
+  const expRows = exp.appendChild(el("div", "lo-rows"));
   const groups = {};
-  for (const f of loMeta.fields) (groups[f.group] = groups[f.group] || []).push(f);
-  const inputs = {};
-  const groupBoxes = [];
+  for (const f of FIELDS) if (f.key !== "ctx-size") (groups[f.group] = groups[f.group] || []).push(f);
+  const heads = []; // group heading -> its fields, so a heading hides when none of its fields shows
   for (const [g, fs2] of Object.entries(groups)) {
-    form.appendChild(el("h4", null, g));
-    const grid = form.appendChild(el("div", "lo-grid"));
-    groupBoxes.push(grid);
+    heads.push({ el: expRows.appendChild(el("div", "lo-group", g)), keys: fs2.map((f) => f.key) });
     for (const f of fs2) {
       let inp;
-      if (f.type === "bool") { inp = el("input"); inp.type = "checkbox"; inp.checked = !!v.load[f.key]; }
+      if (f.type === "bool") inp = chk(v.load[f.key]);
       else if (f.type === "select") inp = sel(f.options, v.load[f.key], "default");
       else if (f.type === "model") inp = sel(loMeta.models.map((m) => m.name), v.load[f.key], "none");
       else inp = txt(v.load[f.key], f.hint || "default");
-      inputs[f.key] = { f, inp, row: field(grid, f.label, inp, `--${f.key}${f.hint ? " · " + f.hint : ""}`) };
+      inputs[f.key] = { f, inp, r: row(expRows, f.label, inp, f.help || f.hint, f.flag ? `--${f.flag}` : strata ? "" : `--${f.key}`) };
     }
   }
-  form.appendChild(el("h4", null, "Other flags"));
-  const otherIn = txt(v.other, "e.g. --rope-scaling yarn --override-kv …"); otherIn.style.width = "100%";
-  form.appendChild(otherIn);
-  form.appendChild(el("h4", null, "Sampling · sent with each request, no reload needed"));
-  const sgrid = form.appendChild(el("div", "lo-grid"));
+  expRows.appendChild(el("div", "lo-group", "Sampling · sent with each request, no reload needed"));
   const sIn = {};
-  for (const sm of loMeta.sampling) { sIn[sm.key] = txt(v.sampling[sm.key], sm.hint); field(sgrid, sm.label, sIn[sm.key]); }
-  form.appendChild(el("h4", null, "Command line"));
-  const pre = form.appendChild(el("pre"));
+  for (const sm of loMeta.sampling) { sIn[sm.key] = txt(v.sampling[sm.key], sm.hint); row(expRows, sm.label, sIn[sm.key], sm.help, sm.flag ? `--${sm.flag}` : ""); }
+  expRows.appendChild(el("div", "lo-group", "Other"));
+  const otherIn = txt(v.other, "e.g. --rope-scaling yarn --override-kv …");
+  row(expRows, "Other flags", otherIn, strata ? "Any other strata launch flags, typed as on the command line, e.g. --set prefill=65536." : LO_HELP.other);
   const err = form.appendChild(el("div", "err-text"));
   const acts = form.appendChild(el("div", "acts"));
   const save = acts.appendChild(el("button", "load", id === "new" ? "Create" : "Save"));
@@ -957,35 +1017,33 @@ function loEditOpen(id, base) {
     for (const [k, inp] of Object.entries(sIn)) if (inp.value.trim()) sampling[k] = inp.value.trim();
     return { name: nameIn.value.trim(), engine: engIn.value, model: modelIn.value, vision: visIn.checked, load, other: otherIn.value.trim(), sampling };
   };
-  const update = () => { // fields the engine build doesn't know: hidden unless set (then struck through)
+  const update = () => {
     const eng = loMeta.engines.find((e) => e.id === engIn.value);
-    for (const { f, inp, row } of Object.values(inputs)) {
+    for (const { f, inp, r } of Object.values(inputs)) { // fields the engine build doesn't know: hidden unless set (then struck through)
       const ok = !eng?.support || eng.support[f.key] !== false;
       const set = f.type === "bool" ? inp.checked : !!inp.value;
-      row.style.display = ok || set ? "" : "none";
-      row.classList.toggle("unsup", !ok);
-      if (!ok) row.title = `This engine's build doesn't list --${f.key}`;
+      r.row.style.display = ok || set ? "" : "none";
+      r.row.classList.toggle("unsup", !ok);
+      if (!ok) r.row.title = `This engine's build doesn't list --${f.key}`;
     }
+    for (const h of heads) h.el.style.display = h.keys.some((k) => inputs[k].r.row.style.display !== "none") ? "" : "none";
     const m = loMeta.models.find((x) => x.name === modelIn.value);
-    visF.style.display = m?.mmproj ? "" : "none";
+    visR.row.style.display = m?.mmproj ? "" : "none";
     const ci = inputs["ctx-size"];
     if (ci) { // the model's own maximum; blank means llama.cpp uses all of it
-      const lab = ci.row.querySelector("label");
-      let h = lab.querySelector("small");
-      if (!h) { h = lab.appendChild(el("small")); h.style.cssText = "display:block; font-size:11px; opacity:.8"; }
-      h.textContent = m?.maxCtx ? `model max ${Number(m.maxCtx).toLocaleString()}` : "";
-      ci.inp.placeholder = m?.maxCtx ? `blank = ${Number(m.maxCtx).toLocaleString()} (all)` : "blank = model's full context";
-      ci.inp.title = "--ctx-size · blank uses the model's full trained context, which can need a lot of memory";
+      ci.inp.placeholder = strata ? "blank = Strata fits it to this PC" : m?.maxCtx ? `blank = ${Number(m.maxCtx).toLocaleString()} (all)` : "blank = model's full context";
+      ci.r.help.textContent = ci.f.help + (m?.maxCtx ? ` This model's maximum: ${Number(m.maxCtx).toLocaleString()}.` : "");
     }
-    const c = collect(), id2 = id === "new" ? (c.name || c.model).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") : id;
-    const parts = ["llama-server", "--model", `…\\${c.model}`];
-    if (c.vision && m?.mmproj) parts.push("--mmproj", "…");
-    for (const [k, val] of Object.entries(c.load)) parts.push(val === true ? `--${k}` : `--${k} ${/\s/.test(val) ? `"${val}"` : val}`);
-    if (c.other) parts.push(c.other);
-    parts.push("--jinja", "--alias", id2 || "…");
-    pre.textContent = parts.join(" ");
+    const c = collect(), n = Object.keys(c.load).filter((k) => k !== "ctx-size").length + Object.keys(c.sampling).length + (c.other ? 1 : 0);
+    sum.textContent = "Expert settings" + (n ? ` · ${n} set` : "");
   };
   form.addEventListener("input", update); form.addEventListener("change", update);
+  engIn.addEventListener("change", () => { // another kind of engine: redraw with its settings and models (name, sampling, other flags kept)
+    const ty = (eid) => loMeta.engines.find((e) => e.id === eid)?.type || "llama.cpp";
+    if (ty(engIn.value) === (strata ? "strata" : ty(v.engine))) return;
+    const c = collect();
+    loEditOpen(id, { ...c, load: c.load["ctx-size"] ? { "ctx-size": c.load["ctx-size"] } : {}, model: "" });
+  });
   update();
   cancel.onclick = loEditClose;
   save.onclick = async () => {
@@ -998,7 +1056,7 @@ function loEditOpen(id, base) {
     await loLoad();
     $("status").textContent = `Saved ${jx.loadout.name}` + (jx.restarted ? " · reloaded" : jx.restartNeeded ? " · a reply is using it, so it reloads with the next reply" : "");
   };
-  form.scrollIntoView({ block: "nearest" });
+  box.parentElement.scrollTop = 0;
   nameIn.focus();
 }
 $("loNew").onclick = () => loEditOpen("new");
@@ -1021,8 +1079,17 @@ async function srvRefresh() {
     r1.appendChild(el("span", "nm", e.name));
     if (e.inUse) { const lo = loList.find((l) => l.id === run.loadout); r1.appendChild(el("span", "tag-active", "in use")).title = `Running ${lo ? lo.name : run.loadout}`; }
     const n = loList.filter((l) => l.engine === e.id).length;
-    r1.appendChild(el("span", "muted", [backendLabel(e.backend), e.build, `${n} loadout${n === 1 ? "" : "s"}`].filter(Boolean).join(" · ")));
+    const strata = e.type === "strata";
+    r1.appendChild(el("span", "muted", (strata
+      ? [e.build && `Strata Terminal ${e.build}`, e.engineVersion ? `engine ${e.engineVersion}` : "no engine yet", backendLabel(e.backend), "loadouts coming next"]
+      : [backendLabel(e.backend), e.build, `${n} loadout${n === 1 ? "" : "s"}`]).filter(Boolean).join(" · ")));
     r1.appendChild(el("span", "spacer"));
+    if (strata) { // Strata's own updater: the Terminal and the engine for this PC
+      const busy = engData.jobs.some((j) => j.engine === e.id && !["done", "error", "cancelled"].includes(j.state));
+      const up = r1.appendChild(el("button", null, busy ? "Updating…" : "Update"));
+      up.disabled = busy; up.title = "Update Strata (its Terminal and the engine for this PC) through Strata's own updater";
+      up.onclick = async () => { up.disabled = true; const r = await engPost(`/api/engines/${encodeURIComponent(e.id)}/update`); if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError(""); srvRefresh(); };
+    }
     if (engData.engines.length > 1) {
       const armed = engArmed === e.id;
       const del = r1.appendChild(el("button", "eject" + (armed ? " armed" : ""), armed ? (e.downloaded ? "Delete engine and its files?" : "Remove engine?") : "🗑"));
@@ -1035,7 +1102,7 @@ async function srvRefresh() {
       };
       del.title = (e.downloaded ? "Remove this engine and delete its downloaded build" : "Remove this engine (the executable is left alone)") + (n ? `. Its ${n} loadout${n === 1 ? "" : "s"} will need another engine.` : "");
     }
-    card.appendChild(el("div", "path", e.exe)).title = e.exe;
+    card.appendChild(el("div", "path", e.type === "strata" ? e.root : e.exe)).title = e.type === "strata" ? e.root : e.exe;
   }
   $("engAuto").checked = engData.autostart;
   const jb = $("engJobs"); jb.innerHTML = "";
@@ -1044,8 +1111,13 @@ async function srvRefresh() {
     const info = row.appendChild(el("div", "info"));
     info.appendChild(el("div", "fname", jx.name));
     const bar = info.appendChild(el("div", "bar")).appendChild(el("div")); bar.style.width = (jx.total ? Math.round(jx.done / jx.total * 100) : 0) + "%";
-    info.appendChild(el("div", "sub", jx.state === "downloading" ? `${engSize(jx.done)} of ${engSize(jx.total)}` : jx.state === "unpacking" ? "unpacking…" : jx.state === "done" ? "ready: added above" : jx.state === "error" ? "failed: " + jx.error : jx.state));
-    if (jx.state === "downloading" || jx.state === "unpacking") { const c = row.appendChild(el("button", "eject", "Cancel")); c.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(jx.id)}/cancel`).then(srvRefresh); }
+    const step = jx.kind === "strata" ? (jx.state === "engine" ? "2 of 2 · " : jx.state === "downloading" || jx.state === "unpacking" ? "1 of 2 · " : "") : "";
+    info.appendChild(el("div", "sub", step + (jx.state === "downloading" ? `${jx.label ? jx.label + ": " : ""}${engSize(jx.done)} of ${engSize(jx.total)}`
+      : jx.state === "unpacking" ? "unpacking…"
+      : jx.state === "engine" ? (jx.total ? `${jx.label}: ${engSize(jx.done)} of ${engSize(jx.total)}` : jx.note || "Strata is fetching the engine for this PC…")
+      : jx.state === "done" ? (jx.kind === "strata" && jx.id.startsWith("upd-") ? "updated" : "ready: added above") : jx.state === "error" ? "failed: " + jx.error : jx.state)));
+    if (jx.state === "engine" && jx.total) bar.style.width = Math.round(jx.done / jx.total * 100) + "%";
+    if (jx.state === "downloading" || jx.state === "unpacking" || jx.state === "engine") { const c = row.appendChild(el("button", "eject", "Cancel")); c.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(jx.id)}/cancel`).then(srvRefresh); }
   }
   if (engData.jobs.length && engData.jobs.every((x) => ["done", "error", "cancelled"].includes(x.state))) {
     const c = jb.appendChild(el("button", null, "Clear")); c.style.marginTop = "8px"; c.onclick = () => engPost("/api/engines/jobs/clear").then(srvRefresh);
@@ -1055,7 +1127,7 @@ async function srvRefresh() {
   t.textContent = run.state === "loaded" || run.state === "loading" ? "●" : run.state === "failed" ? "!" : "";
   t.style.color = run.state === "loaded" ? "var(--green)" : run.state === "loading" ? "var(--amber)" : run.state === "failed" ? "var(--red)" : "";
   $("engLogName").textContent = loList.find((l) => l.id === engLogId)?.name || "";
-  const sig = JSON.stringify([run.loadout, run.state, run.error]);
+  const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text]);
   if (sig !== srvRefresh.last) { srvRefresh.last = sig; loRender(); } // the cards' state
   if ($("srvLogBox").open) srvLoadLog();
 }
@@ -1081,6 +1153,22 @@ async function engReleases() {
     $("engDl").disabled = false; $("engDl").dataset.build = j.build;
   } catch (e) { $("engBackend").innerHTML = "<option>unavailable</option>"; $("engBuild").textContent = "Could not list releases: " + e.message; }
 }
+async function strataInfo() {
+  try {
+    const r = await fetch("/api/engines/strata/release"); const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    $("strataInfo").textContent = `${j.release} · Terminal ${j.control} (${engSize(j.asset.size)}), then the engine for this PC` + (j.stale ? " (cached)" : "");
+    $("strataInfo").title = "Strata's own Python and tools, then its GPU engine from Strata's signed update feed. Kept separate from any Strata app you installed yourself.";
+    $("strataDl").disabled = false;
+  } catch (e) { $("strataInfo").textContent = "Could not reach Strata's releases: " + e.message; }
+}
+$("strataDl").onclick = async () => {
+  $("strataDl").disabled = true;
+  const r = await engPost("/api/engines/strata/download");
+  if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError("");
+  $("strataDl").disabled = false;
+  srvRefresh();
+};
 $("engDl").onclick = async () => {
   const r = await engPost("/api/engines/download", { build: $("engDl").dataset.build, backend: $("engBackend").value });
   if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError("");
@@ -1098,6 +1186,7 @@ $("engAuto").onchange = () => fetch("/api/engines/options", { method: "PUT", hea
 $("srvLogBox").addEventListener("toggle", () => { if ($("srvLogBox").open) srvLoadLog(); });
 srvRefresh();
 engReleases();
+strataInfo();
 srvRefresh = single(srvRefresh);
 setInterval(() => { if (!document.hidden && !engArmed && !loArmed) srvRefresh(); }, 2000);
 
@@ -1161,7 +1250,8 @@ function repoRow(m) {
   const caret = head.appendChild(el("span", "caret", "▸"));
   head.appendChild(el("span", "id", m.id)).title = m.id;
   if (m.gated) head.appendChild(el("span", "tag vis", "gated"));
-  head.appendChild(el("span", "stats", `↓ ${fmtNum(m.downloads)} · ♥ ${fmtNum(m.likes)}${m.updated ? " · " + ago(m.updated) : ""}`));
+  if (m.strata) head.appendChild(el("span", "tag strata", "Strata")).title = "Strata's catalog uses this repo: files Strata can run are tagged inside";
+  if (m.downloads != null) head.appendChild(el("span", "stats", `↓ ${fmtNum(m.downloads)} · ♥ ${fmtNum(m.likes)}${m.updated ? " · " + ago(m.updated) : ""}`));
   const a = head.appendChild(el("a", "stats", "↗")); a.href = "https://huggingface.co/" + m.id; a.target = "_blank"; a.title = "Open on Hugging Face";
   a.onclick = (e) => e.stopPropagation();
   let filesEl = null;
@@ -1199,6 +1289,9 @@ async function loadFiles(repo, box) {
       if (f.quant) line.appendChild(el("span", "tag q", f.quant));
       if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
       if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
+      if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
+        f.strata.different ? `${f.strata.title}: Strata knows these files, but at another size than it tested, so its check would refuse them. llama.cpp can still use them.`
+          : `${f.strata.title}: Strata can run these files${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
       line.appendChild(el("span", "size", fmtBytes(f.size)));
       if (f.installed) { line.appendChild(el("span", "tag ok", "installed")); continue; }
       const btn = line.appendChild(el("button", "load", "Download"));

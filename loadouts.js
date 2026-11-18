@@ -13,31 +13,98 @@ const FILE = P.loadouts;
 
 // Load settings: key = llama.cpp's long flag name (passed as --<key>).
 const FIELDS = [
-  { key: "ctx-size", label: "Context size", type: "number", group: "Memory & speed", hint: "tokens", aliases: ["c"] },
-  { key: "n-gpu-layers", label: "GPU layers", type: "text", group: "Memory & speed", hint: "number, auto or all", aliases: ["ngl", "gpu-layers"] },
-  { key: "n-cpu-moe", label: "MoE layers on CPU", type: "number", group: "Memory & speed", hint: "keeps the experts of the first N layers in RAM", aliases: ["ncmoe"] },
-  { key: "fit", label: "Fit to memory", type: "select", options: ["on", "off"], group: "Memory & speed", hint: "let llama.cpp size the model to the free memory" },
-  { key: "fit-target", label: "Fit headroom", type: "number", group: "Memory & speed", hint: "MiB to leave free" },
-  { key: "device", label: "Devices", type: "text", group: "Memory & speed", hint: "e.g. CUDA0, or CUDA0,CUDA1", aliases: ["dev"] },
-  { key: "flash-attn", label: "Flash attention", type: "select", options: ["auto", "on", "off"], group: "Memory & speed", aliases: ["fa"] },
-  { key: "cache-type-k", label: "KV cache type (K)", type: "select", options: ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"], group: "Memory & speed", aliases: ["ctk"] },
-  { key: "cache-type-v", label: "KV cache type (V)", type: "select", options: ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"], group: "Memory & speed", aliases: ["ctv"] },
-  { key: "batch-size", label: "Batch", type: "number", group: "Memory & speed", aliases: ["b"] },
-  { key: "ubatch-size", label: "Micro-batch", type: "number", group: "Memory & speed", aliases: ["ub"] },
-  { key: "threads", label: "Threads", type: "number", group: "Memory & speed", aliases: ["t"] },
-  { key: "mlock", label: "Lock in RAM (mlock)", type: "bool", group: "Memory & speed" },
-  { key: "no-mmap", label: "Don't memory-map (no-mmap)", type: "bool", group: "Memory & speed" },
-  { key: "model-draft", label: "Draft model", type: "model", group: "Speculative decoding", hint: "a small model from the same family", aliases: ["md"] },
-  { key: "draft-max", label: "Draft tokens", type: "number", group: "Speculative decoding", aliases: ["draft", "draft-n"] },
+  { key: "ctx-size", help: "How many tokens the model can hold at once: the conversation, tools and reply together. More uses more memory. Blank uses the model's full trained context.", label: "Context size", type: "number", group: "Memory & speed", hint: "tokens", aliases: ["c"] },
+  { key: "n-gpu-layers", help: "How many of the model's layers run on the GPU. auto lets llama.cpp decide; all puts them all there.", label: "GPU layers", type: "text", group: "Memory & speed", hint: "number, auto or all", aliases: ["ngl", "gpu-layers"] },
+  { key: "n-cpu-moe", help: "For mixture-of-experts models: keeps the experts of the first N layers in system RAM, to fit a model that's too big for the GPU.", label: "MoE layers on CPU", type: "number", group: "Memory & speed", hint: "keeps the experts of the first N layers in RAM", aliases: ["ncmoe"] },
+  { key: "fit", help: "Lets llama.cpp shrink settings such as context and GPU layers so the model fits in free memory.", label: "Fit to memory", type: "select", options: ["on", "off"], group: "Memory & speed", hint: "let llama.cpp size the model to the free memory" },
+  { key: "fit-target", help: "How much memory to leave free on each GPU when fitting, in MiB.", label: "Fit headroom", type: "number", group: "Memory & speed", hint: "MiB to leave free" },
+  { key: "device", help: "Which GPUs to use, e.g. CUDA0, or CUDA0,CUDA1 to split across two. Blank uses all.", label: "Devices", type: "text", group: "Memory & speed", hint: "e.g. CUDA0, or CUDA0,CUDA1", aliases: ["dev"] },
+  { key: "flash-attn", help: "A faster way to compute attention that uses less memory. auto turns it on where supported.", label: "Flash attention", type: "select", options: ["auto", "on", "off"], group: "Memory & speed", aliases: ["fa"] },
+  { key: "cache-type-k", help: "Precision of the context memory (keys). q8_0 roughly halves its size with little quality loss.", label: "KV cache type (K)", type: "select", options: ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"], group: "Memory & speed", aliases: ["ctk"] },
+  { key: "cache-type-v", help: "Precision of the context memory (values). Quantized values need flash attention.", label: "KV cache type (V)", type: "select", options: ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"], group: "Memory & speed", aliases: ["ctv"] },
+  { key: "batch-size", help: "Tokens read per step when processing the prompt. Larger reads long prompts faster but uses more memory.", label: "Batch", type: "number", group: "Memory & speed", aliases: ["b"] },
+  { key: "ubatch-size", help: "Tokens sent to the GPU per pass; at most Batch. Larger can be faster and uses more memory.", label: "Micro-batch", type: "number", group: "Memory & speed", aliases: ["ub"] },
+  { key: "threads", help: "CPU threads used for generating. Blank uses llama.cpp's default.", label: "Threads", type: "number", group: "Memory & speed", aliases: ["t"] },
+  { key: "mlock", help: "Keeps the model locked in RAM so the system can't swap it out to disk.", label: "Lock in RAM (mlock)", type: "bool", group: "Memory & speed" },
+  { key: "no-mmap", help: "Reads the whole model into memory at start instead of mapping the file. Slower to load; can help on some systems.", label: "Don't memory-map (no-mmap)", type: "bool", group: "Memory & speed" },
+  { key: "model-draft", help: "A small model of the same family that guesses ahead for the main model, which can speed up replies.", label: "Draft model", type: "model", group: "Speculative decoding", hint: "a small model from the same family", aliases: ["md"] },
+  { key: "draft-max", help: "How many tokens the draft model guesses at a time.", label: "Draft tokens", type: "number", group: "Speculative decoding", aliases: ["draft", "draft-n"] },
 ];
 // Sampling: sent with each request (OpenAI / llama-server field names), so changing it needs no reload.
+// Strata's settings (strata launch flags; Strata's docs/TERMINAL_LAUNCH.md). Context size is shared
+// with llama.cpp's field; vision is the loadout's Vision switch.
+const STRATA_FIELDS = [
+  { key: "ctx-size", label: "Context size", type: "number", group: "Basics", flag: "context",
+    help: "How many tokens the model can hold at once: the conversation, tools and reply together. More uses more memory. Blank: Strata's default." },
+  { key: "kv", label: "Context memory format", type: "select", options: ["int8", "q4_0", "k8v4", "fp16"], group: "Memory & speed", flag: "kv",
+    help: "How the conversation memory is stored. int8 is Strata's default; q4_0 uses half the memory; fp16 is the most precise and largest." },
+  { key: "parallel", label: "Parallel requests", type: "number", group: "Memory & speed", flag: "parallel",
+    help: "How many requests Strata answers at the same time, 1 to 8. Blank: fit to your graphics card. Sub-agents need more than one." },
+  { key: "gpu", label: "Graphics cards", type: "text", group: "Memory & speed", flag: "gpu", hint: "e.g. 0, or 0,1",
+    help: "Which graphics cards Strata uses, by number: 0 for the first, 0,1 to use two. Blank: Strata's choice (usually one card)." },
+  { key: "vram-reserve", label: "Graphics memory to leave free", type: "number", group: "Memory & speed", hint: "MiB, e.g. 2048",
+    help: "How much graphics memory Strata leaves unused for other programs (the desktop, a browser, games), in MiB. Strata fills the rest with model experts, so more free memory can mean a little slower answers. Blank: Strata's default (700 MiB when pictures are read on the graphics card, else none)." },
+  { key: "reader", label: "Picture reader", type: "select", options: ["gpu", "cpu"], group: "Memory & speed",
+    help: "Where pictures are read when Vision is on. Blank: Strata decides (the GPU from 24 GB of graphics memory, else the CPU)." },
+  { key: "drafting", label: "Drafting", type: "select", options: ["auto", "mtp", "dflash2", "off"], group: "Speculative decoding", flag: "drafting",
+    help: "A small drafter guesses words ahead to make answers faster. auto picks DFlash2 for Flash-Next where it can; off saves memory. The first start downloads the drafter." },
+  { key: "tune", label: "Tuning", type: "select", options: ["quick", "thorough"], group: "Speculative decoding", flag: "tune",
+    help: "Measure the fastest settings for this PC before serving: quick takes about 20 minutes, thorough up to 2 hours. Done once; the result is reused." },
+];
+// Model files Strata can run: exactly the files its installer lists (Hugging Face repo, path, byte size, per catalog size),
+// from its catalog (strata_catalog.py). Until that list has been read, a loose name match stands in.
+const STRATA_MODEL = /flash[-_ ]?next/i;
+const strataEngine = () => llama.all().find((e) => e.type === "strata");
+let strataIdx = { at: -1 };
+function strataIndex() {
+  const e = strataEngine(), c = e && llama.strataCatalogCached(e.id);
+  if (!c?.files?.length || !c.files[0].sizes) return null; // (an older list without sizes: refreshed by the server)
+  if (strataIdx.at === c.at) return strataIdx;
+  const byPath = new Map(), byBase = new Map(), sets = new Map(), rows = new Map();
+  for (const r of c.rows || []) rows.set(r.family + "/" + r.model, r);
+  for (const f of c.files) {
+    const k = f.family + "/" + f.model;
+    byPath.set(f.repo + "/" + f.path, f);
+    byBase.set(path.posix.basename(f.path).toLowerCase(), f);
+    if (!sets.has(k)) sets.set(k, []);
+    sets.get(k).push(f);
+  }
+  strataIdx = { at: c.at, byPath, byBase, sets, rows, repos: new Set(c.files.map((f) => f.repo)) };
+  return strataIdx;
+}
+// A Hugging Face search result: is it one of the repos Strata's catalog downloads from?
+const strataRepo = (repo) => !!strataIndex()?.repos.has(repo);
+// A file group of a Hugging Face repo ({paths, sizes: {path: bytes}}): null, or {title, words} when it is a full set Strata lists,
+// with different: true when a file's size isn't the one Strata pinned (the repo changed it since: Strata's check would refuse it).
+function strataFiles(repo, g) {
+  const ix = strataIndex();
+  if (!ix || !ix.repos.has(repo)) return null;
+  const hits = g.paths.map((p) => ix.byPath.get(repo + "/" + p));
+  if (!hits.length || hits.some((h) => !h)) return null;
+  const k = hits[0].family + "/" + hits[0].model, set = ix.sets.get(k) || [];
+  if (set.length !== hits.length) return null;
+  const r = ix.rows.get(k);
+  return { title: r ? r.title : k, words: r ? r.words : "", different: hits.some((h) => h.sizes?.length && g.sizes?.[repo + "/" + h.path] && !h.sizes.includes(g.sizes[repo + "/" + h.path])) };
+}
+// A model in the models folder: all files of one of Strata's sets, beside each other, at the pinned sizes.
+function strataLocal(m) {
+  const ix = strataIndex();
+  if (!ix) return STRATA_MODEL.test(m.name) || STRATA_MODEL.test(m.model);
+  const f = ix.byBase.get(path.basename(m.model).toLowerCase());
+  if (!f) return false;
+  const dir = path.dirname(m.model);
+  return (ix.sets.get(f.family + "/" + f.model) || []).every((x) => { try { const n = fs.statSync(path.join(dir, path.posix.basename(x.path))).size; return !x.sizes?.length || x.sizes.includes(n); } catch { return false; } });
+}
+const strataModels = () => localModels().filter(strataLocal);
+const isStrata = (engineId) => llama.byId(engineId)?.type === "strata";
+
 const SAMPLING = [
-  { key: "temperature", label: "Temperature", hint: "e.g. 0.7", flag: "temp" },
-  { key: "top_k", label: "Top-k", hint: "e.g. 20", flag: "top-k" },
-  { key: "top_p", label: "Top-p", hint: "e.g. 0.8", flag: "top-p" },
-  { key: "min_p", label: "Min-p", hint: "e.g. 0", flag: "min-p" },
-  { key: "presence_penalty", label: "Presence penalty", hint: "e.g. 1.5 against repetition", flag: "presence-penalty" },
-  { key: "repeat_penalty", label: "Repeat penalty", hint: "e.g. 1.05", flag: "repeat-penalty" },
+  { key: "temperature", help: "Randomness. Lower is more focused and repeatable; higher is more varied.", label: "Temperature", hint: "e.g. 0.7", flag: "temp" },
+  { key: "top_k", help: "Picks only from the K most likely next tokens.", label: "Top-k", hint: "e.g. 20", flag: "top-k" },
+  { key: "top_p", help: "Picks only from the most likely tokens that together make up P of the probability.", label: "Top-p", hint: "e.g. 0.8", flag: "top-p" },
+  { key: "min_p", help: "Drops tokens less likely than this fraction of the most likely one.", label: "Min-p", hint: "e.g. 0", flag: "min-p" },
+  { key: "presence_penalty", help: "Discourages reusing words already used; helps against repetition loops.", label: "Presence penalty", hint: "e.g. 1.5 against repetition", flag: "presence-penalty" },
+  { key: "repeat_penalty", help: "Penalizes recently repeated tokens. 1 means off.", label: "Repeat penalty", hint: "e.g. 1.05", flag: "repeat-penalty" },
 ];
 const ALIAS = new Map(); // any flag spelling -> field key
 for (const f of FIELDS) { ALIAS.set(f.key, f.key); for (const a of f.aliases || []) ALIAS.set(a, f.key); }
@@ -171,10 +238,12 @@ function clean(input, prev = {}) {
   if (typeof input.other === "string") l.other = input.other.trim().slice(0, 2000);
   if (input.load && typeof input.load === "object") {
     l.load = {};
-    for (const f of FIELDS) {
+    for (const f of isStrata(l.engine) ? STRATA_FIELDS : FIELDS) {
       const v = input.load[f.key];
       if (v === undefined || v === null || v === "" || v === false) continue;
       if (f.type === "bool") { l.load[f.key] = true; continue; }
+      if (f.key === "gpu" && !/^\d+(\s*,\s*\d+)*$/.test(String(v).trim())) throw Object.assign(new Error("Graphics cards: card numbers separated by commas, e.g. 0,1"), { status: 400 });
+      if (f.key === "parallel" && !(Number(v) >= 1 && Number(v) <= 8)) throw Object.assign(new Error("Parallel requests must be 1 to 8"), { status: 400 });
       if (f.type === "number" && !/^-?\d+(\.\d+)?$/.test(String(v).trim())) throw Object.assign(new Error(`${f.label} must be a number`), { status: 400 });
       if (f.type === "select" && !f.options.includes(String(v))) throw Object.assign(new Error(`${f.label}: unknown value "${v}"`), { status: 400 });
       l.load[f.key] = String(v).trim();
@@ -191,6 +260,11 @@ function clean(input, prev = {}) {
   }
   if (!l.name) throw Object.assign(new Error("The loadout needs a name"), { status: 400 });
   if (!llama.byId(l.engine)) throw Object.assign(new Error("Pick an engine"), { status: 400 });
+  if (isStrata(l.engine)) { // Strata runs files from the models folder that it supports
+    if (!strataModels().some((m) => m.name === l.model)) throw Object.assign(new Error("Strata runs the Qwen3.8-Flash-Next files its catalog lists (they're tagged Strata on the Models tab); pick one of those"), { status: 400 });
+    delete l.modelPath; delete l.hfRepo;
+    return l;
+  }
   if (!l.model || !(localModels().some((m) => m.name === l.model) || l.modelPath || l.hfRepo)) throw Object.assign(new Error("Pick a model from the models folder, or one the engine lists"), { status: 400 });
   if (l.load?.["model-draft"] && !localModels().some((m) => m.name === l.load["model-draft"])) throw Object.assign(new Error("The draft model isn't in the models folder"), { status: 400 });
   return l;
@@ -204,7 +278,8 @@ function newId(name) {
 function create(input) {
   const m = localModels().find((x) => x.name === input.model);
   const max = m ? trainedContext(m.model) : null;
-  const defaults = { "ctx-size": String(max ? Math.min(max, DEFAULT_CTX) : DEFAULT_CTX) }; // blank would mean the model's full context
+  // Blank would mean the model's full context for llama.cpp; Strata fits the context to the PC itself, so it starts blank.
+  const defaults = isStrata(input.engine) ? {} : { "ctx-size": String(max ? Math.min(max, DEFAULT_CTX) : DEFAULT_CTX) };
   const l = clean({ name: input.name || input.model, engine: input.engine || llama.defaultEngine()?.id || "", vision: m ? !!m.mmproj : false, sampling: {}, other: "", ...input,
     load: input.load && Object.keys(input.load).length ? input.load : defaults });
   l.id = newId(input.name || input.model);
@@ -231,6 +306,7 @@ function removeForModel(name) { const n = list().length; data.loadouts = list().
 // Load settings use llama.cpp's long flag names, so each becomes --<key> <value> (or just --<key> when on).
 // Returns null when the model can't be found.
 function argsFor(l, models = localModels()) {
+  if (isStrata(l.engine)) return strataArgs(l, models);
   const m = models.find((x) => x.name === l.model);
   const file = m ? m.model : l.modelPath;
   if (!file && !l.hfRepo) return null;
@@ -245,6 +321,23 @@ function argsFor(l, models = localModels()) {
 }
 // What llama.js needs to run a loadout. sig changes whenever the process would start differently (settings, model
 // file, engine), so a running loadout whose sig no longer matches gets reloaded.
+// `strata launch` flags for a loadout: the model's folder, then its settings. Other flags are passed as typed.
+function strataArgs(l, models) {
+  const m = models.find((x) => x.name === l.model);
+  if (!m) return null;
+  const a = ["--model-path", path.dirname(m.model)];
+  const load = l.load || {};
+  if (load["ctx-size"]) a.push("--context", String(load["ctx-size"]));
+  if (load.kv) a.push("--kv", load.kv);
+  if (load.parallel) a.push("--parallel", String(load.parallel));
+  if (load.gpu) a.push("--gpu", String(load.gpu).replace(/\s+/g, ""));
+  if (load["vram-reserve"]) a.push("--set", `vram-reserve-mib=${Math.max(0, Math.round(Number(load["vram-reserve"])))}`); // an engine option: Strata's --set
+  a.push("--vision", l.vision === false ? "off" : load.reader || "on");
+  if (load.drafting) a.push("--drafting", load.drafting);
+  if (load.tune) a.push("--tune", load.tune);
+  a.push(...tokens(l.other));
+  return a;
+}
 function spec(id) {
   const l = get(id);
   if (!l) return null;
@@ -256,6 +349,7 @@ function commandLine(l) {
   const e = llama.byId(l.engine), args = argsFor(l);
   if (!args) return "(the model file can't be found)";
   const q = (x) => (/[\s"]/.test(x) ? `"${x}"` : x);
+  if (e && e.type === "strata") return ["strata", "launch", ...args.map(q), "--port <port> --access local --no-tui --yes --restart --save-preset " + q(l.id)].join(" ");
   return [e ? e.exe : "llama-server", ...(e ? llama.subcmd(e.exe) : []), ...args, "--jinja --host 127.0.0.1 --port <port> --alias " + l.id].map((x, i, all) => (i === all.length - 1 ? x : q(x))).join(" ");
 }
 
@@ -307,6 +401,7 @@ function cachedModels() {
 const helpCache = new Map(); // engine id -> { exe, mtime, flags: Set | null }
 const helpRunning = new Map(); // engine id -> promise of the --help run in progress (shared, so it never runs twice at once)
 function supported(e) {
+  if (e.type === "strata") return Promise.resolve(null);
   if (helpRunning.has(e.id)) return helpRunning.get(e.id);
   const p = supportedNow(e).finally(() => helpRunning.delete(e.id));
   helpRunning.set(e.id, p);
@@ -354,4 +449,4 @@ function visionOf(id) {
   return !!(l.vision && m && m.mmproj);
 }
 
-module.exports = { FIELDS, SAMPLING, DEFAULT_CTX, trainedContext, list, get, create, update, remove, removeForModel, argsFor, spec, commandLine, cachedModels, fieldSupport, samplingFor, visionOf, localModels, load };
+module.exports = { FIELDS, STRATA_FIELDS, strataModels, strataRepo, strataFiles, isStrata, SAMPLING, DEFAULT_CTX, trainedContext, list, get, create, update, remove, removeForModel, argsFor, spec, commandLine, cachedModels, fieldSupport, samplingFor, visionOf, localModels, load };

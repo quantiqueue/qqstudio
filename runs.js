@@ -272,7 +272,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
     let think0 = null, think1 = null, timings = null, failed = false, retry = false, gotChunk = false, lastSave = Date.now();
-    let looped = false, finish = null, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
+    let looped = false, finish = null, ended = false, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
     const calls = [];
     emit(run, { type: "step", model });
     const phase = (text, pct = null) => {
@@ -299,7 +299,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     try {
       // The loadout must be the one running: loading it (and unloading another) if needed, or waiting while another
       // loadout is mid-reply. Held until this request ends.
-      release = await ensureEngine(model, (t) => phase(t), run.abort.signal);
+      release = await ensureEngine(model, (t, pct) => phase(t, pct ?? null), run.abort.signal);
       sent = true;
       const body = {
         model, messages: [{ role: "system", content: run.system }, ...(await modelMessages(run))],
@@ -324,7 +324,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         for (const line of lines) {
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
-          if (!data || data === "[DONE]") continue;
+          if (data === "[DONE]") { ended = true; continue; }
+          if (!data) continue;
           let j; try { j = JSON.parse(data); } catch { continue; }
           if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
           if (j.timings) timings = j.timings;
@@ -387,6 +388,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         }
       }
     } catch (e) {
+      // The reply already finished and the server then dropped the connection without ending the stream (Strata's
+      // server does this): Node's fetch reports "terminated", but nothing is missing.
+      if ((ended || finish) && !run.stopped && !looped && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET")) e = null;
+      if (!e) {} else
       // llama-server couldn't read the model's tool call (e.g. "does not match the expected peg-native format": a stray
       // space or token in the template's tool-call syntax, common with small or heavily quantized models). Sampling
       // differs each time, so the same step is asked again, up to twice in a row, before it counts as a failure.

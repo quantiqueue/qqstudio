@@ -144,13 +144,17 @@ async function ensureEngine(model, phase, signal) {
   let done = false;
   const release = () => { if (!done) { done = true; inflight.set(lo.id, Math.max(0, (inflight.get(lo.id) || 1) - 1)); } };
   try {
-    for (let i = 0, said = false; ; i++) {
+    for (let i = 0, said = null; ; i++) {
       const s = await llama.status();
       if (s.state === "loaded") return release;
       if (s.state === "failed" || s.state === "stopped") throw new Error((s.error || `${lo.name} stopped while loading`) + " (Settings > Loadouts > Log)");
       if (signal?.aborted) throw new Error("stopped");
-      if (i > 1200) throw new Error(`${lo.name} didn't finish loading in 10 minutes (Settings > Loadouts > Log)`);
-      if (phase && !said) { phase(`Loading ${lo.name}`); said = true; }
+      // Strata: a first start downloads (the model itself, for a catalog loadout) and tunes; it fails only after 30 minutes
+      // with no new progress line. llama.cpp: 10 minutes in all.
+      const strata = loadouts.isStrata(lo.engine), quietFor = strata && s.progress?.at ? (Date.now() - s.progress.at) / 1000 : i / 2;
+      if (strata ? quietFor > 1800 : i > 1200) throw new Error(`${lo.name} didn't finish loading in ${strata ? "30 minutes without progress" : "10 minutes"} (Settings > Loadouts > Log)`);
+      const t = `Loading ${lo.name}` + (s.progress?.text ? ` · ${s.progress.text}` : "");
+      if (phase && said !== t) { phase(t, s.progress?.pct ?? null); said = t; }
       await sleepMs(500);
     }
   } catch (e) { release(); throw e; }
@@ -424,10 +428,14 @@ async function handleEngines(req, res) {
     }
     if (a === "options" && req.method === "PUT") { llama.setOptions(await body()); return sendJson(res, 200, await llama.list()); }
     if (a === "releases" && req.method === "GET") return sendJson(res, 200, await llama.releases());
+    if (a === "strata" && b === "release" && req.method === "GET") return sendJson(res, 200, await llama.strataRelease());
+    if (a === "strata" && b === "download" && req.method === "POST") return sendJson(res, 200, { job: await llama.downloadStrata(await body()) });
     if (a === "download" && req.method === "POST") return sendJson(res, 200, { job: await llama.download(await body()) });
     if (a === "jobs" && b === "clear" && req.method === "POST") { llama.clearJobs(); return sendJson(res, 200, { ok: true }); }
     if (a === "jobs" && c === "cancel" && req.method === "POST") { llama.cancel(b); return sendJson(res, 200, { ok: true }); }
     if (a && !llama.byId(a)) return sendJson(res, 404, { error: "No such engine" });
+    if (a && b === "update" && req.method === "POST") return sendJson(res, 200, { job: await llama.updateStrata(a) }); // Strata: its own updater
+    if (a && b === "catalog" && req.method === "GET") return sendJson(res, 200, await llama.strataCatalog(a, new URL(req.url, "http://x").searchParams.has("fresh")));
     if (a && !b) {
       if (req.method === "PATCH") return sendJson(res, 200, { engine: llama.update(a, await body()) });
       if (req.method === "DELETE") { if (llama.current().engine === a) await unloadLoadout(null); await llama.remove(a); return sendJson(res, 200, { ok: true }); }
@@ -465,10 +473,11 @@ async function handleLoadouts(req, res) {
   try {
     if (!id && req.method === "GET") {
       const engs = [];
-      for (const e of llama.all()) engs.push({ id: e.id, name: e.name, active: e.id === llama.defaultEngine()?.id, support: await loadouts.fieldSupport(e) });
+      for (const e of llama.all()) engs.push({ id: e.id, name: e.name, type: e.type || "llama.cpp", active: e.id === llama.defaultEngine()?.id, support: await loadouts.fieldSupport(e) });
       return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
         models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model) })),
-        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: await llama.status() });
+        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: await llama.status(),
+        strataFields: loadouts.STRATA_FIELDS, strataModels: (strataCatalogNow(), loadouts.strataModels().map((m) => m.name)) });
     }
     if (id && sub === "preview" && req.method === "GET") { const l = loadouts.get(id); if (!l) return sendJson(res, 404, { error: "No such loadout" }); return sendJson(res, 200, { cmd: loadouts.commandLine(l) }); }
     if (id && sub === "log" && req.method === "GET") { res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(llama.log(id)); }
@@ -577,9 +586,23 @@ async function modelProps(model, pick) {
   }
   return null;
 }
-function nCtx(model) { return modelProps(model, (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx); }
+// Strata's catalog as last known (the first Strata engine's), for lists that answer at once; refreshed in the background.
+function strataCatalogNow() {
+  const e = llama.all().find((x) => x.type === "strata");
+  if (!e) return null;
+  const c = llama.strataCatalogCached(e.id);
+  if (!c || !c.files?.[0]?.sizes || Date.now() - c.at > 24 * 3600e3) llama.strataCatalog(e.id, !!c).catch(() => {}); // (an older cache has no file list)
+  return c ? { engine: e.id, rows: c.rows, files: c.files || [], computer: c.computer, error: c.error } : { engine: e.id, rows: [], files: [], loading: true };
+}
+// Strata answers /props in llama-server's shape too (the context it actually fitted, its batch slots); its loadout's
+// settings stand in only while it can't answer.
+const strataSetting = (model, key) => { const l = loadouts.get(model); return l && loadouts.isStrata(l.engine) ? Number(l.load?.[key]) || null : undefined; };
+async function nCtx(model) {
+  const n = await modelProps(model, (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx);
+  return n || strataSetting(model, "ctx-size") || null;
+}
 // Parallel slots of the loaded model (llama-server --parallel); each keeps its own prompt cache.
-function nSlots(model) { return modelProps(model, (j) => j.total_slots); }
+async function nSlots(model) { return (await modelProps(model, (j) => j.total_slots)) || strataSetting(model, "parallel") || null; }
 async function handleCtx(req, res) {
   sendJson(res, 200, { n_ctx: await nCtx(new URL(req.url, "http://x").searchParams.get("model") || "") });
 }
@@ -782,9 +805,15 @@ async function handleLocalModels(req, res) {
 async function handleHf(req, res) {
   const u = new URL(req.url, "http://x");
   try {
-    if (req.method === "GET" && u.pathname === "/api/hf/search") return sendJson(res, 200, { models: await hf.search(u.searchParams.get("q")) });
-    if (req.method === "GET" && u.pathname === "/api/hf/files")
-      return sendJson(res, 200, { files: await hf.files(u.searchParams.get("repo"), u.searchParams.get("folder")) });
+    // Strata tags: repos its catalog downloads from, and the file sets it lists (exact paths and sizes, from strata_catalog.py).
+    if (req.method === "GET" && u.pathname === "/api/hf/search") {
+      strataCatalogNow();
+      return sendJson(res, 200, { models: (await hf.search(u.searchParams.get("q"))).map((m) => (loadouts.strataRepo(m.id) ? { ...m, strata: true } : m)) });
+    }
+    if (req.method === "GET" && u.pathname === "/api/hf/files") {
+      const repo = u.searchParams.get("repo");
+      return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; return t ? { ...g, strata: t } : g; }) });
+    }
     if (req.method === "GET" && u.pathname === "/api/hf/downloads") return sendJson(res, 200, { jobs: hf.list() });
     if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: hf.startDownload(JSON.parse(await readBody(req))) });
     if (req.method === "POST" && u.pathname === "/api/hf/cancel") { hf.cancel(JSON.parse(await readBody(req)).id); return sendJson(res, 200, { ok: true }); }
