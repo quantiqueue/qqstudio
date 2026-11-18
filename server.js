@@ -434,7 +434,11 @@ async function handleEngines(req, res) {
     if (a === "jobs" && b === "clear" && req.method === "POST") { llama.clearJobs(); return sendJson(res, 200, { ok: true }); }
     if (a === "jobs" && c === "cancel" && req.method === "POST") { llama.cancel(b); return sendJson(res, 200, { ok: true }); }
     if (a && !llama.byId(a)) return sendJson(res, 404, { error: "No such engine" });
-    if (a && b === "update" && req.method === "POST") return sendJson(res, 200, { job: await llama.updateStrata(a) }); // Strata: its own updater
+    if (a && b === "check" && req.method === "POST") return sendJson(res, 200, { check: await llama.checkStrata(a) }); // Strata: what an update would change
+    if (a && b === "update" && req.method === "POST") { // Strata: its own updater. A loaded Strata loadout is ejected first (Strata won't update while it serves)
+      if (llama.current().engine === a) await unloadLoadout(null);
+      return sendJson(res, 200, { job: await llama.updateStrata(a) });
+    }
     if (a && b === "catalog" && req.method === "GET") return sendJson(res, 200, await llama.strataCatalog(a, new URL(req.url, "http://x").searchParams.has("fresh")));
     if (a && !b) {
       if (req.method === "PATCH") return sendJson(res, 200, { engine: llama.update(a, await body()) });

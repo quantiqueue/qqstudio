@@ -221,6 +221,11 @@
   .eng .flags { display:flex; gap:8px; align-items:center; margin-top:6px; font-size:12px; color:var(--muted); }
   .eng .flags input { flex:1; font:12px ui-monospace,Consolas,monospace; padding:3px 8px; }
   .eng { margin-bottom:10px; }
+  .row2[hidden] { display:none; }
+  .eng .row2 > button, .eng .tag-active { white-space:nowrap; flex:none; }
+  .eng .upd { display:flex; gap:10px; align-items:center; margin-top:8px; font-size:12px; color:var(--muted); }
+  .eng .upd.new { color:var(--accent); } .eng .upd.bad { color:var(--red); }
+  .eng .upd .bar { flex:0 0 160px; margin-top:0; }
   .eng .nm { font-weight:600; font-size:14px; }
   .eng .tag-active { font-size:11px; color:var(--green); border:1px solid #2a5a3a; border-radius:6px; padding:0 6px; }
   .eng .path { font:12px ui-monospace,Consolas,monospace; color:var(--muted); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -284,7 +289,7 @@
         <span class="spacer"></span>
         <button id="engDl" class="load" disabled>Download</button>
       </div>
-      <div class="row2" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px">
+      <div class="row2" id="strataRow" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px">
         <span>Download Strata</span>
         <span class="muted" id="strataInfo">checking…</span>
         <span class="spacer"></span>
@@ -1081,14 +1086,21 @@ async function srvRefresh() {
     const n = loList.filter((l) => l.engine === e.id).length;
     const strata = e.type === "strata";
     r1.appendChild(el("span", "muted", (strata
-      ? [e.build && `Strata Terminal ${e.build}`, e.engineVersion ? `engine ${e.engineVersion}` : "no engine yet", backendLabel(e.backend), "loadouts coming next"]
+      ? [e.build && `Strata Terminal ${e.build}`, e.engineVersion ? `engine ${e.engineVersion}` : "no engine yet", backendLabel(e.backend), `${n} loadout${n === 1 ? "" : "s"}`]
       : [backendLabel(e.backend), e.build, `${n} loadout${n === 1 ? "" : "s"}`]).filter(Boolean).join(" · ")));
     r1.appendChild(el("span", "spacer"));
-    if (strata) { // Strata's own updater: the Terminal and the engine for this PC
-      const busy = engData.jobs.some((j) => j.engine === e.id && !["done", "error", "cancelled"].includes(j.state));
-      const up = r1.appendChild(el("button", null, busy ? "Updating…" : "Update"));
-      up.disabled = busy; up.title = "Update Strata (its Terminal and the engine for this PC) through Strata's own updater";
-      up.onclick = async () => { up.disabled = true; const r = await engPost(`/api/engines/${encodeURIComponent(e.id)}/update`); if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError(""); srvRefresh(); };
+    const updJob = strata && engData.jobs.find((j) => j.id === "upd-" + e.id);
+    const updating = updJob && !["done", "error", "cancelled"].includes(updJob.state);
+    if (strata && !updating) { // Strata's own updater: ask it first, offer Update only when there's something new
+      const checking = engChecking.has(e.id);
+      const ck = r1.appendChild(el("button", null, checking ? "Checking…" : "Check for updates"));
+      ck.disabled = checking; ck.title = "Ask Strata's update feed whether a newer Terminal or engine is out (downloads nothing)";
+      ck.onclick = () => engCheck(e.id);
+      if (e.check?.available && !checking) {
+        const up = r1.appendChild(el("button", "load", "Update"));
+        up.title = "Download and install the new version through Strata's own updater" + (e.inUse ? ". Updating ejects the loaded Strata loadout." : "");
+        up.onclick = async () => { up.disabled = true; const r = await engPost(`/api/engines/${encodeURIComponent(e.id)}/update`); if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError(""); srvRefresh(); };
+      }
     }
     if (engData.engines.length > 1) {
       const armed = engArmed === e.id;
@@ -1103,10 +1115,13 @@ async function srvRefresh() {
       del.title = (e.downloaded ? "Remove this engine and delete its downloaded build" : "Remove this engine (the executable is left alone)") + (n ? `. Its ${n} loadout${n === 1 ? "" : "s"} will need another engine.` : "");
     }
     card.appendChild(el("div", "path", e.type === "strata" ? e.root : e.exe)).title = e.type === "strata" ? e.root : e.exe;
+    if (strata) engUpdLine(card, e, updJob, updating);
   }
+  $("strataRow").hidden = engData.engines.some((e) => e.type === "strata"); // installed: updates live on its card
   $("engAuto").checked = engData.autostart;
   const jb = $("engJobs"); jb.innerHTML = "";
-  for (const jx of engData.jobs) {
+  const dlJobs = engData.jobs.filter((x) => !x.id.startsWith("upd-")); // updates show on their engine's card
+  for (const jx of dlJobs) {
     const row = jb.appendChild(el("div", "job " + jx.state));
     const info = row.appendChild(el("div", "info"));
     info.appendChild(el("div", "fname", jx.name));
@@ -1119,7 +1134,7 @@ async function srvRefresh() {
     if (jx.state === "engine" && jx.total) bar.style.width = Math.round(jx.done / jx.total * 100) + "%";
     if (jx.state === "downloading" || jx.state === "unpacking" || jx.state === "engine") { const c = row.appendChild(el("button", "eject", "Cancel")); c.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(jx.id)}/cancel`).then(srvRefresh); }
   }
-  if (engData.jobs.length && engData.jobs.every((x) => ["done", "error", "cancelled"].includes(x.state))) {
+  if (dlJobs.length && dlJobs.every((x) => ["done", "error", "cancelled"].includes(x.state))) {
     const c = jb.appendChild(el("button", null, "Clear")); c.style.marginTop = "8px"; c.onclick = () => engPost("/api/engines/jobs/clear").then(srvRefresh);
   }
   // The Loadouts tab badge: green when one is loaded, amber while loading, ! when it failed.
@@ -1130,6 +1145,41 @@ async function srvRefresh() {
   const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text]);
   if (sig !== srvRefresh.last) { srvRefresh.last = sig; loRender(); } // the cards' state
   if ($("srvLogBox").open) srvLoadLog();
+}
+// Strata's update line under its card: progress while updating, else what the last check found.
+const engChecking = new Map(); // engine id -> error text of a failed check ("" while it runs)
+const engAgo = (t) => { const s = (Date.now() - t) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : new Date(t).toLocaleDateString(); };
+function engUpdLine(card, e, job, updating) {
+  const c = e.check, row = el("div", "upd");
+  if (updating) {
+    row.appendChild(el("span", null, "Updating · " + (job.total ? `${job.label}: ${engSize(job.done)} of ${engSize(job.total)}` : job.note || job.label || "starting…")));
+    if (job.total) { const bar = row.appendChild(el("div", "bar")).appendChild(el("div")); bar.style.width = Math.round(job.done / job.total * 100) + "%"; }
+    row.appendChild(el("span", "spacer"));
+    const x = row.appendChild(el("button", "eject", "Cancel")); x.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(job.id)}/cancel`).then(srvRefresh);
+  } else if (engChecking.get(e.id)) { row.classList.add("bad"); row.textContent = "Couldn't check for updates: " + engChecking.get(e.id); }
+  else if (engChecking.has(e.id)) row.textContent = "Checking Strata's update feed…";
+  else if (job && job.state === "error" && !(c && c.at > (job.endedAt || 0))) { row.classList.add("bad"); row.textContent = "Update failed: " + job.error; }
+  else if (c && c.available) {
+    row.classList.add("new");
+    const parts = [];
+    if (c.control.status === "available" && c.control.offered) parts.push(`Terminal ${c.control.offered}`);
+    if (["available", "install"].includes(c.engine.status) && c.engine.offered) parts.push(`engine ${c.engine.offered}`);
+    const size = (c.engine.local ? 0 : c.engine.bytes) + (c.control.status === "available" ? c.control.bytes : 0);
+    row.textContent = `New version: ${parts.join(" · ") || "available"}${size ? ` (${engSize(size)})` : ""}` + (e.inUse ? " · updating will eject the loaded Strata loadout" : "");
+  } else if (c) row.textContent = (job && job.state === "done" ? "Updated · " : "") + `Up to date · checked ${engAgo(c.at)}` + (c.engine.status && !["current", "available", "install"].includes(c.engine.status) && c.engine.note ? ` · ${c.engine.note}` : "");
+  else if (job && job.state === "done") row.textContent = "Updated";
+  else return;
+  card.appendChild(row);
+}
+async function engCheck(id) {
+  engChecking.set(id, ""); srvRefresh();
+  try {
+    const r = await fetch(`/api/engines/${encodeURIComponent(id)}/check`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", signal: AbortSignal.timeout(120000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    engChecking.delete(id);
+  } catch (err) { engChecking.set(id, err.message); setTimeout(() => { if (engChecking.get(id) === err.message) { engChecking.delete(id); srvRefresh(); } }, 15000); }
+  srvRefresh();
 }
 function engError(msg) { const x = $("engErr"); x.textContent = msg || ""; x.style.display = msg ? "" : "none"; }
 async function srvLoadLog() {

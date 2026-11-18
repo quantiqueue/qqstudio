@@ -121,6 +121,7 @@ function launch(spec) {
     const e = byId(spec.engine);
     if (!e) throw new Error(`The loadout "${spec.name}" has no engine. Pick one in Settings > Loadouts.`);
     if (up() || cur.strata) await stopNow();
+    if (e.type === "strata" && strataBusy.has(e.id)) throw new Error(`${e.name} is updating; the loadout can load once the update is done`);
     if (e.type === "strata") return launchStrata(e, spec);
     for (let i = 0; i < 25 && (await health()) !== "unreachable"; i++) await new Promise((r) => setTimeout(r, 200)); // the old one letting go of the port
     cur = { loadout: spec.loadout, name: spec.name, engine: e.id, pid: null, sig: spec.sig, state: "stopped", error: null, startedAt: null, child: null };
@@ -440,8 +441,10 @@ function strataRun(e, args, onEvent, job) {
 async function strataUpdate(e, job, extra = []) {
   job.state = "engine"; job.done = 0; job.total = 0; job.label = "Engine for this PC";
   const r = await strataRun(e, ["update", "--yes", "--output", "jsonl", ...extra], (ev) => {
-    if (ev.event === "progress") { job.done = ev.done || 0; job.total = ev.total || 0; job.label = ev.label || job.label; }
-    else if (ev.event === "phase" || ev.event === "waiting") job.note = ev.message || job.note;
+    if (ev.event === "progress") { job.done = ev.done || 0; job.total = ev.total || 0; job.label = ev.label || job.label; job.note = null; }
+    // After a download Strata unpacks, checks every file and test-starts the new engine (minutes, with a running seconds count):
+    // its step line replaces the finished download's "487 MB of 487 MB".
+    else if ((ev.event === "phase" && ev.phase !== "download") || ev.event === "waiting") { if (ev.message) { job.note = ev.message; job.total = 0; job.done = 0; } }
   }, job);
   if (job.cancelled) throw new Error("cancelled");
   const out = r.last || {};
@@ -620,12 +623,36 @@ async function updateStrata(id) {
   const job = { id: "upd-" + id, name: e.name, kind: "strata", build: e.build, state: "engine", label: "Checking for updates", done: 0, total: 0, error: null, engine: id };
   jobs.set(job.id, job); strataBusy.add(id);
   (async () => {
-    try { await strataUpdate(e, job); job.state = "done"; job.label = "Up to date"; }
+    try { await strataUpdate(e, job); job.state = "done"; job.label = "Up to date"; e.check = null; save(); checkStrata(id).catch(() => {}); }
     catch (err) { job.state = job.cancelled ? "cancelled" : "error"; job.error = job.cancelled ? null : err.message; }
-    finally { strataBusy.delete(id); job.child = null; }
+    finally { strataBusy.delete(id); job.child = null; job.endedAt = Date.now(); }
   })();
   const { child, abort, ...shown } = job; // the response: no process or controller objects
   return shown;
+}
+
+// Ask Strata's updater what an update would change: it reads the signed feed and downloads nothing else. The answer is
+// kept on the engine (`check`) so the card can say "New version …" or "Up to date · checked …" after a restart.
+const strataChecks = new Map();
+function checkStrata(id) {
+  const e = byId(id);
+  if (!e || e.type !== "strata") return Promise.reject(Object.assign(new Error("No such Strata engine"), { status: 404 }));
+  if (strataChecks.has(id)) return strataChecks.get(id);
+  const p = (async () => {
+    const r = await strataRun(e, ["update", "--check", "--output", "json"]);
+    const out = r.last || {};
+    if (r.code !== 0 || out.ok === false || !out.engine) throw new Error(out.error?.message || r.stderr.split("\n").pop() || `strata update --check failed (exit ${r.code})`);
+    const ver = (x) => String((x && typeof x === "object" ? x.version : x) || "");
+    const eng = out.engine, ctl = out.control || {};
+    const check = { at: Date.now(),
+      engine: { status: eng.status || "", installed: ver(eng.installed), offered: ver(eng.offered), bytes: eng.download_bytes || 0, local: !!eng.installed_locally, note: eng.note || "" },
+      control: { status: ctl.status || "", installed: ver(ctl.installed), offered: ver(ctl.offered), bytes: ctl.download_bytes || 0 } };
+    check.available = ["available", "install"].includes(check.engine.status) || check.control.status === "available";
+    const cur = byId(id); if (cur) { cur.check = check; save(); }
+    return check;
+  })().finally(() => strataChecks.delete(id));
+  strataChecks.set(id, p);
+  return p;
 }
 
 function findExe(dir) {
@@ -737,7 +764,7 @@ async function init() {
 
 module.exports = {
   init, launch, stop, status, current, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip,
-  strataRelease, downloadStrata, updateStrata, strataCatalog, strataCatalogCached,
+  strataRelease, downloadStrata, updateStrata, checkStrata, strataCatalog, strataCatalogCached,
   byId, all: () => data.engines, defaultEngine, subcmd,
   settings: () => ({ autostart: data.autostart, last: data.last }),
 };
