@@ -365,7 +365,7 @@ const schemas = [
       timeout: { type: "integer", description: "Seconds to wait (default 30, max 120)" } }, required: ["url"] } },
   // Handled by runs.js (sub-agents are separate runs with their own sessions); listed here for settings and a category.
   { name: "run_agent", approval: false,
-    description: "Hand a separate piece of work to a sub-agent: it works in the background with its own context and the same tools (but can't ask the user anything), then its report arrives in this conversation by itself. Good for self-contained work such as one file of many, or a research question. The sub-agent doesn't see this conversation: put everything it needs in task. You can keep working meanwhile, or end your turn to wait.",
+    description: "Hand a separate piece of work to a sub-agent: it works in the background with its own context and the same tools (but can't ask the user anything), then its report arrives in this conversation by itself. Good for self-contained work such as one file of many, or a research question. The sub-agent doesn't see this conversation: put everything it needs in task. After the step that starts it, this reply waits for its report (to run several in parallel, start them in the same step).",
     parameters: { type: "object", properties: {
       title: { type: "string", description: "A few words naming the work, shown to the user, e.g. \"Update file 23\"" },
       task: { type: "string", description: "Complete instructions: the goal, the files or facts involved, and what to report back" } }, required: ["title", "task"] } },
@@ -382,7 +382,7 @@ const schemas = [
     parameters: { type: "object", properties: { id: { type: "string", description: "The sub-agent, e.g. a1" } }, required: ["id"] } },
   // Handled by runs.js (the session's task list is shown above the message box); listed here for settings and a category.
   { name: "todo", approval: false,
-    description: "Keep a short task list for a task with several steps; the user sees it. Send the whole list each time, each item with status pending, in_progress (one at a time) or done. Create it when a task has 3 or more steps and update it as you finish each one. Don't use it for small tasks.",
+    description: "Keep a short task list for a task with several steps; the user sees it. Send the whole list each time, each item with status pending, in_progress or done. Mark several in_progress at once when they run in parallel (e.g. one per sub-agent). Create it when a task has 3 or more steps and update it as you finish each one. Don't use it for small tasks.",
     parameters: { type: "object", properties: {
       items: { type: "array", description: "The whole list, in order", items: { type: "object", properties: {
         text: { type: "string", description: "The step, a few words" },

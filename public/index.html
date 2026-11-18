@@ -193,7 +193,7 @@
   .agent-chip .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; animation:runpulse 1.4s ease-in-out infinite; }
   .agent-chip .dot.warn { background:#e3b04b; }
   .agent-chip > button:not(.ac-main) { font-size:12px; padding:3px 10px; }
-  .agent-chip.done .ac-t, .agent-chip.stopped .ac-t, .agent-chip.ended .ac-t { color:var(--muted); }
+  .agent-chip.done .ac-t, .agent-chip.stopped .ac-t, .agent-chip.ended .ac-t, .agent-chip.halted .ac-t { color:var(--muted); }
   details.agent-report > summary { list-style:none; cursor:pointer; color:var(--muted); font-size:13px; display:flex; align-items:center; gap:8px; padding:0 14px; }
   details.agent-report > summary::-webkit-details-marker { display:none; }
   details.agent-report > summary .car { font-size:10px; width:10px; transition:transform .15s; } details.agent-report[open] > summary .car { transform:rotate(90deg); }
@@ -207,8 +207,14 @@
   .todo-panel .th:hover { color:var(--text); } .todo-panel .th .car { font-size:10px; width:10px; transition:transform .15s; } .todo-panel.open .th .car { transform:rotate(90deg); }
   .todo-panel ul { list-style:none; margin:0; padding:0 12px 8px 30px; display:none; } .todo-panel.open ul { display:block; }
   .todo-panel li { padding:2px 0; display:flex; gap:8px; } .todo-panel li .st { width:14px; flex:none; text-align:center; color:var(--muted); }
-  .todo-panel li.done { color:var(--muted); text-decoration:line-through; } .todo-panel li.in_progress { font-weight:600; } .todo-panel li.in_progress .st { color:var(--accent); }
-  /* Under a reply: "330 tokens in 1m 2s" while it runs (pulsing dot), "Generated 1,337 tokens in 3m 40s" when done. */
+  .todo-panel li.done { color:var(--muted); text-decoration:line-through; } .todo-panel li.active { font-weight:600; }
+  .todo-panel li { align-items:center; } .todo-panel li.done .st { color:var(--green, #4fc98a); }
+  /* the task underway: a spinner while a reply runs; the others not done yet: a small "queued" flag */
+  .todo-panel li .st .spin { display:inline-block; width:9px; height:9px; border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; vertical-align:-1px; }
+  .todo-panel li .queued { flex:none; font-size:10px; line-height:14px; padding:0 5px; border:1px solid var(--line); border-radius:6px; color:var(--muted); text-transform:lowercase; }
+  /* Under a reply: "330 tokens in 1m 2s" while it runs (pulsing dot), "Generated 1,337 tokens in 3m 40s" when done;
+     "(+N from sub-agents)" when its sub-agents generated tokens too. The time is the whole reply's, sub-agents included. */
+  .runnote { color:var(--muted); font-size:12px; padding:0 14px; } /* e.g. "The model's tool call came out malformed, so it was asked again" */
   .runfoot { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; padding:0 14px; font-variant-numeric:tabular-nums; }
   .runfoot .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; animation:runpulse 1.4s ease-in-out infinite; }
   @keyframes runpulse { 0%, 100% { opacity:.25; transform:scale(.8); } 50% { opacity:1; transform:scale(1); } }
@@ -488,20 +494,23 @@ function add(node) {
 let foot = null; // { el, t0, tokens, timer } while a reply runs
 const fmtDur = (ms) => { const s = Math.floor(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`; };
 const fmtTok = (n) => `${(n || 0).toLocaleString("en-US")} token${n === 1 ? "" : "s"}`;
+const fmtSub = (n) => (n ? ` (+${n.toLocaleString("en-US")} from sub-agents)` : "");
 function footStart(ms = 0, tokens = 0) {
   footStop();
   const e = el("div", "runfoot");
   e.appendChild(el("span", "dot")); e.appendChild(el("span"));
   log.appendChild(e);
-  foot = { el: e, t0: performance.now() - ms, tokens };
-  const draw = () => { if (foot) foot.el.lastChild.textContent = `${fmtTok(foot.tokens)} in ${fmtDur(performance.now() - foot.t0)}` + (foot.waiting ? " · waiting for sub-agents" : ""); };
+  foot = { el: e, t0: performance.now() - ms, tokens, subs: new Map() }; // subs: sub-agent id -> tokens
+  const draw = () => { if (foot) foot.el.lastChild.textContent = `${fmtTok(foot.tokens)}${fmtSub(footSub())} in ${fmtDur(performance.now() - foot.t0)}` + (foot.waiting === "approval" ? " · waiting for your approval" : foot.waiting ? " · waiting for sub-agents" : ""); };
   foot.draw = draw; draw();
   foot.timer = setInterval(draw, 500);
   follow();
 }
+const footSub = () => (foot ? [...foot.subs.values()].reduce((a, b) => a + b, 0) : 0);
+function footAgent(info) { if (foot && info.id && info.tokens != null) { foot.subs.set(info.id, info.tokens); foot.draw(); } }
 function footTokens(n) { if (foot && n >= foot.tokens) { foot.tokens = n; foot.draw(); } }
 function footStop() { if (foot) { clearInterval(foot.timer); foot = null; } }
-const footDone = (stat) => el("div", "runfoot", `Generated ${fmtTok(stat.tokens)} in ${fmtDur(stat.ms)}`);
+const footDone = (stat) => { const e = el("div", "runfoot", `Generated ${fmtTok(stat.tokens)}${fmtSub(stat.sub)} in ${fmtDur(stat.ms)}`); if (stat.sub) e.title = "The time is the whole reply's, sub-agents included"; return e; };
 // The reply ended: the live footer becomes "Generated … in …" (the server's totals when given).
 // ---------- ask_user: the model's questions, answered by clicking options (or typing a message) ----------
 let pendingQuestion = null; // { id, card, sendText(text) } while a reply waits for answers
@@ -596,7 +605,7 @@ function answeredQuestion(id, answers) {
 const qCards = new Map(); // ask_user call id -> { card, questions }
 function footEnd(stat) {
   if (!foot) return;
-  const s = stat && stat.ms != null ? stat : { tokens: foot.tokens, ms: performance.now() - foot.t0 };
+  const s = stat && stat.ms != null ? { ...stat, sub: stat.sub ?? (footSub() || undefined) } : { tokens: foot.tokens, ms: performance.now() - foot.t0, sub: footSub() || undefined };
   const e = foot.el; footStop();
   if (e.isConnected) e.replaceWith(footDone(s));
 }
@@ -1456,8 +1465,10 @@ function userBubble(msg) {
   const acts = w.appendChild(el("div", "acts"));
   const cp = acts.appendChild(el("button", null, "⧉ Copy")); cp.type = "button"; cp.title = "Copy prompt";
   cp.onclick = () => copyText(msg.content, cp);
-  const rt = acts.appendChild(el("button", null, "↻ Retry")); rt.type = "button"; rt.title = "Discard everything after this prompt and run it again";
-  rt.onclick = () => retry(msg);
+  if (!chat.parent) { // a sub-agent's session is read-only: no Retry
+    const rt = acts.appendChild(el("button", null, "↻ Retry")); rt.type = "button"; rt.title = "Discard everything after this prompt and run it again";
+    rt.onclick = () => retry(msg);
+  }
   return w;
 }
 
@@ -1468,18 +1479,21 @@ function userBubble(msg) {
 const agentChips = new Map(); // sub-agent id -> { el, info, at, sEl }
 let agentTimer = null;
 const chipLive = (i) => i.status === "running" || i.status === "approval";
+const liveSubs = () => [...agentChips.values()].filter((c) => chipLive(c.info)).length;
 function agentChip(info) {
   let c = agentChips.get(info.id);
   if (!c) { c = { el: add(el("div", "agent-chip")), info: {}, at: performance.now() }; agentChips.set(info.id, c); }
   c.info = { ...c.info, ...Object.fromEntries(Object.entries(info).filter(([, v]) => v !== undefined)) };
   c.at = performance.now();
+  if (liveSubs() !== liveSubs.last) { liveSubs.last = liveSubs(); renderTodo(); } // how many tasks spin follows the running sub-agents
+  footAgent(c.info); // the live footer's "(+N from sub-agents)"
   drawChip(c);
   if (!agentTimer) agentTimer = setInterval(() => { for (const x of agentChips.values()) if (chipLive(x.info) && x.sEl) x.sEl.textContent = chipStats(x); }, 500);
   return c;
 }
 function chipStats(c) {
   const i = c.info, live = chipLive(i), ms = live ? (i.ms || 0) + (performance.now() - c.at) : i.ms;
-  return [i.status === "approval" && i.tc ? shownCall(i.tc).name : null, live ? null : i.status === "stopped" ? "stopped" : i.status === "ended" ? "ended" : "done",
+  return [i.status === "approval" && i.tc ? shownCall(i.tc).name : null, live ? null : i.status === "stopped" ? "stopped" : i.status === "halted" ? "stopped early" : i.status === "ended" ? "ended" : "done",
     i.tokens != null && ms != null ? `${fmtTok(i.tokens)} in ${fmtDur(ms)}` : null].filter(Boolean).join(" · ");
 }
 function drawChip(c) {
@@ -1506,11 +1520,11 @@ function reportCard(m) {
   const r = m._agentReport || {}, d = el("details", "agent-report");
   const s = d.appendChild(el("summary"));
   s.appendChild(el("span", "car", "▸"));
-  s.appendChild(el("span", null, `Report from sub-agent: ${r.title || r.alias || ""}` + (r.tokens != null ? ` · ${r.status === "stopped" ? "stopped · " : ""}${fmtTok(r.tokens)} in ${fmtDur(r.ms || 0)}` : "")));
+  s.appendChild(el("span", null, `Report from sub-agent: ${r.title || r.alias || ""}` + (r.tokens != null ? ` · ${r.status === "stopped" ? "stopped · " : r.status === "halted" ? "stopped early · " : ""}${fmtTok(r.tokens)} in ${fmtDur(r.ms || 0)}` : "")));
   d.appendChild(el("div", "md")).innerHTML = mdRender(String(m.content || "").replace(/^\[Sub-agent[^\n]*\]\n?/, ""));
   return d;
 }
-function clearChips() { agentChips.clear(); clearInterval(agentTimer); agentTimer = null; }
+function clearChips() { agentChips.clear(); liveSubs.last = 0; clearInterval(agentTimer); agentTimer = null; }
 // A sub-agent's own session is read-only: you steer the main session instead.
 function renderReadOnly() {
   const ro = !!chat.parent, note = $("roNote");
@@ -1521,6 +1535,8 @@ function renderReadOnly() {
   note.appendChild(el("span", null, "This is a sub-agent's session: you can watch it here, and talk to the main session."));
   const b = note.appendChild(el("button", null, "Open main session")); b.type = "button";
   b.onclick = () => loadChat(chat.parent);
+  note.appendChild(el("span", "ctx")).id = "roCtx"; // the sub-agent's context use (its toolbar is hidden), kept by updateCtx
+  updateCtx();
 }
 
 // ---------- task list (todo tool): shown above the message box, open while steps are left ----------
@@ -1537,9 +1553,18 @@ function renderTodo() {
   th.appendChild(el("span", null, all ? `Tasks · all ${items.length} done` : `Tasks · ${done} of ${items.length} done` + ((c) => (c ? ` · ${c.text}` : ""))(items.find((x) => x.status === "in_progress"))));
   th.onclick = () => { todoOpen = !box.classList.contains("open"); renderTodo(); };
   const ul = box.appendChild(el("ul"));
+  // Underway (spinning, only while a reply runs): the tasks marked in progress, topped up with the next ones not done
+  // to one per running sub-agent (at least one), since parallel sub-agents work on several tasks at once even when the
+  // model didn't mark them all.
+  const prog = items.filter((x) => x.status === "in_progress");
+  const want = Math.max(1, liveSubs()), active = new Set(prog);
+  for (const x of items) { if (active.size >= want) break; if (x.status === "pending") active.add(x); }
   for (const it of items) {
-    const li = ul.appendChild(el("li", it.status));
-    li.appendChild(el("span", "st", it.status === "done" ? "✓" : it.status === "in_progress" ? "◐" : "○"));
+    const now = active.has(it) && running;
+    const li = ul.appendChild(el("li", it.status + (now ? " active" : "")));
+    if (it.status === "done") li.appendChild(el("span", "st", "✓"));
+    else if (now) li.appendChild(el("span", "st")).appendChild(el("span", "spin"));
+    else li.appendChild(el("span", "queued", "queued"));
     li.appendChild(el("span", null, it.text));
   }
 }
@@ -1555,6 +1580,7 @@ function renderChat(live = false) {
   for (const m of chat.messages) {
     if (m._summary) add(summaryDivider(m));
     else if (m.role === "user" && m._agentReport) { add(reportCard(m)); const r = m._agentReport; if (agentChips.has(r.id)) agentChip({ id: r.id, status: r.status, tokens: r.tokens, ms: r.ms }); }
+    else if (m.role === "user" && m._hidden) continue; // qqstudio's own notes to the model (e.g. the task-list reminder)
     else if (m.role === "user") userBubble(m);
     else if (m.role === "assistant") {
       const calls = (m.tool_calls || []).length > 0;
@@ -1606,6 +1632,7 @@ function summaryDivider(m) {
 function stopLine(text) {
   const d = el("div", "stopline");
   d.appendChild(el("span", null, text));
+  if (chat.parent) return d; // a sub-agent's session is read-only: its main session decides what happens next
   const b = d.appendChild(el("button", null, "Continue")); b.type = "button";
   b.title = "Keep going from here (uses the effort and thinking picked below)";
   b.onclick = () => { if (running) return; d.remove(); startRun(chat); };
@@ -1938,6 +1965,7 @@ function setBusy(busy) {
   if (!busy && window.harnessReloadPending) return location.reload(); // hot reload deferred during a reply
   updateSendState();
   modelSel.disabled = busy;
+  renderTodo(); // the task underway spins only while a reply runs
 }
 
 // Leaving the page: close the run's event stream so it doesn't hold a connection (the run keeps going on the server).
@@ -2027,7 +2055,7 @@ function onRunEvent(ev, id) {
       if (fold && lastChild() === fold.el) foldLive(fold, true);
       if (ev.stat) footStart(ev.stat.ms, ev.stat.tokens);
       for (const a of ev.agents || []) agentChip(a);
-      if (ev.waiting && foot) { foot.waiting = true; foot.draw(); }
+      if (ev.waiting && foot) { foot.waiting = ev.waiting; foot.draw(); }
       pendingEls.clear();
       for (const p of ev.pending || []) pendingBubble(p);
       break;
@@ -2061,7 +2089,7 @@ function onRunEvent(ev, id) {
     case "todo": chat.todo = ev.items; renderTodo(); break;
     case "agent": agentChip(ev); loadList(); break;
     case "agent_report": { chat.messages.push(ev.msg); add(reportCard(ev.msg)); const r = ev.msg._agentReport; agentChip({ id: r.id, title: r.title, status: r.status, tokens: r.tokens, ms: r.ms, tc: null }); follow(); break; }
-    case "waiting": if (foot) { foot.waiting = ev.on; foot.draw(); } break;
+    case "waiting": if (foot) { foot.waiting = ev.on ? ev.why || true : false; foot.draw(); } break;
     case "answered": answeredQuestion(ev.id, ev.answers); break;
     case "tool_result": {
       const m = ev.msg;
@@ -2093,13 +2121,15 @@ function onRunEvent(ev, id) {
     }
     case "compacted": chat.messages.splice(ev.at, 0, ev.msg); if (live?.box) { live.box.clearPhase(); live.box.finish("", ""); live.box = null; } add(summaryDivider(ev.msg)); updateCtx(); break;
     case "notice": add(el("div", "msg error", ev.text)); break;
+    case "retry": if (live?.box) { live.box.node.remove(); live.box = null; } add(el("div", "runnote", ev.text)); break; // the unreadable attempt is dropped
     case "usage":
       lastUsage = { prompt: ev.prompt, completion: ev.completion, model: ev.model };
       liveUsage = { chat: id, prompt: ev.prompt, completion: ev.completion }; updateCtx(); break;
     case "done": {
       const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
-      if (lastA && ev.ms != null) lastA._run = { tokens: ev.tokens, ms: ev.ms };
+      if (lastA && ev.ms != null) lastA._run = { tokens: ev.tokens, ms: ev.ms, ...(ev.sub ? { sub: ev.sub } : {}) };
       footEnd(ev);
+      for (const c of agentChips.values()) if (chipLive(c.info)) agentChip({ id: c.info.id, status: "stopped", tc: null }); // the reply ended: none of its sub-agents still runs
       if (es) { es.close(); es = null; } endRun(id, false); break;
     }
   }
@@ -2191,6 +2221,7 @@ async function steer() {
 
 // Retry: drop everything after this prompt and run it again.
 async function retry(msg) {
+  if (chat.parent) return; // a sub-agent's session is read-only
   await stopAndWait();
   const c = chat;
   const i = c.messages.indexOf(msg);
@@ -2358,6 +2389,8 @@ function updateCtx() {
       : `Estimated context use\nInstructions + ${specs.length} tool definitions: ≈${fmtK(sys)}\nConversation: ≈${fmtK(conv)}`) +
       (max ? `\nModel context size: ${fmtK(max)}` : "\n(Context size shows once the model is loaded)") +
       (lastUsage && lastUsage.model === model ? `\nLast request (exact): ${lastUsage.prompt} prompt + ${lastUsage.completion} reply tokens` : "");
+    const ro = document.getElementById("roCtx"); // the same meter on a sub-agent's read-only session
+    if (ro) { ro.textContent = m.textContent; ro.className = m.className; ro.title = m.title; }
   }, 250);
 }
 input.addEventListener("input", updateCtx);

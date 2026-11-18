@@ -362,7 +362,8 @@ function updateChat(file, fn) {
   tail.then(() => { if (chatQueues.get(file) === tail) chatQueues.delete(file); });
   return next;
 }
-const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession });
+const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
+  filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server) });
 // A sub-agent's session (runs.js run_agent): in its main session's workspace, marked with parent so the sidebar hides it.
 async function newSubSession(parentId, data) {
   const id = parentId.slice(0, 30) + "s" + (Date.now().toString(36) + Math.random().toString(36).slice(2, 5)).slice(-7);

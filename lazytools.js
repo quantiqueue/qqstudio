@@ -63,6 +63,13 @@ function resolve(name, pool) {
   if (short.length === 1) return { tool: short[0] };
   const key = n.toLowerCase().replace(/^.*__/, "");
   const near = [...pool.values()].filter((t) => key && shortName(t).toLowerCase().includes(key)).slice(0, 8).map((t) => t.name);
+  // A guessed prefix from a built-in group's name ("agents__create_agent"): its tools have no prefix, so name them.
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const prefix = (n.match(/^(.+?)__/) || [])[1];
+  const group = prefix ? [...pool.values()].filter((t) => !t.server && norm(t.group || t.category) === norm(prefix)) : [];
+  const exact = group.find((t) => t.name === n.slice(prefix?.length + 2)); // "agents__run_agent" is just run_agent
+  if (exact) return { tool: exact };
+  if (!short.length && group.length) return { error: `no tool named "${n}" is available. ${group[0].group || group[0].category} tools have no prefix: ${group.map((t) => t.name).join(", ")}.` };
   return { error: short.length > 1 ? `"${n}" matches several tools: ${short.map((t) => t.name).join(", ")}. Use the full name.`
     : `no tool named "${n}" is available.${near.length ? " Similar: " + near.join(", ") + "." : ""}` };
 }

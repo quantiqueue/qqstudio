@@ -282,7 +282,9 @@ async function callTool(fullName, args) {
   return { text: res.isError ? "ERROR: " + text : text, images };
 }
 
+// The folder a server runs in: where it puts files given by a relative name.
+function cwdOf(server) { const c = conns.get(server); return (c && c.cfg && c.cfg.cwd) || P.home; }
 function has(fullName) { return tools().some((t) => t.name === fullName); }
 function knownServer(fullName) { return [...conns.keys()].some((s) => fullName.startsWith(s.replace(/[^A-Za-z0-9_-]/g, "_") + "__")); }
 
-module.exports = { init: reloadAll, reloadAll, restart, saveRaw, setEnabled, status, log, tools, callTool, has, knownServer, rawConfig, EXAMPLE, path: P.mcp };
+module.exports = { init: reloadAll, reloadAll, restart, saveRaw, setEnabled, status, log, tools, callTool, has, knownServer, cwdOf, rawConfig, EXAMPLE, path: P.mcp };

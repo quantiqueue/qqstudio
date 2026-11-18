@@ -2,6 +2,7 @@
 // keeps going when the user switches chats, opens Settings, reloads or closes the tab. Progress is saved to the
 // chat file as it streams; any number of pages can watch a run through an event stream and stop it.
 const fs = require("fs");
+const path = require("path");
 const secrets = require("./secrets");
 const lazy = require("./lazytools");
 
@@ -56,7 +57,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -270,7 +271,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const { model } = run;
     const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
-    let think0 = null, think1 = null, timings = null, failed = false, gotChunk = false, lastSave = Date.now();
+    let think0 = null, think1 = null, timings = null, failed = false, retry = false, gotChunk = false, lastSave = Date.now();
     let looped = false, finish = null, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
     const calls = [];
     emit(run, { type: "step", model });
@@ -315,7 +316,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (!r.ok) { const t = await r.text(); let msg = t; try { const j = JSON.parse(t); msg = j.error?.message || j.error || t; } catch {} throw new Error(msg || r.statusText); }
       const dec = new TextDecoder();
       let buf = "";
+      run.stream = r.body; // Stop cancels it too: aborting the fetch alone doesn't end a body that's already streaming on older Node 18
       for await (const chunk of r.body) {
+        if (run.stopped) break; // leaving the loop cancels the stream, which closes the connection, so llama-server stops generating
         buf += dec.decode(chunk, { stream: true });
         const lines = buf.split("\n"); buf = lines.pop();
         for (const line of lines) {
@@ -384,13 +387,21 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         }
       }
     } catch (e) {
-      if (!run.stopped && !looped) {
+      // llama-server couldn't read the model's tool call (e.g. "does not match the expected peg-native format": a stray
+      // space or token in the template's tool-call syntax, common with small or heavily quantized models). Sampling
+      // differs each time, so the same step is asked again, up to twice in a row, before it counts as a failure.
+      if (!run.stopped && !looped && /does not match the expected .*format|failed to parse/i.test(e.message) && (run.unreadable || 0) < 2) {
+        retry = true; run.unreadable = (run.unreadable || 0) + 1;
+        console.log(`[run] ${run.id} unreadable tool call (${e.message}); asking again (${run.unreadable} of 2)`);
+        emit(run, { type: "retry", text: `The model's tool call came out malformed, so it was asked again (${run.unreadable} of 2).` });
+      } else if (!run.stopped && !looped) {
         failed = true;
+        run.endReason = "an error: " + (e.cause?.code === "ECONNREFUSED" ? "llama-server couldn't be reached" : e.message); // a sub-agent's report says so
         emit(run, { type: "failed", text: (cur.content ? cur.content + "\n\n" : "") + "Error: " + (e.cause?.code === "ECONNREFUSED" ? `Cannot reach llama-server at ${llama.url()}` : e.message) });
       }
     } finally {
       polling = false;
-      run.abort = null;
+      run.abort = null; run.stream = null;
       if (release) release();
     }
     const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
@@ -411,7 +422,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const thinkSecs = think0 === null ? null : +(((think1 ?? Date.now()) - think0) / 1000).toFixed(1);
     const tb = run.think.budget, note = (run.think.message || "").trim();
     const budgetHit = !!(cur.reasoning && tb > 0 && (cur.reasoning.length / 3.6 >= tb * 0.9 || (note && cur.reasoning.trim().endsWith(note))));
-    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, thinkSecs, budgetHit, looped, t0 };
+    if (!retry && !failed) run.unreadable = 0;
+    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, retry, thinkSecs, budgetHit, looped, t0 };
   }
 
   // The instructions: the page's system prompt plus the compact list of tools on request (minus those with full details).
@@ -435,7 +447,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const want = String(args.name || "").trim().toLowerCase();
     const g = [...run.deferred.values()].find((x) => x.name.toLowerCase() === want);
     if (!g) return { status: "error", text: `ERROR: no tool group named "${args.name}". Available: ${[...run.deferred.values()].map((x) => x.name).join(", ") || "none"}.` };
-    if (run.loaded.has(g.key)) return { status: "done", text: `${g.name} is already on. Run its tools with call_tool (tool_info gives their parameters).` };
+    if (run.loaded.has(g.key)) return { status: "done", text: `${g.name} is already on. ` + (g.tools.length <= 12 ? `Its tools: ${g.tools.map((t) => t.function.name).join(", ")}. ` : "") + `Run them with call_tool (tool_info gives their parameters).` };
     // Its tools join the pool call_tool draws from; the tool list sent with each request stays the same.
     const ts = g.tools.map((s) => run.byName.get(s.function.name)).filter(Boolean).map((t) => ({ ...t, group: g.name }));
     for (const t of ts) run.lazy.set(t.name, t);
@@ -489,6 +501,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return { id: s.id, alias: s.alias, title: s.title, status: live ? (asking ? "approval" : "running") : s.status,
       tokens: live ? r.genDone + (r.cur?.gen?.total || 0) : s.tokens, ms: (s.end || Date.now()) - s.t0, tc: asking ? r.tool.tc : null };
   }
+  const subTokens = (run) => [...run.subs.values()].reduce((n, s) => n + (agentInfo(s).tokens || 0), 0); // its sub-agents' tokens, for the footer
   const relay = (s) => { s.relayAt = Date.now(); if (runs.get(s.run.parentRun.id) === s.run.parentRun) emit(s.run.parentRun, { type: "agent", ...agentInfo(s) }); };
   function onSubEvent(run, ev) { // the main session's chip follows the sub-agent: approvals right away, progress about once a second
     const s = run.parentRun.subs.get(run.id);
@@ -500,6 +513,26 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return [...run.subs.values()].find((s) => s.id === k || s.alias === k) || [...run.subs.values()].find((s) => s.title.toLowerCase() === k);
   }
   // Waits (no model calls) until a report or a message arrives, the sub-agents finish, or Stop. Returns true to go on.
+  const CHECK_WAIT = 60000; // how long check_agent waits for a running sub-agent
+  // The tool a run is waiting for approval on (the real one when it came through call_tool).
+  function askedTool(r) {
+    const tc = r.tool?.tc;
+    if (!tc) return "a tool call";
+    let n = tc.function.name;
+    if (n === "call_tool") try { n = JSON.parse(tc.function.arguments || "{}").name || n; } catch {}
+    return n;
+  }
+  // While a sub-agent waits for the user's approval, the main reply pauses before its next step: otherwise models treat
+  // the wait as "stuck" and redo the work themselves, or tell the sub-agent to skip approval.
+  const subAsking = (run) => [...run.subs.values()].some((s) => s.status === "running" && s.run.approval);
+  async function waitForApproval(run) {
+    if (!subAsking(run)) return;
+    run.waitWhy = "approval";
+    emit(run, { type: "waiting", on: true, why: "approval" });
+    while (subAsking(run) && !run.stopped) await sleep(300);
+    run.waitWhy = null;
+    emit(run, { type: "waiting", on: false });
+  }
   async function idle(run) {
     emit(run, { type: "waiting", on: true });
     await new Promise((resolve) => { run.wake = resolve; if (run.pending.length || !activeSubs(run) || run.stopped) resolve(); });
@@ -507,6 +540,49 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     emit(run, { type: "waiting", on: false });
     return !run.stopped && run.pending.length > 0;
   }
+  // The main assistant's task list follows its sub-agents: the task that best matches a sub-agent's title becomes
+  // in_progress when it starts and done when it finishes (pending again if it was stopped). Models often don't update
+  // the list while they wait, so without this it showed the wrong task as underway.
+  const STOP_WORDS = new Set(["a", "an", "the", "to", "and", "of", "for", "with", "in", "on", "it", "sub", "agent", "subagent", "agents", "launch", "run", "start", "use", "using"]);
+  const taskWords = (t) => new Set(String(t || "").toLowerCase().replace(/sub-?agents?/g, " ").split(/[^a-z0-9]+/).filter((w) => w && !STOP_WORDS.has(w)));
+  function bestTask(items, title, skipDone) {
+    const want = taskWords(title);
+    if (!want.size) return -1;
+    let best = -1, score = 0;
+    items.forEach((it, i) => {
+      if (skipDone && it.status === "done") return;
+      // shared words over the shorter of the two: "Draw a red square (fresh canvas)" still matches "Draw a red square"
+      const have = taskWords(it.text), hit = have.size ? [...want].filter((w) => have.has(w)).length / Math.min(want.size, have.size) : 0;
+      if (hit >= 0.6 && hit > score) { score = hit; best = i; }
+    });
+    return best;
+  }
+  async function markTask(run, title, status) {
+    let items = null;
+    await updateChat(chatFile(run.id), (disk) => {
+      if (!disk || !Array.isArray(disk.todo) || !disk.todo.length) return null;
+      const i = bestTask(disk.todo, title, true);
+      if (i < 0 || disk.todo[i].status === status) return null;
+      items = disk.todo.map((it, k) => (k === i ? { ...it, status } : it));
+      return { ...disk, todo: items };
+    }).catch(() => {});
+    if (items && runs.get(run.id) === run) emit(run, { type: "todo", items });
+  }
+
+  // The reply is about to end with tasks still not done on its list: models often say "all done" without updating it.
+  // Once per reply, ask it to update the list (a hidden note, not shown as your message), then let it end.
+  async function todoNudge(run) {
+    if (run.todoNudged || run.parentRun || !(run.allowed.has("todo") || run.lazy.has("todo"))) return false;
+    let chat = null; try { chat = await readChat(run.id); } catch {}
+    const open = (chat?.todo || []).filter((t) => t.status !== "done");
+    if (!open.length) return false;
+    run.todoNudged = true;
+    run.messages.push({ role: "user", _hidden: true, content: `[Note from qqstudio, not the user] Your task list still shows ${open.length} of ${chat.todo.length} not done: ${open.map((t) => `"${t.text}"`).join(", ")}. If they're finished, update the list with todo (mark them done); if not, say what's left. Then end your turn.` });
+    await save(run);
+    console.log(`[run] ${run.id} reminded it of ${open.length} unfinished task(s)`);
+    return true;
+  }
+
   async function agentTool(run, name, tc, args) {
     if (name === "run_agent") {
       const title = String(args.title || args.name || "").trim().slice(0, 60) || "Sub-agent", task = String(args.task || args.instructions || args.prompt || "").trim();
@@ -528,17 +604,27 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       s.run = await start(body, { parentRun: run });
       run.subs.set(id, s);
       relay(s);
+      markTask(run, title, "in_progress");
       console.log(`[run] ${run.id} started sub-agent ${s.alias} (${id}): ${title}`);
       return { status: "done", agent: { id, alias: s.alias, title },
-        text: `Started sub-agent ${s.alias} ("${title}"). Its report will arrive in this conversation by itself when it finishes, so you don't need to check on it. Keep working on something else, or end your turn to wait. You can send it a message with message_agent or stop it with stop_agent.` };
+        text: `Started sub-agent ${s.alias} ("${title}"). This reply now waits until its report arrives here, then continues. Start any other sub-agents you need in this same step.` };
     }
     const s = findSub(run, args.id ?? args.agent ?? args.name);
     if (!s) return { status: "error", text: `ERROR: no sub-agent "${args.id ?? ""}". Sub-agents in this reply: ${[...run.subs.values()].map((x) => `${x.alias} (${x.title}, ${x.status})`).join(", ") || "none"}.` };
     if (name === "check_agent") {
+      // A running sub-agent: wait (up to a minute) for it to finish or need the user, instead of answering at once. Small
+      // models otherwise call check_agent in a tight loop, and every check is a model request that competes with the
+      // sub-agent for the same model, slowing it down until the main assistant decides it's stuck.
+      const t0 = Date.now(), tok0 = agentInfo(s).tokens;
+      while (s.status === "running" && !s.run.approval && !run.stopped && !run.pending.length && Date.now() - t0 < CHECK_WAIT) await sleep(500);
+      const waited = Math.round((Date.now() - t0) / 1000);
+      if (s.status !== "running") return { status: "done", text: `${s.alias} "${s.title}" has ${s.status === "done" ? "finished" : s.status === "halted" ? `stopped before finishing (${s.reason})` : "stopped"}; its report follows in this conversation.` };
       const i = agentInfo(s), last = [...s.run.messages].reverse().find((m) => m.role === "assistant" && m.content);
-      return { status: "done", text: `${s.alias} "${s.title}": ${i.status === "approval" ? "waiting for the user's approval" : i.status}, ${plural(i.tokens, "token")} in ${Math.round(i.ms / 1000)}s` +
+      return { status: "done", text: `${s.alias} "${s.title}": ${i.status === "approval" ? "waiting for the user's approval" : i.status === "halted" ? `stopped before finishing (${s.reason})` : i.status}, ${plural(i.tokens, "token")} in ${Math.round(i.ms / 1000)}s` +
         (s.run.tool && i.status === "running" ? `, running ${s.run.tool.tc.function.name}` : "") + (last ? `\nLatest message: ${last.content.slice(-400)}` : "") +
-        (i.status === "running" || i.status === "approval" ? "\n(Its report arrives here by itself when it finishes.)" : "") };
+        (i.status === "approval" ? `\nIt's waiting for the user to approve ${askedTool(s.run)}. That's the user's decision: don't stop it or do its work yourself. End your turn to wait; its report arrives here by itself.`
+          : i.status === "running" ? (waited >= 5 ? `\nWaited ${waited}s: still working normally (${plural(i.tokens - tok0, "new token")}).` : "") +
+            "\nIts report arrives here by itself when it finishes. Checking again doesn't speed it up (it shares the model with you): end your turn to wait." : "") };
     }
     if (s.status !== "running") return { status: "error", text: `ERROR: ${s.alias} has already finished (${s.status}); its report is in this conversation.` };
     if (name === "message_agent") {
@@ -547,21 +633,37 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       steer(s.run, { text: `[Message from the main assistant] ${text}` });
       return { status: "done", text: `Sent to ${s.alias}; it sees the message after its current step.` };
     }
-    stop(s.run); // stop_agent
+    // stop_agent. Not while it waits for the user's approval: the user answers that (or stops it), not the main assistant.
+    if (s.run.approval) return { status: "error", text: `ERROR: ${s.alias} is waiting for the user to approve ${askedTool(s.run)}. Only the user can answer or stop it. Don't do its work yourself: end your turn to wait; its report arrives here by itself.` };
+    stop(s.run);
     return { status: "done", text: `Stopping ${s.alias}; its report (what it had done so far) will arrive here.` };
   }
   // A sub-agent ended: its last reply goes to the main reply as a report (or into the main session if that reply is over).
   async function finishSub(run) {
     const parent = run.parentRun, s = parent.subs.get(run.id);
     if (!s) return;
-    s.status = run.stopped ? "stopped" : "done"; s.tokens = run.genDone; s.end = Date.now();
-    const cfg = agentsCfg(), last = run.messages.slice(run.startLen).reverse().find((m) => m.role === "assistant" && m.content);
+    // "halted": a guard (repeated calls, repetition) or an error ended it before it finished, so it wrote no real report.
+    s.status = run.stopped ? "stopped" : run.endReason ? "halted" : "done"; s.tokens = run.genDone; s.end = Date.now();
+    if (s.status === "halted") s.reason = run.endReason;
+    await markTask(parent, s.title, s.status === "done" ? "done" : "pending");
+    const cfg = agentsCfg(), mine = run.messages.slice(run.startLen), last = [...mine].reverse().find((m) => m.role === "assistant" && m.content);
     let report = (last?.content || "").trim();
     const words = report.split(/\s+/);
     if (words.length > cfg.reportWords * 1.2) report = words.slice(0, cfg.reportWords).join(" ") + ` …[report shortened to ${cfg.reportWords} words]`;
-    const meta = { id: s.id, alias: s.alias, title: s.title, status: s.status, tokens: s.tokens, ms: s.end - s.t0 };
-    const text = `[Sub-agent ${s.alias} "${s.title}" ${s.status === "stopped" ? "was stopped" : "finished"}. Its report:]\n${report || "(it wrote no report)"}`;
-    if (runs.get(parent.id) === parent && !parent.stopped) {
+    const meta = { id: s.id, alias: s.alias, title: s.title, status: s.status, tokens: s.tokens, ms: s.end - s.t0, ...(s.reason ? { reason: s.reason } : {}) };
+    let text;
+    if (s.status === "halted") { // what it was doing when it ended, so the main assistant can check or redo it
+      const one = (x, n) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, n);
+      const steps = [];
+      for (const m of mine.filter((x) => x.role === "assistant" && x.tool_calls?.length).slice(-3))
+        for (const tc of m.tool_calls) {
+          const res = mine.find((x) => x.role === "tool" && x.tool_call_id === tc.id);
+          steps.push(`- ${tc.function.name} ${one(tc.function.arguments, 200)} → ${res ? one(res.content, 200) : "(no result)"}`);
+        }
+      text = `[Sub-agent ${s.alias} "${s.title}" was stopped before finishing: ${s.reason}. It wrote no final report, so check its work yourself before relying on it.]` +
+        (steps.length ? `\nIts last steps:\n${steps.reduce((out, x) => { const p = out[out.length - 1]; if (p && p.x === x) p.n++; else out.push({ x, n: 1 }); return out; }, []).map((p) => p.x + (p.n > 1 ? ` (${p.n} times)` : "")).join("\n")}` : "") + (report ? `\nIts last message: ${report}` : "");
+    } else text = `[Sub-agent ${s.alias} "${s.title}" ${s.status === "stopped" ? "was stopped" : "finished"}. Its report:]\n${report || "(it wrote no report)"}`;
+    if (runs.get(parent.id) === parent) { // also when the main reply was stopped: it adds the report before it ends
       parent.pending.push({ id: "rep-" + s.id, report: meta, text });
       relay(s);
       if (parent.wake) parent.wake();
@@ -598,7 +700,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if ((name === "call_tool" && run.allowed.has(name)) || (!run.allowed.has(name) && run.lazy.size && !lazy.resolve(name, run.lazy).error)) {
       const viaCall = name === "call_tool", want = String((viaCall ? args.name : name) ?? "").trim();
       const listed = viaCall && run.allowed.has(want) && !["call_tool", "tool_info"].includes(want); // an ordinary tool, run through call_tool anyway
-      const r = listed ? { tool: { name: want } } : lazy.resolve(want, run.lazy);
+      // Resolved against the tools on request and the ordinary tools, so a guessed prefix ("agents__run_agent") still works.
+      const pool = new Map(run.lazy);
+      for (const t of run.tools) { const e = run.byName.get(t.function.name); if (e && !pool.has(e.name) && !["call_tool", "tool_info"].includes(e.name)) pool.set(e.name, e); }
+      const r = listed ? { tool: { name: want } } : lazy.resolve(want, pool);
       if (r.error) {
         const g = groupOf(run, want);
         return { status: "error", text: g ? `ERROR: ${want} is in the "${g.name}" tool group, which isn't on yet. Call enable_tools {"name": "${g.name}"} first.` : "ERROR: " + r.error };
@@ -639,9 +744,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (u.missing.length) return { status: "error", text: `ERROR: ${u.missing.join(", ")} ${u.missing.length > 1 ? "are" : "is"} no longer available (the harness restarted since it was read). Read it again, then retry.` };
       callArgs = u.value;
     }
+    const fixed = workspacePaths(run, name, callArgs);
+    callArgs = fixed.args;
     const out = await runTool(name, callArgs);
     console.log(`[tool] ${name} ${JSON.stringify(args).slice(0, 200)} (${Date.now() - t0}ms)`);
     let text = String(out.text), images = out.images || [];
+    if (fixed.moved.length) text += `\n(File names were taken as being in the workspace folder: ${fixed.moved.join(", ")}.)`;
     if (maskOn) { // secrets in the result are replaced before it is saved or sent to the model
       const m = secrets.mask(run.id, text);
       text = m.text;
@@ -654,8 +762,31 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return { status: failed ? "error" : "done", text, images };
   }
 
+  // MCP tools take relative file names against the server's own folder (its cwd, e.g. C:\mcp\aseprite-mcp), which the
+  // model doesn't know about: it then reports paths in the workspace that don't exist. So a relative file name in an
+  // MCP tool's arguments is made a full path in the session's workspace folder. Exception: a file that exists only in the
+  // server's own folder (made there before this) is left alone, so older work there can still be opened.
+  function workspacePaths(run, name, args) {
+    const e = run.byName.get(name), moved = [];
+    if (!e || !e.server || !args || typeof args !== "object" || Array.isArray(args)) return { args, moved };
+    const base = filesDirOf(run.id), cwd = mcpCwd(e.server);
+    if (!base) return { args, moved };
+    const out = { ...args };
+    for (const [k, v] of Object.entries(args)) {
+      if (typeof v !== "string" || !/(file|path|output|dest|target|source|src|input)/i.test(k)) continue;
+      const s = v.trim();
+      if (!/^[^\n<>|?*"]+\.[A-Za-z0-9]{1,8}$/.test(s) || /^[A-Za-z][\w+.-]*:/.test(s) || path.isAbsolute(s) || /^[\\/]/.test(s)) continue; // a relative file name only
+      const inWs = path.resolve(base, s);
+      if (!fs.existsSync(inWs) && cwd && fs.existsSync(path.resolve(cwd, s))) continue;
+      out[k] = inWs;
+      moved.push(`${s} → ${inWs}`);
+    }
+    return { args: out, moved };
+  }
+
   // Ends a reply that can't usefully go on: notes why on its last assistant message (shown with a Continue button).
   async function halt(run, text) {
+    run.endReason = text.replace(/^Stopped: /, ""); // a sub-agent's report says why it ended
     const last = [...run.messages].reverse().find((m) => m.role === "assistant");
     if (last) last._stop = text;
     emit(run, { type: "halted", text });
@@ -698,11 +829,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     let lastSig = null, same = 0;
     try {
       for (let s = 0; !run.stopped; s++) {
+        await waitForApproval(run);
+        if (run.stopped) break;
         await applyPending(run);
         await maybeCompact(run);
         if (run.stopped) break;
         const r = await step(run);
         run.cur = null;
+        if (r.retry) continue; // nothing kept from the unreadable attempt; the same step again
         // A step with only thinking (e.g. stopped mid-thought) is still saved, so the page closes it.
         if (r.failed || (!r.content && !r.toolCalls.length && !r.reasoning)) break;
         const msg = { role: "assistant", content: r.content, _meta: r.meta, _t0: r.t0, _at: Date.now() }; // step start/end: "Reasoned for 42s"
@@ -712,17 +846,25 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         run.messages.push(msg);
         emit(run, { type: "assistant", msg, tot: run.genDone });
         await save(run);
-        if (r.looped) { emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." }); break; }
+        if (r.looped) { run.endReason = "it kept repeating the same text"; emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." }); break; }
         if (!r.toolCalls.length) {
           if (run.pending.length && !run.stopped) continue; // a steer arrived as it finished: keep going
           if (activeSubs(run) && !run.stopped) { if (await idle(run)) continue; } // sub-agents still working: wait for a report or a message
+          if (!run.stopped && !activeSubs(run) && await todoNudge(run)) continue; // really ending: is its task list up to date?
           break;
         }
         const sig = [];
         for (const tc of r.toolCalls) { // every tool call needs a result, even if cancelled
           const res = run.stopped ? { status: "cancelled", text: "Cancelled by user." } : await callTool(run, tc);
           sig.push(tc.function.name, tc.function.arguments, res.text);
-          const tm = { role: "tool", tool_call_id: tc.id, content: res.text, _status: res.status, _at: Date.now() };
+          // Sub-agents still working: every other tool result says so. Otherwise models take a file that already exists
+          // (often left from an earlier attempt) as the sub-agent's finished work and report it before it's done.
+          const busy = [...run.subs.values()].filter((x) => x.status === "running");
+          let real = tc.function.name;
+          if (real === "call_tool") try { real = JSON.parse(tc.function.arguments || "{}").name || real; } catch {}
+          const note = busy.length && !/(^|__)(run|check|message|stop)_agent$/i.test(real)
+            ? `\n\n[${busy.map((x) => `${x.alias} "${x.title}"`).join(", ")} ${busy.length > 1 ? "are" : "is"} still running. What ${busy.length > 1 ? "they make" : "it makes"} may not exist yet, and files with the same name may be left from an earlier attempt: don't use or show ${busy.length > 1 ? "their" : "its"} results until the report arrives here (end your turn to wait).]` : "";
+          const tm = { role: "tool", tool_call_id: tc.id, content: res.text + note, _status: res.status, _at: Date.now() };
           if (res.images?.length) tm._images = res.images;
           if (res.answers) tm._answers = res.answers; // the card shows them when the session is opened again
           if (res.agent) tm._agent = res.agent; // run_agent: the chip for the sub-agent it started
@@ -735,17 +877,29 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         const k = JSON.stringify(sig);
         same = k === lastSig ? same + 1 : 1; lastSig = k;
         if (same >= 3 && !run.stopped) { await halt(run, "Stopped: the same tool call gave the same result 3 times in a row"); break; }
+        // Sub-agents running: the reply waits here for a report (or a message from the user) before its next step, rather
+        // than working alongside them. Working alongside led models to poll, give up on, or redo the sub-agent's work,
+        // and every request competes with the sub-agent for the same model anyway.
+        if (activeSubs(run) && !run.stopped) await idle(run);
       }
     } catch (e) {
       console.error(`[run] ${run.id}: ${e.stack || e.message}`);
+      run.endReason = "an error: " + e.message;
       emit(run, { type: "failed", text: "Error: " + e.message });
     } finally {
       run.cur = null; run.tool = null;
-      const stat = { tokens: run.genDone, ms: Date.now() - run.t0 };
+      const stat = { tokens: run.genDone, ms: Date.now() - run.t0 }, sub = subTokens(run);
+      if (sub) stat.sub = sub; // "(+N from sub-agents)"
       const last = run.messages.slice(run.startLen).reverse().find((m) => m.role === "assistant");
       if (last) last._run = stat; // "Generated N tokens in 3m 40s" under the reply when the session is opened again
+      // Stopped with sub-agents still winding down (Stop stops them too): give them a moment, so their reports and the
+      // chips' final state land in this reply instead of the chips staying "running" on the page.
+      for (let i = 0; i < 50 && activeSubs(run); i++) await sleep(100);
       if (run.pending.length && !run.deleted) await applyPending(run, true).catch(() => {}); // stopped with steers pending: the page starts a new reply with them
-      await save(run, null, run.clients.size ? {} : { unread: true }); // nobody watching: mark it for the sidebar
+      // Stopped by the user: its task list goes too (it described work that's no longer happening).
+      const cleared = run.stopped && !run.parentRun && !run.deleted ? { todo: [] } : {};
+      if (cleared.todo) emit(run, { type: "todo", items: [] });
+      await save(run, null, { ...cleared, ...(run.clients.size ? {} : { unread: true }) }); // nobody watching: mark it for the sidebar
       runs.delete(run.id);
       emit(run, { type: "done", ...stat });
       for (const c of run.clients) c.end();
@@ -758,6 +912,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (!run) return;
     run.stopped = true;
     if (run.abort) run.abort.abort();
+    if (run.stream) try { run.stream.cancel().catch(() => {}); } catch {} // a locked (being read) body throws: the loop's own check ends it
     if (run.approval) run.approval.resolve(false);
     if (run.question) run.question.resolve(null);
     for (const s of run.subs?.values() || []) if (s.status === "running") stop(s.run); // the main reply's Stop stops its sub-agents
@@ -800,6 +955,15 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     // cache stays valid. They move into the prompt itself only at compaction, which reads the prompt again anyway.
     const loaded = new Set(Array.isArray(chat.loaded) ? chat.loaded : []);
     const inPrompt = new Set(Array.isArray(chat.inPrompt) ? chat.inPrompt : []);
+    // A group the model turned on counts as on only while the result that listed its tools is still in the conversation.
+    // A Retry (or an edit) can drop that result; the group then stayed "already on" while the model had never seen its
+    // tools' names, so it guessed them ("agents__create_agent"). Groups moved into the prompt at compaction stay on.
+    let unloaded = false;
+    for (const k of [...loaded]) {
+      const g = deferred.get(k);
+      if (!g || inPrompt.has(k)) continue;
+      if (!(chat.messages || []).some((m) => m.role === "tool" && !m._partial && String(m.content || "").startsWith(`${g.name} is on.`))) { loaded.delete(k); unloaded = true; }
+    }
     const listed = new Set([...lazyPool.keys()]); // tools named in the instructions' "Tools on request" section
     for (const g of deferred.values()) {
       g.lazy = g.key.startsWith("mcp:") && isLazy(g.name);
@@ -829,6 +993,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     setTools(run);
     setSystem(run);
     runs.set(id, run);
+    if (unloaded) { emit(run, { type: "loaded", loaded: [...loaded] }); save(run, null, { loaded: [...loaded] }).catch(() => {}); }
     if (lazyPool.size) console.log(`[run] ${id} ${lazyPool.size - [...lazyPool.keys()].filter((n) => promoted.has(n)).length} tools on request (${[...new Set([...lazyPool.values()].map((t) => t.group || t.server))].join(", ")})`);
     console.log(`[run] ${id} started (${run.model}, ${run.tools.length} tools${deferred.size ? `, ${deferred.size} on Auto` : ""}${run.vision ? ", vision" : ""})`);
     loop(run);
@@ -840,10 +1005,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (!run) { res.writeHead(204); return res.end(); } // 204 tells EventSource not to reconnect
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
     const cur = run.cur && { ...run.cur, gen: run.cur.gen && { n: run.cur.gen.n, ms: Date.now() - run.cur.gen.t0, tool: run.cur.gen.tool } };
-    const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0) };
+    const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0), sub: subTokens(run) };
     const question = run.question && { id: run.question.id, tc: run.question.tc, questions: run.question.questions };
     const agents = [...run.subs.values()].filter((s) => s.status === "running").map(agentInfo);
-    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending.filter((p) => !p.report), stat, question, agents, waiting: !!run.wake })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending.filter((p) => !p.report), stat, question, agents, waiting: run.waitWhy || !!run.wake })}\n\n`);
     run.clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
     req.on("close", () => { clearInterval(ping); run.clients.delete(res); });
