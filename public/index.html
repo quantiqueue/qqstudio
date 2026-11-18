@@ -750,18 +750,11 @@ async function loadModels() {
     const prev = chat.model || modelSel.value;
     modelSel.innerHTML = "";
     modelVision = {};
-    // Loadouts, grouped by engine when there's more than one; the label is the loadout's name.
-    const engines = [...new Set(j.models.map((m) => m.engineName || ""))];
-    const groups = new Map();
+    // Loadouts by name. One runs at a time; the running one says so. The engine is only in the tooltip.
     for (const m of j.models) {
       modelVision[m.id] = !!m.vision;
-      let parent = modelSel;
-      if (engines.length > 1) {
-        if (!groups.has(m.engineName)) groups.set(m.engineName, modelSel.appendChild(el("optgroup")));
-        parent = groups.get(m.engineName); parent.label = m.engineName;
-      }
       const name = m.name || m.id;
-      const o = parent.appendChild(el("option", null, name + (m.status === "loaded" ? "  · loaded" : m.status === "loading" ? "  · loading" : "")));
+      const o = modelSel.appendChild(el("option", null, name + (m.status === "loaded" ? "  · loaded" : m.status === "loading" ? "  · loading" : "")));
       o.title = [m.engineName && `Engine: ${m.engineName}`, m.vision && "Can see images", m.id !== name && `id: ${m.id}`].filter(Boolean).join("\n");
       o.value = m.id;
     }

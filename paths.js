@@ -16,10 +16,10 @@ const P = {
   config: path.join(HOME, "config.json"),        // general settings (models folder, ...)
   tools: path.join(HOME, "tools.json"),          // tool enable / ask-first
   llama: path.join(HOME, "llama-server.json"),   // old single-engine settings (moved into engines.json on first run)
-  engines: path.join(HOME, "engines.json"),      // {engines: [...], active, autostart, restartOnModelsChange}
+  engines: path.join(HOME, "engines.json"),      // {engines: [...], autostart, last} (builds; loadouts run on them)
   enginesDir: path.join(HOME, "engines"),
   loadouts: path.join(HOME, "loadouts.json"),    // {loadouts: [{id, name, engine, model, vision, load, other, sampling}]}        // <id>\ : downloaded llama.cpp build, server.log, server.pid
-  presets: path.join(HOME, "models.ini"),        // generated llama-server presets
+  presets: path.join(HOME, "models.ini"),        // old shared presets (no longer used)
   uploads: path.join(HOME, "uploads"),          // images pasted or dropped into the chat
   pid: path.join(HOME, "llama-server.pid"),
   log: path.join(HOME, "logs", "llama-server.log"),

@@ -1,16 +1,18 @@
 # qqstudio
 
-Chat UI on http://localhost:8003 that talks to llama-server at http://127.0.0.1:9931.
+Chat UI on http://localhost:8003 that runs llama.cpp for you: each loadout (an engine, a model and its settings) runs as
+its own llama-server on http://127.0.0.1:9931, one at a time.
 
     npm run dev           (or double-click start.bat) - hot reload
     npm start             - plain, no server restarts
 
 Needs Node 18+. No npm install required.
 
-Override with env vars: `PORT`, `LLAMA_URL`.
+Override with env vars: `PORT`, `LLAMA_PORT` (default 9931), `LLAMA_URL` (use a llama-server you run yourself).
 
-- Model list comes from llama-server `/v1/models`. If you run llama-server in router mode
-  (multiple models), all of them show up and the selected one is sent as `model`.
+- **Engines** (Settings > Engines) are llama.cpp builds: downloaded from the releases, or an existing `llama-server.exe`.
+- **Loadouts** (Settings > Loadouts) are what runs. A session picks one; it loads when used, and loading another
+  unloads it (a reply in progress is never interrupted: the other session waits). Each has its own log.
 - Replies stream from `/v1/chat/completions`; reasoning (`reasoning_content`) is shown in a
   collapsible "thinking" block and is not sent back in history.
 
@@ -41,8 +43,7 @@ Search Hugging Face for GGUF repos, expand one, click Download on a quant.
 Saved to `<models folder>\<vendor>\<model-name>\<file>.gguf` (folder is remembered in the browser).
 Split models download all parts. Cancelled/failed downloads resume from the `.part` file.
 Gated repos: accept the license on huggingface.co and set `HF_TOKEN` before starting the server.
-llama-server's `--models-dir` only scans one level, so the Models page generates `models.ini` (all models, any depth, with mmproj)
-and shows the command: `llama-server --models-preset "...\\models.ini" --jinja --port 9931`. Restart llama-server after it changes.
+Models llama.cpp downloaded itself with `-hf` (in the Hugging Face cache) are listed as external and can get loadouts too.
 
 ## User data
 
@@ -51,10 +52,10 @@ Everything that isn't code lives in `%USERPROFILE%\.qqstudio` (override with `QQ
     config.json          models folder, general settings
     models\              default models folder (<vendor>\<model>\<file>.gguf)
     tools.json           tool on/off + ask-first
-    llama-server.json    engine executable, arguments, autostart
-    models.ini           generated llama-server presets
-    llama-server.pid     running engine (for re-adoption)
-    logs\llama-server.log
+    engines.json         engines (llama.cpp builds), autostart, last used loadout
+    engines\<id>\        downloaded builds; engines\running.json: the loadout running now (picked up after a restart)
+    loadouts.json        loadouts
+    logs\loadouts\<id>.log  each loadout's llama-server log
     chats\*.json         chat history
     skills\<name>\SKILL.md  skills (Anthropic Agent Skills format)
     skills.json          enabled/disabled skills

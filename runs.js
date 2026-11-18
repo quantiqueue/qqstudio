@@ -56,7 +56,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -210,7 +210,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   async function maybeCompact(run) {
     const pct = Number(getConfig().compactAt) || 0;
     if (!pct) return;
-    if (run.nCtx === undefined) run.nCtx = await nCtx(run.model);
+    if (!run.nCtx) run.nCtx = await nCtx(run.model); // null until the loadout is running
     if (!run.nCtx) return;
     const limit = run.nCtx * pct / 100, size = promptSize(run);
     if (size < limit) return;
@@ -231,9 +231,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     emit(run, { type: "step", model: run.model });
     emit(run, { type: "phase", text: "Compacting session", pct: null });
     const t0 = Date.now();
-    let summary = "";
+    let summary = "", release = null;
     try {
       run.abort = new AbortController();
+      release = await ensureEngine(run.model, null, run.abort.signal);
       const r = await fetch(`${llama.url()}/v1/chat/completions`, {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: run.abort.signal,
         body: JSON.stringify({ model: run.model, stream: false, max_tokens: 3000, temperature: 0.3, ...((s) => (s === undefined ? {} : { id_slot: s }))(await pickSlot(run, run.slot ?? -1)),
@@ -246,7 +247,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     } catch (e) {
       if (!run.stopped) emit(run, { type: "notice", text: "Compaction failed: " + e.message });
       return;
-    } finally { run.abort = null; run.cur = null; }
+    } finally { run.abort = null; run.cur = null; if (release) release(); }
     if (!summary || run.stopped) return;
     const msg = { role: "user", content: `[Summary of the earlier part of this session, which was compacted to save context]\n\n${summary}`,
       _summary: true, _meta: `Compacted ${older.length} messages (≈${Math.round(size / 1000)}k of ${Math.round(run.nCtx / 1000)}k tokens) · ${((Date.now() - t0) / 1000).toFixed(1)}s` };
@@ -278,17 +279,16 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       cur.phase = text; cur.pct = pct;
       emit(run, { type: "phase", text, pct });
     };
-    // Until the first token, poll the router to tell "loading model" apart from "reading prompt".
-    let polling = true;
+    // Once the request is sent and until the first token: "Reading prompt" (or the loadout's state if it went away).
+    let polling = true, sent = false, release = null;
     (async () => {
       while (polling && !run.stopped) {
         try {
-          const j = await (await fetch(`${llama.url()}/models`)).json();
-          const m = (j.data || j.models || []).find((x) => (x.id || x.name || x.model) === model);
+          const st = sent ? await modelState(model) : undefined;
           if (!polling) break;
-          const st = m && statusOf(m);
-          if (st && st !== "loaded") phase(m.status && m.status.failed ? "Model failed to load (see llama-server log)" : "Loading model");
-          else if (!gotChunk) phase("Reading prompt");
+          if (st === "failed") phase("Model failed to load (Settings > Loadouts > Log)");
+          else if (st === "loading") phase("Loading model");
+          else if (sent && !gotChunk) phase("Reading prompt");
         } catch {}
         await sleep(1000);
       }
@@ -296,7 +296,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
 
     run.abort = new AbortController();
     try {
-      await ensureEngine(model, (t) => phase(t)); // a loadout on another engine: stop the running one, start that one
+      // The loadout must be the one running: loading it (and unloading another) if needed, or waiting while another
+      // loadout is mid-reply. Held until this request ends.
+      release = await ensureEngine(model, (t) => phase(t), run.abort.signal);
+      sent = true;
       const body = {
         model, messages: [{ role: "system", content: run.system }, ...(await modelMessages(run))],
         return_progress: true, stream_options: { include_usage: true }, ...samplingFor(model), ...run.think.body, stream: true,
@@ -388,6 +391,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     } finally {
       polling = false;
       run.abort = null;
+      if (release) release();
     }
     const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
     { // prompt cache report: how much llama-server reused, and what changed when it read a lot again
@@ -708,7 +712,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         run.messages.push(msg);
         emit(run, { type: "assistant", msg, tot: run.genDone });
         await save(run);
-        if (r.looped) { emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty for this model in models.ini." }); break; }
+        if (r.looped) { emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." }); break; }
         if (!r.toolCalls.length) {
           if (run.pending.length && !run.stopped) continue; // a steer arrived as it finished: keep going
           if (activeSubs(run) && !run.stopped) { if (await idle(run)) continue; } // sub-agents still working: wait for a report or a message

