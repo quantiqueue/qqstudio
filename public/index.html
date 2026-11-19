@@ -1955,10 +1955,10 @@ async function renderWsView() {
   const card = fbox.appendChild(el("a", "wsv-fcard")); card.href = "#w/" + encodeURIComponent(id) + "/files"; card.title = "Show all files";
   card.onclick = (e) => { e.preventDefault(); openWorkspace(id, "files"); };
   const newest = [...files].sort((a, b) => b.modified - a.modified);
+  fh.appendChild(el("span", "sp"));
+  const up = fh.appendChild(el("button", null, "Upload")); up.type = "button"; up.onclick = () => pickUpload(id);
   if (files.length) card.appendChild(previewGrid(id, newest));
-  else { // same card, empty: the hint inside, and Upload next to the heading while there's nothing
-    fh.appendChild(el("span", "sp"));
-    const up = fh.appendChild(el("button", null, "Upload")); up.type = "button"; up.onclick = () => pickUpload(id);
+  else { // same card, empty: the hint inside
     const e = card.appendChild(el("div", "fc-empty"));
     e.innerHTML = ICON_FOLDER;
     e.appendChild(el("span", null, "No files yet. Drop files here, or the model saves what it makes here."));
