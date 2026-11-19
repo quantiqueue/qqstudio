@@ -690,7 +690,7 @@ async function handleChats(req, res) {
       if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
       const list = [];
       for (const { ws: w, chat: c } of await ws.allSessions())
-        if (!c.parent) list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, workspace: w, running: runs.has(c.id), waiting: runs.waiting(c.id), unread: !!c.unread }); // sub-agent sessions open from their chip
+        if (!c.parent) list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, workspace: w, running: runs.has(c.id), settling: runs.settling(c.id), waiting: runs.waiting(c.id), unread: !!c.unread }); // sub-agent sessions open from their chip
       list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
       return sendJson(res, 200, { chats: list });
     }
@@ -708,14 +708,14 @@ async function handleChats(req, res) {
       c.id = id;
       const placed = ws.placeSession(id, c.workspace); // a new session goes into the workspace it names (else Default)
       c.workspace = ws.workspaceOf(id);
-      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; if (!Array.isArray(c.todo) && Array.isArray(disk?.todo)) c.todo = disk.todo; if (typeof c.memory !== "string" && typeof disk?.memory === "string") c.memory = disk.memory; return c; }); // keep groups the model turned on, tools given full details
+      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; if (!Array.isArray(c.todo) && Array.isArray(disk?.todo)) c.todo = disk.todo; if (typeof c.memory !== "string" && typeof disk?.memory === "string") c.memory = disk.memory; if (disk?.titled && !c.titled) { c.title = disk.title; c.titled = true; } return c; }); // keep groups the model turned on, tools given full details
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "PATCH") {
       const patch = JSON.parse(await readBody(req));
       const done = await updateChat(file, (c) => {
         if (!c) return null;
-        if (typeof patch.title === "string") c.title = patch.title.slice(0, 200);
+        if (typeof patch.title === "string") { c.title = patch.title.slice(0, 200); c.titled = true; } // the user's title: never replaced by an automatic one
         if (patch.unread === false) delete c.unread;
         if (patch.mode === "manual" || patch.mode === "auto") c.mode = patch.mode;
         if (typeof patch.model === "string") c.model = patch.model;

@@ -31,12 +31,17 @@
   .ws-row.active { background:var(--user); }
   .ws-row .caret { width:18px; text-align:center; color:var(--muted); font-size:10px; flex:none; }
   .ws-row .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .ws-row .mini { visibility:hidden; }
-  .ws-row:hover .mini, .ws-row.active .mini { visibility:visible; }
+  .ws-row .mini { display:none; }
+  .ws-row:hover .mini { display:inline-flex; align-items:center; justify-content:center; }
+  @media (hover:none) { .ws-row .mini { display:inline-flex; align-items:center; justify-content:center; } .ws-row:hover .cnt { display:inline; } } /* iPad: no hover */
+  .ws-row .cnt { flex:none; font-size:11px; font-weight:500; color:var(--muted); padding:0 8px 0 6px; font-variant-numeric:tabular-nums; }
+  .ws-row:hover .cnt { display:none; }
   .ws-row .run-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; margin-right:4px; }
   .ws-row .run-dot.running { animation:pulse 1.2s ease-in-out infinite; } .ws-row .run-dot.waiting { background:#e3b04b; } .ws-row .run-dot.unread { background:#4fc98a; }
-  .ws-sessions .chat-item { padding-left:22px; }
-  .ws-sessions .empty-list { padding:4px 10px 4px 24px; }
+  .ws-sessions { margin:2px 0 4px 10px; padding-left:6px; border-left:1px solid var(--line); }
+  .ws-sessions .chat-item { padding-left:10px; font-size:13.5px; }
+  .ws-sessions .empty-list { padding:4px 10px; }
+  .ws-sessions .view-all { padding-left:10px; }
   .view-all { display:block; background:none; border:none; color:var(--muted); font-size:12px; padding:5px 10px 5px 24px; min-height:28px; cursor:pointer; text-align:left; }
   .view-all:hover { color:var(--text); }
   .wsv-list .view-all { width:100%; padding:9px 14px; background:var(--panel); border-top:1px solid var(--line); }
@@ -1754,10 +1759,12 @@ function stopLine(text) {
 // ---------- chat persistence ----------
 async function loadList() {
   try { chatList = (await (await fetch("/api/chats")).json()).chats || []; } catch { chatList = []; }
+  const me = chat.id && chatList.find((c) => c.id === chat.id); // a title set by the server (automatic titles)
+  if (me && me.title && me.title !== chat.title && !renaming) { chat.title = me.title; renderCrumbs(); }
   if (!renaming) renderList();
   if (wsView && !renaming) renderWsView();
   clearTimeout(listTimer); // keep the sidebar's "reply in progress" dots current
-  if (chatList.some((c) => c.running)) listTimer = setTimeout(loadList, 3000);
+  if (chatList.some((c) => c.running || c.settling)) listTimer = setTimeout(loadList, 3000); // settling: a title may still come
 }
 
 async function saveChat(c = chat) {
@@ -2141,17 +2148,25 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("wsDi
 $("newWs").onclick = () => wsDialog();
 
 // Long session lists show the 10 most recent (plus the open one) and a "View all (N)" link; "Show fewer" folds them back.
-const LIST_MAX = 10, showAll = new Set(); // keys: "side:<workspace>", "view:<workspace>"
+// The sidebar shows 5 per workspace and its "View all (N)" opens the workspace overview, which shows 10 and folds out.
+const LIST_MAX = 10, SIDE_MAX = 5, showAll = new Set(); // keys: "side:<workspace>", "view:<workspace>"
+const maxFor = (key) => (key.startsWith("side:") ? SIDE_MAX : LIST_MAX);
 function capped(key, sessions) {
-  if (sessions.length <= LIST_MAX || showAll.has(key)) return sessions;
-  const top = sessions.slice(0, LIST_MAX), cur = sessions.find((c) => c.id === chat.id);
+  const max = maxFor(key);
+  if (sessions.length <= max || showAll.has(key)) return sessions;
+  const top = sessions.slice(0, max), cur = sessions.find((c) => c.id === chat.id);
   if (cur && !top.includes(cur)) top.push(cur);
   return top;
 }
 function viewAll(box, key, total, rerender) {
-  if (total <= LIST_MAX) return;
-  const b = box.appendChild(el("button", "view-all", showAll.has(key) ? "Show fewer" : `View all (${total})`)); b.type = "button";
-  b.onclick = (e) => { e.stopPropagation(); showAll.has(key) ? showAll.delete(key) : showAll.add(key); rerender(); };
+  if (total <= maxFor(key)) return;
+  const side = key.startsWith("side:");
+  const b = box.appendChild(el("button", "view-all", !side && showAll.has(key) ? "Show fewer" : `View all (${total})`)); b.type = "button";
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (side) return openWorkspace(key.slice(5)); // the overview lists them all
+    showAll.has(key) ? showAll.delete(key) : showAll.add(key); rerender();
+  };
 }
 function renderList() {
   const list = $("chatList");
@@ -2169,6 +2184,7 @@ function renderList() {
       if (d) { const sp = row.appendChild(el("span", "run-dot " + d[0])); sp.title = d[1]; }
     }
     const t = row.appendChild(el("span", "t", w.name)); t.title = w.description || w.name;
+    if (sessions.length) row.appendChild(el("span", "cnt", String(sessions.length)));
     const add = row.appendChild(el("button", "mini", "＋")); add.type = "button"; add.title = `New session in ${w.name}`;
     caret.onclick = (e) => { e.stopPropagation(); setOpen(w.id, !open); renderList(); };
     add.onclick = (e) => { e.stopPropagation(); setOpen(w.id, true); newChat(w.id); };

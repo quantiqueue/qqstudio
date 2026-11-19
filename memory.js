@@ -184,10 +184,22 @@ const UPDATE_PROMPT = (mem, used, cap, here) =>
   `Answer only with lines like these (each entry at most ${MAX_ENTRY} characters and understandable without this session), or with NONE:\n` +
   `ADD <${SECTIONS.join("|")}>: <entry>\nREPLACE <id>: <entry>\nREMOVE <id>`;
 
+// Session titles: asked for together with a memory update (or on their own when memory is off).
+const TITLE_ASK = "\n\nThis session has no title yet. Start your answer with a line TITLE: <2 to 5 words naming its topic, like a document title; no quotes>, " +
+  "then the memory lines (or NONE).";
+const TITLE_PROMPT = (text) => "Give this conversation a short title: 2 to 5 words naming its topic, like a document title, no quotes. Answer with the title only.\n\n" + text;
+function parseTitle(answer, whole = false) {
+  const s = String(answer || "").replace(/<think>[\s\S]*?<\/think>/g, "");
+  const m = s.match(/^\s*\**TITLE\**\s*:\s*(.+)$/im) || (whole ? [null, s.trim().split(/\r?\n/)[0]] : null);
+  if (!m) return "";
+  const t = m[1].replace(/[*_`#]/g, "").replace(/^["'“”‘’\s]+|["'“”‘’.\s]+$/g, "").replace(/\s+/g, " ").trim();
+  return t.length >= 2 && t.length <= 60 ? t : "";
+}
+
 const TIDY_PROMPT = (mem, used, cap) =>
   "You keep a workspace's memory: short notes that later sessions get in their instructions. It has grown to " + `${used} of ${cap} tokens. ` +
   "Make it smaller without losing what matters: merge entries that say related things (REPLACE one with the merged text, REMOVE the others), " +
   "remove ones that are duplicated or outdated, and shorten long ones. Aim for about two thirds of the size.\n\n<memory>\n" + mem + "\n</memory>\n\n" +
   `Answer only with lines like these (each entry at most ${MAX_ENTRY} characters):\nREPLACE <id>: <entry>\nREMOVE <id>\nADD <${SECTIONS.join("|")}>: <entry>`;
 
-module.exports = { log, readLog, SECTIONS, MAX_ENTRY, DEFAULT_CAP, tokens, fileOf, read, text, stats, apply, parseOps, section, SPEC, UPDATE_PROMPT, TIDY_PROMPT };
+module.exports = { TITLE_ASK, TITLE_PROMPT, parseTitle, log, readLog, SECTIONS, MAX_ENTRY, DEFAULT_CAP, tokens, fileOf, read, text, stats, apply, parseOps, section, SPEC, UPDATE_PROMPT, TIDY_PROMPT };

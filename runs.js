@@ -224,7 +224,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   const noThink = (run) => ({ ...(run.think.body || {}), chat_template_kwargs: { ...(run.think.body?.chat_template_kwargs || {}), enable_thinking: false },
     reasoning_budget_tokens: 0, thinking_budget_tokens: 0 });
   // The hidden update turn. Runs only on the loadout that is already loaded (it never loads one for this).
-  async function memoryPass(run, signal) {
+  async function memoryPass(run, signal, wantTitle = false) {
     if (!run.memWs || run.deleted) return;
     if (!(await loadedNow(run.model))) return;
     const msgs = await modelMessages(run);
@@ -233,7 +233,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     let title = ""; try { title = (await readChat(run.id)).title || ""; } catch {}
     const here = `"${title.slice(0, 60) || "Untitled"}" (${run.id})`;
     const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 2000,
-      messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap, here) }] };
+      messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap, here) + (wantTitle ? memory.TITLE_ASK : "") }] };
     if (run.tools.length) body.tools = run.tools; // the same tool list as the session's requests (it's part of the prompt)
     const slot = slotOf.get(run.id);
     if (slot !== undefined) body.id_slot = slot;
@@ -242,6 +242,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       release = await ensureEngine(run.model, null, signal);
       out = await complete(body, signal);
     } finally { if (release) release(); }
+    if (wantTitle) { const t = memory.parseTitle(out.text); if (t) await setTitle(run, t); else if (!signal?.aborted) await titlePass(run, signal); } // no title in the answer: ask on its own
     // Changes as text lines, or (some models answer with the tool they have) as memory tool calls.
     const ops = memory.parseOps(out.text);
     for (const c of out.calls) if (/(^|__)memory$/.test(c.name)) try { const a = JSON.parse(c.arguments || "{}"); ops.push({ op: a.action || a.op, section: a.section, id: a.id, text: a.text }); } catch {}
@@ -272,16 +273,48 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     console.log(`[memory] ${run.id} tidied: ${used} -> ${r.tokens}/${cap} tokens (${r.done.length} changes)`);
     memory.log(run.memWs, `tidy ${run.id} ${used} -> ${r.tokens} tokens · ${r.done.join(", ")}`);
   }
-  // Right after a reply: the update, then a tidy-up if it's getting full. In the background; a new request cancels it.
+  // Automatic titles: a session still called by its first message (the page's default) gets a short title after a reply,
+  // from the memory update turn (no extra request) or, with memory off, a small request of its own. A title the user set
+  // (renamed: "titled", or anything other than the default) is never replaced.
+  function needsTitle(chat) {
+    if (!chat || chat.titled || chat.parent) return false;
+    const t = String(chat.title || "").trim(), u = (chat.messages || []).find((m) => m.role === "user");
+    const first = u ? (typeof u.content === "string" ? u.content : (u.content || []).filter((p) => p.type === "text").map((p) => p.text).join(" ")).replace(/\s+/g, " ").slice(0, 60).trim() : "";
+    return !t || ["New session", "Untitled", "Image"].includes(t) || t === first || (!!u?._files?.length && t === String(u._files[0].name).slice(0, 60));
+  }
+  async function setTitle(run, title) {
+    if (!title) return;
+    await updateChat(chatFile(run.id), (d) => (d && needsTitle(d) ? { ...d, title, titled: true } : null));
+    console.log(`[run] ${run.id} titled "${title}"`);
+  }
+  async function titlePass(run, signal) {
+    if (!(await loadedNow(run.model))) return;
+    const msgs = run.messages.filter((m) => (m.role === "user" || m.role === "assistant") && !m._hidden).slice(0, 6);
+    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.3, max_tokens: 60,
+      messages: [{ role: "user", content: memory.TITLE_PROMPT(transcript(msgs).slice(0, 3000)) }] };
+    const slot = await pickSlot(run, slotOf.get(run.id) ?? -1); // not the session's slot: its cache stays for the next message
+    if (slot !== undefined) body.id_slot = slot;
+    let release = null, out;
+    try { release = await ensureEngine(run.model, null, signal); out = await complete(body, signal); }
+    finally { if (release) release(); }
+    await setTitle(run, memory.parseTitle(out.text, true));
+  }
+  // Right after a reply: the memory update (with a title if the session needs one), then a tidy-up if memory is getting
+  // full; or, with memory off, just the title. In the background; a new request cancels it.
   function afterReply(run) {
-    if (!run.memWs || run.parentRun || run.deleted || runs.has(run.id)) return;
+    if (run.parentRun || run.deleted || runs.has(run.id)) return;
     memJobs.get(run.id)?.abort();
     const ctl = new AbortController();
     memJobs.set(run.id, ctl);
     (async () => {
-      try { await memoryPass(run, ctl.signal); if (!ctl.signal.aborted) await memoryTidy(run, ctl.signal); }
+      try {
+        let wantTitle = false; try { wantTitle = needsTitle(await readChat(run.id)); } catch {}
+        if (!run.memWs) { if (wantTitle) await titlePass(run, ctl.signal); return; }
+        await memoryPass(run, ctl.signal, wantTitle); if (!ctl.signal.aborted) await memoryTidy(run, ctl.signal);
+      }
       catch (e) {
-        if (!ctl.signal.aborted) { console.error(`[memory] ${run.id}: ${e.message}`); memory.log(run.memWs, `update ${run.id} failed: ${e.message}`); }
+        if (!run.memWs) { if (!ctl.signal.aborted) console.error(`[run] ${run.id} title: ${e.message}`); }
+        else if (!ctl.signal.aborted) { console.error(`[memory] ${run.id}: ${e.message}`); memory.log(run.memWs, `update ${run.id} failed: ${e.message}`); }
         else { console.log(`[memory] ${run.id} update gave way to a request`); memory.log(run.memWs, `update ${run.id} gave way to a request`); }
       }
       finally { if (memJobs.get(run.id) === ctl) memJobs.delete(run.id); }
@@ -1308,6 +1341,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   return {
     handle,
     has: (id) => runs.has(id),
+    settling: (id) => memJobs.has(id), // a memory update or title is being worked out after its reply
     anyActive: () => runs.size > 0,
     waiting: (id) => { const r = runs.get(id); return r?.approval || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.approval) ? "approval" : r?.question ? "question" : false; }, // the sidebar's yellow dot
     stop: (id) => { const p = !runs.get(id) && pendingSub(id); if (p) cancelPending(p[0], p[1], "the user cancelled it"); else stop(runs.get(id)); },
