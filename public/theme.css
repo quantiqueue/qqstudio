@@ -1,0 +1,75 @@
+/* Ink glass: deep ink background with soft colour glows, frosted translucent surfaces.
+   Loaded after each page's own styles; it only overrides colours, borders, shadows and blur. */
+:root {
+  color-scheme: dark;
+  --bg: rgba(6, 9, 22, .45);          /* fields, buttons */
+  --panel: rgba(255, 255, 255, .06);  /* cards, rows, replies */
+  --side: rgba(8, 11, 26, .42);
+  --line: rgba(255, 255, 255, .12);
+  --text: #e9edf7;
+  --muted: #8d94ab;
+  --accent: #4aa8ff;
+  --user: rgba(74, 168, 255, .16);
+  --green: #4ade80; --amber: #fbbf24; --red: #fb7185;
+  --glass-hover: rgba(255, 255, 255, .07);
+  --glass-on: rgba(74, 168, 255, .16);
+  --glass-deep: rgba(4, 6, 14, .55);  /* code, logs, previews */
+  --glass-solid: rgba(15, 20, 38, .9); /* menus and dialogs, which sit over text */
+  --glass-shadow: 0 10px 30px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .1);
+  --glass-blur: blur(16px) saturate(1.4);
+}
+body {
+  background:
+    radial-gradient(1200px 700px at 8% 2%, rgba(64, 110, 255, .28), rgba(64, 110, 255, 0) 62%),
+    radial-gradient(1000px 620px at 93% 5%, rgba(168, 85, 247, .24), rgba(168, 85, 247, 0) 60%),
+    radial-gradient(1100px 720px at 84% 95%, rgba(34, 211, 238, .16), rgba(34, 211, 238, 0) 62%),
+    radial-gradient(900px 640px at 6% 90%, rgba(99, 102, 241, .22), rgba(99, 102, 241, 0) 60%),
+    #0b1020;
+  background-attachment: fixed;
+  scrollbar-color: rgba(255, 255, 255, .16) transparent;
+}
+select { color: var(--text); background-color: rgba(6, 9, 22, .6); border: 1px solid var(--line); border-radius: 8px; }
+option, .toolbar select option { background: #141a2e; color: var(--text); }
+
+/* frosted chrome: header, sidebars, composer */
+header, aside, aside.tabs, #form { background: rgba(11, 16, 32, .42); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
+header { box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .04); }
+
+/* floating bits over the conversation */
+.crumbs { background: rgba(13, 18, 36, .88); box-shadow: 0 0 10px 6px rgba(13, 18, 36, .88); }
+.jump { background: rgba(20, 26, 48, .6); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); box-shadow: var(--glass-shadow); }
+
+/* cards: translucent with a top highlight (no blur, so long sessions stay smooth) */
+.assistant, .todo-panel, .wsv-list, .wsv-file, .list, .cat, .srv, .note, .preset, .master, .empty, .ro-note, .wsv-empty { border-color: rgba(255, 255, 255, .13); box-shadow: var(--glass-shadow); }
+.ro-note, .wsv-empty { box-shadow: none; }
+.user { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1); }
+.agent-chip, .tool, .qcard, .ufiles span, .md .code-h, .md th { background: rgba(255, 255, 255, .04); }
+.md code, .md .code, .wsv-file .pv, .imgs figure, .attachments .att, .lan-key code, .mcp-row details pre, #srvLog { background: var(--glass-deep); }
+.md pre code { background: none; }
+.wsv-file .del { background: rgba(11, 16, 32, .8); }
+.error { background: rgba(251, 113, 133, .12); border-color: rgba(251, 113, 133, .35); }
+
+/* hover / selected states */
+button.mini:hover, .crumbs a:hover, .hdr-btn:hover, .compose #plus:hover, .compose #plus.open,
+.toolbar #plus:hover, .toolbar #model:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover,
+.toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #effortBtn.open, .toolbar #model:focus-visible,
+.wsv-item:hover, .pm-nav:hover, .pm-row:hover, .mm-row:hover, .em-row:hover, .repo-head:hover { background: var(--glass-hover); }
+.seg button.on, .mm-row.on, .em-row.on, aside.tabs a.active { background: var(--glass-on); }
+.seg.sm button.on[data-v="on"] { background: rgba(74, 168, 255, .2); color: #9fd0ff; }
+.cat-head { background: rgba(255, 255, 255, .05); }
+.vis-opt { background: rgba(255, 255, 255, .03); }
+.tag { background: rgba(255, 255, 255, .08); }
+
+/* composer */
+.compose { background: rgba(6, 9, 22, .5); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06); }
+.compose:focus-within { border-color: rgba(74, 168, 255, .45); }
+form.drop .compose { background: rgba(74, 168, 255, .08); }
+.compose #send.stop { color: #0b1020; }
+button.primary { color: #0b1020; }
+
+/* menus and dialogs */
+.plus-menu { background: var(--glass-solid); border-color: rgba(255, 255, 255, .14); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); box-shadow: 0 16px 40px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .1); }
+.modal, .lo-modal { background: rgba(4, 6, 14, .55); }
+.dlg, .lo-dlg { background: var(--glass-solid); border-color: rgba(255, 255, 255, .14); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); box-shadow: 0 20px 60px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .12); }
+.lo-dlg .lo-form { background: transparent; }
+.lo-dlg .lo-form .acts { background: rgba(15, 20, 38, .96); }

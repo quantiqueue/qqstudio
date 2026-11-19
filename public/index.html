@@ -6,7 +6,7 @@
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="apple-touch-icon" href="/icon-180.png">
-<meta name="theme-color" content="#0f1115">
+<meta name="theme-color" content="#0b1020">
 <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <style>
   :root { --bg:#0f1115; --panel:#171a21; --side:#12151b; --line:#272b35; --text:#e6e8ee; --muted:#8a91a3; --accent:#6aa3ff; --user:#1f2a3d; }
@@ -110,6 +110,7 @@
   header { flex:none; display:flex; gap:10px; align-items:center; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
   header h1.brand { display:flex; align-items:center; gap:8px; letter-spacing:.01em; }
   header h1.brand img { display:block; }
+  header h1.brand a { display:flex; align-items:center; gap:8px; color:inherit; text-decoration:none; }
   header h1 { font-size:15px; margin:0 12px 0 0; font-weight:600; white-space:nowrap; }
   nav { display:flex; gap:4px; margin-right:8px; }
   nav a { color:var(--muted); text-decoration:none; padding:5px 10px; border-radius:8px; font-size:14px; }
@@ -401,10 +402,11 @@
   /* last, so it wins over the composer's own rules: a sub-agent's session has no message box */
   #form.readonly .compose, #form.readonly .toolbar, #form.readonly #attachments, #form.readonly #todoPanel { display:none !important; }
 </style>
+<link rel="stylesheet" href="/theme.css">
 </head>
 <body>
 <header>
-  <h1 class="brand"><img src="/icon-64.png" alt="" width="22" height="22">qqstudio</h1>
+  <h1 class="brand"><a href="/" id="brandLink" title="Back to your workspace"><img src="/icon-64.png" alt="" width="22" height="22">qqstudio</a></h1>
   <span id="status"></span>
   <a href="/settings" class="hdr-btn" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.86a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg></a>
 </header>
@@ -1662,7 +1664,9 @@ async function saveChat(c = chat) {
 async function newChat(workspace) {
   detach(); // a running reply keeps going on the server
   chat = blankChat(workspace || curWs()?.id);
+  rememberWs(chat.workspace);
   showSessionUi();
+  todoOpen = null; renderTodo(); clearChips(); renderReadOnly(); // leave the last session's state behind (a sub-agent's read-only view, its tasks)
   renderMode();
   renderThink();
   renderToolbarState();
@@ -1683,6 +1687,7 @@ async function loadChat(id) {
     return openWorkspace(defaultWs);
   }
   chat.workspace = chat.workspace || defaultWs;
+  rememberWs(chat.workspace);
   showSessionUi();
   setHash(chat.id);
   if (chat.unread) { delete chat.unread; fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ unread: false }) }).then(loadList).catch(() => {}); }
@@ -1729,6 +1734,15 @@ function startRename(item, c) {
 
 // ---------- workspaces ----------
 const curWs = () => workspaces.find((w) => w.id === (wsView || chat.workspace || defaultWs)) || workspaces.find((w) => w.id === defaultWs) || null;
+// The workspace used last (shown, or a session in it opened). The qqstudio logo and Settings' "Return to sessions" go back to it;
+// before anything is remembered, the workspace with the latest session activity (the top of the sidebar).
+function rememberWs(id) { if (id) try { localStorage.setItem("qq.lastWs", id); } catch {} }
+function lastWs() {
+  let id = null; try { id = localStorage.getItem("qq.lastWs"); } catch {}
+  if (workspaces.some((w) => w.id === id)) return id;
+  const used = (w) => Math.max(w.created || 0, ...chatList.filter((c) => (c.workspace || defaultWs) === w.id).map((c) => c.updated || 0));
+  return [...workspaces].sort((a, b) => used(b) - used(a))[0]?.id || defaultWs;
+}
 const wsName = (id) => workspaces.find((w) => w.id === id)?.name || id;
 // The tool folders the model is told about: everything except other workspaces' files folders.
 function visibleRoots() {
@@ -1751,6 +1765,7 @@ async function openWorkspace(id) {
   if (!workspaces.some((w) => w.id === id)) id = defaultWs;
   detach();
   wsView = id;
+  rememberWs(id);
   chat = blankChat(id);
   setHash("w/" + encodeURIComponent(id));
   $("wsView").hidden = false; $("crumbs").hidden = true;
@@ -2427,13 +2442,14 @@ modelSel.onchange = () => {
 };
 renderMode();
 
-// #w/<workspace> shows a workspace, #<session id> opens a session, nothing shows Default.
+// #w/<workspace> shows a workspace, #<session id> opens a session, nothing shows the workspace used last.
 async function route() {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith("w/")) { if (wsView !== h.slice(2)) await openWorkspace(h.slice(2)); }
   else if (h) { if (h !== chat.id || wsView) await loadChat(h); }
-  else await openWorkspace(defaultWs);
+  else await openWorkspace(lastWs());
 }
+$("brandLink").onclick = (e) => { e.preventDefault(); openWorkspace(lastWs()); };
 
 (async () => {
   await Promise.all([loadModels(), loadTools(), loadList(), loadWorkspaces()]);
