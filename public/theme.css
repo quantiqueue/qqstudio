@@ -32,7 +32,11 @@ select { color: var(--text); background-color: rgba(6, 9, 22, .6); border: 1px s
 option, .toolbar select option { background: #141a2e; color: var(--text); }
 
 /* frosted chrome: header, sidebars, composer */
-header, aside, aside.tabs, #form { background: rgba(11, 16, 32, .42); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
+header, aside, aside.tabs { background: rgba(11, 16, 32, .42); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
+/* the composer floats (index.html #form): its box and the task list are frosted cards, the space around them fades */
+.compose, .todo-panel { backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur); }
+.compose { background: rgba(14, 19, 36, .78); box-shadow: var(--glass-shadow); }
+.todo-panel { background: rgba(14, 19, 36, .78); }
 header { box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .04); }
 
 /* floating bits over the conversation */
