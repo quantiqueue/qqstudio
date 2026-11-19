@@ -367,7 +367,7 @@ function updateChat(file, fn) {
   return next;
 }
 const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
-  filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server),
+  filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
 // A sub-agent's session (runs.js run_agent): in its main session's workspace, marked with parent so the sidebar hides it.
@@ -632,6 +632,11 @@ async function handleMcp(req, res) {
     if (req.method === "GET" && u.pathname === "/api/mcp/log") { res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(mcp.log(u.searchParams.get("name"))); }
     if (req.method === "PUT" && u.pathname === "/api/mcp") { await mcp.saveRaw(JSON.parse(await readBody(req)).raw); return sendJson(res, 200, { servers: mcp.status() }); }
     if (req.method === "POST" && u.pathname === "/api/mcp/restart") { await mcp.restart(JSON.parse(await readBody(req)).name); return sendJson(res, 200, { servers: mcp.status() }); }
+    if (req.method === "PUT" && u.pathname === "/api/mcp/paths") { // {name, mode: "workspace"|"as-given"}
+      const b = JSON.parse(await readBody(req));
+      mcp.setPaths(b.name, b.mode);
+      return sendJson(res, 200, { servers: mcp.status() });
+    }
     if (req.method === "PUT" && u.pathname === "/api/mcp/enabled") {
       const b = JSON.parse(await readBody(req));
       await mcp.setEnabled(b.name, !!b.enabled);

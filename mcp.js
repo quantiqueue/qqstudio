@@ -4,6 +4,7 @@
 //       "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\data"], "env": {} },
 //       "remote":     { "url": "https://host/mcp", "headers": { "Authorization": "Bearer ..." } },
 //       "off":        { "command": "...", "disabled": true } } }
+// qqstudio's own key per server: "relativePaths": "workspace" | "as-given" (see pathsMode).
 // Tools are exposed to the model as "<server>__<tool>".
 const fs = require("fs");
 const { spawn, execFile } = require("child_process");
@@ -227,6 +228,25 @@ function saveRaw(text) {
   return reloadAll();
 }
 
+// Relative file names in this server's tool arguments: "workspace" = made full paths in the session's workspace folder
+// (runs.js workspacePaths), "as-given" = passed on unchanged. Default: workspace for local (stdio) servers, as given for
+// remote (HTTP) ones, where a path on this PC means nothing.
+function pathsMode(server) {
+  const c = conns.get(server);
+  if (!c) return "as-given";
+  const v = c.cfg.relativePaths;
+  return v === "workspace" || v === "as-given" ? v : c.transport === "http" ? "as-given" : "workspace";
+}
+function setPaths(name, mode) {
+  if (mode !== "workspace" && mode !== "as-given") throw new Error("mode must be workspace or as-given");
+  const j = readConfig();
+  if (!j.mcpServers[name]) throw new Error("no such server");
+  j.mcpServers[name].relativePaths = mode;
+  P.writeJson(P.mcp, j);
+  const c = conns.get(name);
+  if (c) c.cfg.relativePaths = mode; // no reconnect needed
+}
+
 async function setEnabled(name, enabled) {
   const j = readConfig();
   if (!j.mcpServers[name]) throw new Error("no such server");
@@ -242,6 +262,7 @@ function status() {
     summary: c.transport === "http" ? c.cfg.url : [c.cfg.command, ...(c.cfg.args || [])].join(" "),
     tools: c.tools.map((t) => ({ name: t.name, full: safeName(c.name, t.name), description: t.description || "" })),
     disabled: !!c.cfg.disabled,
+    relativePaths: pathsMode(c.name),
   }));
 }
 
@@ -287,4 +308,4 @@ function cwdOf(server) { const c = conns.get(server); return (c && c.cfg && c.cf
 function has(fullName) { return tools().some((t) => t.name === fullName); }
 function knownServer(fullName) { return [...conns.keys()].some((s) => fullName.startsWith(s.replace(/[^A-Za-z0-9_-]/g, "_") + "__")); }
 
-module.exports = { init: reloadAll, reloadAll, restart, saveRaw, setEnabled, status, log, tools, callTool, has, knownServer, cwdOf, rawConfig, EXAMPLE, path: P.mcp };
+module.exports = { init: reloadAll, reloadAll, restart, saveRaw, setEnabled, status, log, tools, callTool, has, knownServer, cwdOf, pathsMode, setPaths, rawConfig, EXAMPLE, path: P.mcp };

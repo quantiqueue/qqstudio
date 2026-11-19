@@ -67,6 +67,7 @@
   .mcp-row.starting .dot { background:var(--amber); animation:pulse 1s infinite; }
   .mcp-row.error .dot { background:var(--red); }
   .mcp-row .sub { color:var(--muted); font-size:12px; margin:3px 0 0 19px; font-family:ui-monospace,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mcp-row .paths { display:flex; align-items:center; gap:6px; margin:6px 0 0 19px; font-size:12px; color:var(--muted); cursor:pointer; width:max-content; max-width:100%; }
   .mcp-row .errt { color:#f0a3aa; font-size:12px; margin:4px 0 0 19px; }
   .mcp-row details { margin:6px 0 0 19px; font-size:12px; }
   .mcp-row details pre { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px; max-height:220px; overflow:auto; white-space:pre-wrap; font:11.5px/1.45 ui-monospace,Consolas,monospace; color:#b8bdca; }
@@ -850,6 +851,13 @@ function mcpRender() {
     const rs = head.appendChild(el("button", null, "↻")); rs.title = "Reconnect"; rs.disabled = sv.disabled;
     rs.onclick = async () => { rs.disabled = true; await fetch("/api/mcp/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sv.name }) }); mcpLoad(); loadToolCfg(); };
     row.appendChild(el("div", "sub", `${sv.transport} · ${sv.summary}`)).title = sv.summary;
+    { // where relative file names in its tool arguments go (runs.js workspacePaths)
+      const pl = row.appendChild(el("label", "paths"));
+      const pc = pl.appendChild(el("input")); pc.type = "checkbox"; pc.checked = sv.relativePaths === "workspace";
+      pl.appendChild(el("span", null, "Put relative file names in the session's workspace folder"));
+      pl.title = "On: a file name like sprite.png in this server's tool arguments becomes a full path in the session's workspace files folder, so its files land with the session's other files.\nOff: file names are passed on as given (for servers with their own base folder, or remote servers).";
+      pc.onchange = async () => { await fetch("/api/mcp/paths", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sv.name, mode: pc.checked ? "workspace" : "as-given" }) }); mcpLoad(true); };
+    }
     if (sv.error) row.appendChild(el("div", "errt", sv.error));
     if (sv.tools.length) {
       const d = row.appendChild(el("details"));

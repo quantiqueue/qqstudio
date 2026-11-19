@@ -58,7 +58,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -1064,6 +1064,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   function workspacePaths(run, name, args) {
     const e = run.byName.get(name), moved = [];
     if (!e || !e.server || !args || typeof args !== "object" || Array.isArray(args)) return { args, moved };
+    if (mcpPaths(e.server) !== "workspace") return { args, moved }; // Settings > MCP Servers: this server takes file names as given
     const base = filesDirOf(run.id), cwd = mcpCwd(e.server);
     if (!base) return { args, moved };
     const out = { ...args };
