@@ -555,11 +555,11 @@ function render() {
     const lf = local.get(m.id);
     if (lf || m.external) { // which loadouts use this file; create one
       const uses = loList.filter((l) => l.model === m.id);
+      const mkRow = name.appendChild(el("div", "used-by"));
       const ub = name.appendChild(el("div", "used-by"));
       if (!uses.length) ub.textContent = "No loadout yet";
       else { ub.appendChild(document.createTextNode("Loadouts: ")); uses.forEach((l, k) => { if (k) ub.appendChild(document.createTextNode(", ")); const a = ub.appendChild(el("a", null, l.name + (m.via?.id === l.id ? " (loaded)" : ""))); a.onclick = () => { location.hash = "#loadouts"; loEditOpen(l.id); }; }); }
-      ub.appendChild(document.createTextNode(" · "));
-      const mk = ub.appendChild(el("a", "mk", "Create Loadout")); // a loadout for this model with default settings, opened in the editor
+      const mk = mkRow.appendChild(el("a", "mk", "Create Loadout")); // a loadout for this model with default settings, opened in the editor
       mk.title = "Create a loadout for this model with default settings";
       mk.onclick = async () => {
         if (mk.dataset.busy) return; mk.dataset.busy = "1";
