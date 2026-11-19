@@ -54,9 +54,15 @@
   .wsv-head h2 { flex:1; margin:0; font-size:22px; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; }
   .wsv-desc { color:#b8bdca; white-space:pre-wrap; margin-top:8px; line-height:1.5; }
   .wsv-desc.none { color:var(--muted); font-style:italic; }
-  .wsv-mem { display:inline-flex; align-items:center; gap:10px; margin-top:14px; padding:9px 14px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-size:13px; max-width:100%; }
-  .wsv-mem svg { flex:none; color:var(--accent); }
-  .wsv-mem small { color:var(--muted); white-space:nowrap; }
+  .wsv-cards { display:flex; flex-wrap:wrap; gap:16px; }
+  .wsv-cards > div { width:300px; max-width:100%; }
+  .wsv-mcard { cursor:default; }
+  .wsv-mcard:hover { border-color:var(--line); }
+  .mc-body { height:194px; background:#0b0d11; padding:12px 14px; display:flex; flex-direction:column; gap:7px; overflow:hidden; box-sizing:border-box; }
+  .mc-body .ent { font-size:12px; color:#b8bdca; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; flex:none; }
+  .mc-body .none, .fc-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; color:var(--muted); font-size:12px; line-height:1.45; padding:0 12px; }
+  .mc-body svg, .fc-empty svg { color:var(--muted); opacity:.7; }
+  .fc-empty { height:194px; box-sizing:border-box; background:#0b0d11; }
   .dlg .opt { display:flex; flex-direction:row; align-items:flex-start; gap:10px; cursor:pointer; color:var(--text); }
   .dlg .opt .txt { display:flex; flex-direction:column; gap:3px; flex:1; min-width:0; }
   .dlg .opt .txt small { color:var(--muted); font-size:11px; line-height:1.4; white-space:normal; }
@@ -1913,15 +1919,6 @@ async function renderWsView() {
   const ns = head.appendChild(el("button", "primary", "＋ New session")); ns.type = "button"; ns.onclick = () => newChat(id);
   v.appendChild(el("div", "wsv-desc" + (w.description.trim() ? "" : " none"), w.description.trim() || "No description. Edit to add one; it is also given to the model as instructions."));
   const sessions = chatList.filter((c) => (c.workspace || defaultWs) === id);
-  if (w.memory) { // workspace memory: a summary line, filled in with fresh numbers (memory changes after every reply)
-    const mc = v.appendChild(el("div", "wsv-mem"));
-    mc.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4a3 3 0 0 0-3 3v.2A3 3 0 0 0 4 10a3 3 0 0 0 1 2.2A3 3 0 0 0 6 17a3 3 0 0 0 3 3V4z"/><path d="M15 4a3 3 0 0 1 3 3v.2A3 3 0 0 1 20 10a3 3 0 0 1-1 2.2A3 3 0 0 1 18 17a3 3 0 0 1-3 3V4z"/><path d="M9 4h6M9 20h6"/></svg>';
-    mc.appendChild(el("span", null, `Memory across ${sessions.length} session${sessions.length === 1 ? "" : "s"}`));
-    const mu = mc.appendChild(el("small"));
-    const show = (st) => { mu.textContent = st && st.updated ? `· Updated ${ago(st.updated)}` : "· Nothing kept yet"; };
-    show(w.memoryStats);
-    fetch(`/api/workspaces/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => { if (j.workspace) { w.memoryStats = j.workspace.memoryStats; show(w.memoryStats); } }).catch(() => {});
-  }
   v.appendChild(el("h3", null, `Sessions · ${sessions.length}`));
   if (!sessions.length) v.appendChild(el("div", "wsv-empty", "No sessions yet."));
   else {
@@ -1937,30 +1934,64 @@ async function renderWsView() {
     }
     viewAll(l, "view:" + id, sessions.length, renderWsView);
   }
-  const fh = v.appendChild(el("h3"));
+  // Files and (when on) Memory: two cards of the same shape side by side.
+  const cards = v.appendChild(el("div", "wsv-cards"));
+  const fcol = cards.appendChild(el("div"));
+  const fh = fcol.appendChild(el("h3"));
   fh.appendChild(el("span", null, "Files"));
   const fcnt = fh.appendChild(el("span"));
-  const fbox = v.appendChild(el("div"));
+  const fbox = fcol.appendChild(el("div"));
   fbox.appendChild(el("div", "wsv-empty", "Loading…"));
+  if (w.memory) memoryCard(cards.appendChild(el("div")), w, sessions.length);
   const files = await wsFileList(id);
   if (wsView !== id || wsSub) return;
   fcnt.textContent = `· ${files.length}`;
   fbox.innerHTML = "";
-  if (!files.length) {
-    fh.appendChild(el("span", "sp"));
-    const up = fh.appendChild(el("button", null, "Upload")); up.type = "button"; up.onclick = () => pickUpload(id);
-    fbox.appendChild(el("div", "wsv-empty", "No files yet. Drop files here, or the model saves what it makes here."));
-    return;
-  }
   // One card: the four newest files and the count; it opens the files view. Dropping files anywhere here still uploads.
   const card = fbox.appendChild(el("a", "wsv-fcard")); card.href = "#w/" + encodeURIComponent(id) + "/files"; card.title = "Show all files";
   card.onclick = (e) => { e.preventDefault(); openWorkspace(id, "files"); };
   const newest = [...files].sort((a, b) => b.modified - a.modified);
-  card.appendChild(previewGrid(id, newest));
+  if (files.length) card.appendChild(previewGrid(id, newest));
+  else { // same card, empty: the hint inside, and Upload next to the heading while there's nothing
+    fh.appendChild(el("span", "sp"));
+    const up = fh.appendChild(el("button", null, "Upload")); up.type = "button"; up.onclick = () => pickUpload(id);
+    const e = card.appendChild(el("div", "fc-empty"));
+    e.innerHTML = ICON_FOLDER;
+    e.appendChild(el("span", null, "No files yet. Drop files here, or the model saves what it makes here."));
+  }
   const ft = card.appendChild(el("div", "fc-foot"));
   ft.appendChild(el("span", null, `${files.length} file${files.length === 1 ? "" : "s"}`));
-  ft.appendChild(el("small", null, `newest ${ago(newest[0].modified)}`));
+  ft.appendChild(el("small", null, files.length ? `newest ${ago(newest[0].modified)}` : ""));
   ft.appendChild(el("span", "go", "→"));
+}
+const ICON_FOLDER = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+const ICON_MEMORY = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4a3 3 0 0 0-3 3v.2A3 3 0 0 0 4 10a3 3 0 0 0 1 2.2A3 3 0 0 0 6 17a3 3 0 0 0 3 3V4z"/><path d="M15 4a3 3 0 0 1 3 3v.2A3 3 0 0 1 20 10a3 3 0 0 1-1 2.2A3 3 0 0 1 18 17a3 3 0 0 1-3 3V4z"/><path d="M9 4h6M9 20h6"/></svg>';
+// The memory card: the newest entries (read-only) and "Memory across N sessions · Updated X ago". Not clickable.
+function memoryCard(col, w, nSessions) {
+  const h = col.appendChild(el("h3"));
+  h.appendChild(el("span", null, "Memory"));
+  const cnt = h.appendChild(el("span"));
+  const card = col.appendChild(el("div", "wsv-fcard wsv-mcard"));
+  const body = card.appendChild(el("div", "mc-body"));
+  const ft = card.appendChild(el("div", "fc-foot"));
+  ft.appendChild(el("span", null, `Memory across ${nSessions} session${nSessions === 1 ? "" : "s"}`));
+  const upd = ft.appendChild(el("small"));
+  const show = (j) => {
+    const st = j?.stats || w.memoryStats || {};
+    cnt.textContent = st.entries ? `· ${st.entries}` : "";
+    upd.textContent = st.updated ? `· Updated ${ago(st.updated)}` : "";
+    body.innerHTML = "";
+    const lines = String(j?.text || "").split("\n").map((l) => l.match(/^- \[m(\d+)\]\s*(.*)$/)).filter(Boolean).sort((a, b) => b[1] - a[1]).map((m) => m[2]); // newest first
+    if (!lines.length) {
+      const n = body.appendChild(el("div", "none"));
+      n.innerHTML = ICON_MEMORY;
+      n.appendChild(el("span", null, j ? "Nothing kept yet. Sessions here keep what matters for later sessions by themselves." : "Loading…"));
+      return;
+    }
+    for (const t of lines.slice(0, 6)) body.appendChild(el("div", "ent", t));
+  };
+  show(null);
+  fetch(`/api/workspaces/${encodeURIComponent(w.id)}/memory`).then((r) => r.json()).then((j) => { if (wsView === w.id && !wsSub) show(j); }).catch(() => {});
 }
 const IMG_FILE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 // 2x2 preview of the first four files (newest first): pictures as thumbnails, other files as an icon and their name.

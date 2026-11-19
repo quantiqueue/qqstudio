@@ -13,6 +13,18 @@ const MAX_ENTRY = 200;
 const DEFAULT_CAP = 2000; // tokens (Settings: config.memoryTokens)
 const tokens = (s) => Math.ceil(String(s || "").length / 3.5);
 const fileOf = (ws) => path.join(DATA.workspaces, ws, "memory.md");
+const logOf = (ws) => path.join(DATA.workspaces, ws, "memory.log");
+// memory.log: one line per update turn, tidy-up or tool call (what the model answered, what was applied). Kept short.
+function log(ws, line) {
+  try {
+    const f = logOf(ws);
+    const masked = secrets.mask("\u0000memory-log", String(line)).text; // answers can quote a refused secret: never on disk
+    secrets.forget("\u0000memory-log");
+    fs.appendFileSync(f, `${new Date().toISOString()} ${masked.replace(/\r?\n/g, " ⏎ ")}\n`);
+    if (fs.statSync(f).size > 200 * 1024) { const lines = fs.readFileSync(f, "utf8").trim().split("\n"); fs.writeFileSync(f, lines.slice(-500).join("\n") + "\n"); }
+  } catch {}
+}
+function readLog(ws, n = 100) { try { return fs.readFileSync(logOf(ws), "utf8").trim().split("\n").slice(-n); } catch { return []; } }
 
 // Section names the model or a hand edit may use for the fixed ones.
 function sectionName(s) {
@@ -142,7 +154,8 @@ function parseOps(answer) {
 // The part of the instructions with the session's snapshot of the memory.
 function section(snap) {
   return "\n\nWorkspace memory: notes kept automatically from earlier sessions in this workspace (ids in brackets). Use them without mentioning them. " +
-    "They can be out of date; what the user says in this session wins.\n" +
+    "They can be out of date; what the user says in this session wins. When the user refers to earlier work, read_session reads the session it was done in " +
+    "(entries name it; with no name it lists the recent sessions).\n" +
     (String(snap || "").trim() || "(nothing yet)");
 }
 
@@ -158,13 +171,15 @@ const SPEC = (cap) => ({ type: "function", function: { name: "memory",
     text: { type: "string", description: "add / replace: the entry" },
   }, required: ["action"] } } });
 
-const UPDATE_PROMPT = (mem, used, cap) =>
+const UPDATE_PROMPT = (mem, used, cap, here) =>
   "[Memory update. This message is from qqstudio, not the user, and the user doesn't see your answer.]\n" +
   "This workspace keeps a memory that later sessions here get in their instructions. It is now:\n<memory>\n" + (mem || "(empty)") + "\n</memory>\n" +
   `(${used} of ${cap} tokens${used > cap * 0.8 ? "; nearly full: merge or remove before adding" : ""})\n\n` +
   "From this session, mainly the newest exchange, keep what a later session would need: the user's preferences and ways of working, lasting facts about the project " +
-  "(names, paths, setup), decisions and why, and open threads to pick up. Keep what the user said, asked for or decided; not your own suggestions or drafts " +
-  "unless the user accepted them. Skip task progress, one-off details, guesses, and what memory already says. " +
+  "(names, paths, setup), decisions and why, and work the user may come back to. For work, say what it is, where it lives (a file path, or this session: " +
+  `${here}) and its state, e.g. "Wrote a 1-page essay on dogs in session ${here}; not saved to a file". ` +
+  "Keep what the user said, asked for, decided or accepted; not your own suggestions or offers that the user didn't take up. " +
+  "Skip small talk, step-by-step progress, guesses, and what memory already says. " +
   "If an entry is now wrong or out of date, replace or remove it instead of adding another. Never save secrets.\n\n" +
   `Answer only with lines like these (each entry at most ${MAX_ENTRY} characters and understandable without this session), or with NONE:\n` +
   `ADD <${SECTIONS.join("|")}>: <entry>\nREPLACE <id>: <entry>\nREMOVE <id>`;
@@ -175,4 +190,4 @@ const TIDY_PROMPT = (mem, used, cap) =>
   "remove ones that are duplicated or outdated, and shorten long ones. Aim for about two thirds of the size.\n\n<memory>\n" + mem + "\n</memory>\n\n" +
   `Answer only with lines like these (each entry at most ${MAX_ENTRY} characters):\nREPLACE <id>: <entry>\nREMOVE <id>\nADD <${SECTIONS.join("|")}>: <entry>`;
 
-module.exports = { SECTIONS, MAX_ENTRY, DEFAULT_CAP, tokens, fileOf, read, text, stats, apply, parseOps, section, SPEC, UPDATE_PROMPT, TIDY_PROMPT };
+module.exports = { log, readLog, SECTIONS, MAX_ENTRY, DEFAULT_CAP, tokens, fileOf, read, text, stats, apply, parseOps, section, SPEC, UPDATE_PROMPT, TIDY_PROMPT };

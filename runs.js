@@ -58,7 +58,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, memoryWs = () => null, externalEngine = () => false }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -230,8 +230,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const msgs = await modelMessages(run);
     if (!msgs.some((m) => m.role === "assistant")) return;
     const cap = memCap(), cur = memory.text(run.memWs), t0 = Date.now();
+    let title = ""; try { title = (await readChat(run.id)).title || ""; } catch {}
+    const here = `"${title.slice(0, 60) || "Untitled"}" (${run.id})`;
     const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 2000,
-      messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap) }] };
+      messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap, here) }] };
     if (run.tools.length) body.tools = run.tools; // the same tool list as the session's requests (it's part of the prompt)
     const slot = slotOf.get(run.id);
     if (slot !== undefined) body.id_slot = slot;
@@ -243,9 +245,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     // Changes as text lines, or (some models answer with the tool they have) as memory tool calls.
     const ops = memory.parseOps(out.text);
     for (const c of out.calls) if (/(^|__)memory$/.test(c.name)) try { const a = JSON.parse(c.arguments || "{}"); ops.push({ op: a.action || a.op, section: a.section, id: a.id, text: a.text }); } catch {}
-    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${((Date.now() - t0) / 1000).toFixed(1)}s)`); return; }
+    const secs = ((Date.now() - t0) / 1000).toFixed(1), said = (out.text.trim() || out.calls.map((c) => `${c.name} ${c.arguments}`).join(" ")).slice(0, 600);
+    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${secs}s)`); memory.log(run.memWs, `update ${run.id} ${secs}s · nothing kept · answer: ${said || "(empty)"}`); return; }
     const r = await memory.apply(run.memWs, ops, { cap });
-    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · ${r.tokens}/${cap} tokens (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · ${r.tokens}/${cap} tokens (${secs}s)`);
+    memory.log(run.memWs, `update ${run.id} ${secs}s · ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · answer: ${said}`);
   }
   // Past 80% of the cap: a request with only the memory merges and removes entries. A result that throws away most of
   // the memory is not applied.
@@ -263,9 +267,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const ops = memory.parseOps(out.text);
     if (!ops.length) return;
     const dry = await memory.apply(run.memWs, ops, { cap, dry: true });
-    if (dry.tokens < used * 0.3) { console.log(`[memory] ${run.id} tidy-up rejected: it would keep only ${dry.tokens} of ${used} tokens`); return; }
+    if (dry.tokens < used * 0.3) { console.log(`[memory] ${run.id} tidy-up rejected: it would keep only ${dry.tokens} of ${used} tokens`); memory.log(run.memWs, `tidy ${run.id} rejected: would keep ${dry.tokens} of ${used} tokens`); return; }
     const r = await memory.apply(run.memWs, ops, { cap });
     console.log(`[memory] ${run.id} tidied: ${used} -> ${r.tokens}/${cap} tokens (${r.done.length} changes)`);
+    memory.log(run.memWs, `tidy ${run.id} ${used} -> ${r.tokens} tokens · ${r.done.join(", ")}`);
   }
   // Right after a reply: the update, then a tidy-up if it's getting full. In the background; a new request cancels it.
   function afterReply(run) {
@@ -275,7 +280,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     memJobs.set(run.id, ctl);
     (async () => {
       try { await memoryPass(run, ctl.signal); if (!ctl.signal.aborted) await memoryTidy(run, ctl.signal); }
-      catch (e) { if (!ctl.signal.aborted) console.error(`[memory] ${run.id}: ${e.message}`); else console.log(`[memory] ${run.id} update gave way to a request`); }
+      catch (e) {
+        if (!ctl.signal.aborted) { console.error(`[memory] ${run.id}: ${e.message}`); memory.log(run.memWs, `update ${run.id} failed: ${e.message}`); }
+        else { console.log(`[memory] ${run.id} update gave way to a request`); memory.log(run.memWs, `update ${run.id} gave way to a request`); }
+      }
       finally { if (memJobs.get(run.id) === ctl) memJobs.delete(run.id); }
     })();
   }
@@ -285,8 +293,37 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (!["add", "replace", "remove"].includes(action)) return { status: "bad arguments", text: 'ERROR: memory needs action: "add" (section, text), "replace" (id, text) or "remove" (id).' };
     const r = await memory.apply(run.memWs, [{ op: action, section: args.section, id: args.id, text: args.text }], { cap: memCap() });
     console.log(`[memory] ${run.id} tool: ${r.done.join(", ") || "nothing"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}`);
+    memory.log(run.memWs, `tool ${run.id} ${action} · ${r.done.join(", ") || "nothing"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}`);
     if (!r.done.length) return { status: "error", text: `ERROR: not saved: ${r.refused.join("; ")}.` };
     return { status: "done", text: `Memory: ${r.done.join(", ")} (${r.tokens} of ${r.cap} tokens). Later sessions in this workspace get it.` };
+  }
+
+  // read_session: an earlier session of this workspace, as text (memory entries name the session work was done in).
+  const READ_SESSION_SPEC = { type: "function", function: { name: "read_session",
+    description: "Read an earlier session (conversation) in this workspace, to continue work done there. Give its id or title; with neither, lists the recent sessions.",
+    parameters: { type: "object", properties: { session: { type: "string", description: "The session's id (e.g. from workspace memory) or title" } } } } };
+  async function readSession(run, args) {
+    const want = String(args.session ?? args.id ?? args.title ?? "").trim().replace(/^["'(]+|["')]+$/g, "");
+    const all = (await workspaceSessions(run.memWs)).filter((c) => c && c.id !== run.id && !c.parent).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    const line = (c) => `- "${c.title || "Untitled"}" (${c.id}), ${new Date(c.updated || c.created || 0).toISOString().slice(0, 16).replace("T", " ")}`;
+    const list = () => all.slice(0, 15).map(line).join("\n") || "(none)";
+    if (!want) return { status: "done", text: `Recent sessions in this workspace, newest first:\n${list()}` };
+    const k = want.toLowerCase();
+    const c = all.find((x) => x.id === want) || all.find((x) => (x.title || "").toLowerCase() === k) || all.find((x) => (x.title || "").toLowerCase().includes(k)) ||
+      all.find((x) => k.includes(x.id));
+    if (!c) return { status: "error", text: `ERROR: no session "${want}" in this workspace. Recent sessions:\n${list()}` };
+    const cut = (t, n) => (t.length > n ? t.slice(0, n) + ` …[${t.length - n} more characters]` : t);
+    const text = (m) => (typeof m.content === "string" ? m.content : (m.content || []).filter((p) => p.type === "text").map((p) => p.text).join(" "));
+    let out = (c.messages || []).filter((m) => !m._partial && !m._hidden).map((m) => {
+      if (m._summary) return `[Summary of an earlier part]\n${text(m)}`;
+      if (m.role === "user") return `User: ${text(m)}`;
+      if (m.role === "tool") return `Tool result: ${cut(text(m), 400)}`;
+      const calls = (m.tool_calls || []).map((tc) => `Tool call: ${tc.function.name}(${cut(tc.function.arguments || "", 200)})`).join("\n");
+      return [text(m) && `Assistant: ${text(m)}`, calls].filter(Boolean).join("\n");
+    }).filter(Boolean).join("\n\n");
+    const MAX = 24000;
+    if (out.length > MAX) out = `…[the first ${out.length - MAX} characters are left out]\n\n` + out.slice(out.length - MAX);
+    return { status: "done", text: `Session "${c.title || "Untitled"}" (${c.id}):\n\n${out}` };
   }
 
   // ---------- compaction ----------
@@ -923,6 +960,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       return { status: "error", text: g ? `ERROR: ${name} is in the "${g.name}" tool group, which isn't on yet. Call enable_tools {"name": "${g.name}"} first, then call it.` : `ERROR: the tool "${name}" is not available in this chat.` };
     }
     if (name === "memory" && run.memWs) return memoryTool(run, args);
+    if (name === "read_session" && run.memWs) return readSession(run, args);
     if (!isEnabled(name)) return { status: "error", text: `ERROR: the tool "${name}" is disabled in Settings > Tools.` };
     if (name === "ask_user") return askUser(run, tc, args);
     if (name === "todo") return todoTool(run, args);
@@ -1189,7 +1227,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     // snapshot through their instructions (built from the main session's) and no tool: they don't write to memory.
     const memWs = opts.parentRun ? null : memoryWs(id);
     const memSnap = memWs ? (typeof chat.memory === "string" ? chat.memory : memory.text(memWs)) : null;
-    if (memWs) tools.push(memory.SPEC(memCap()));
+    if (memWs) tools.push(memory.SPEC(memCap()), READ_SESSION_SPEC);
     const pageSystem = String(body.system || "");
     const budget = body.think?.budget;
     const run = {

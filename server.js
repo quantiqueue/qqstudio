@@ -368,7 +368,8 @@ function updateChat(file, fn) {
 }
 const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server),
-  memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL });
+  memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
+  workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
 // A sub-agent's session (runs.js run_agent): in its main session's workspace, marked with parent so the sidebar hides it.
 async function newSubSession(parentId, data) {
   const id = parentId.slice(0, 30) + "s" + (Date.now().toString(36) + Math.random().toString(36).slice(2, 5)).slice(-7);
@@ -536,7 +537,7 @@ async function handleWorkspaces(req, res) {
     // ?dir=<folder in the files folder>: open / upload into that folder (the files view's current folder)
     const subDir = u.searchParams.get("dir") ? ws.filePath(id, u.searchParams.get("dir")) : ws.filesDir(id);
     if (!subDir) return sendJson(res, 400, { error: "Bad folder" });
-    if (sub === "memory" && req.method === "GET") return sendJson(res, 200, { on: ws.memoryOn(id), text: require("./memory").text(id), stats: require("./memory").stats(id) }); // workspace memory (memory.js)
+    if (sub === "memory" && req.method === "GET") { const M = require("./memory"); return sendJson(res, 200, { on: ws.memoryOn(id), text: M.text(id), stats: M.stats(id), ...(u.searchParams.has("log") ? { log: M.readLog(id) } : {}) }); } // workspace memory (memory.js); ?log adds memory.log
     if (sub === "open" && req.method === "POST") { openFolder(fs.existsSync(subDir) ? subDir : ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
     if (sub !== "files") return sendJson(res, 404, { error: "Not found" });
     if (!rest) {
