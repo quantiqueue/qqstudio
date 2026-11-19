@@ -194,7 +194,7 @@
   .agent-chip .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; animation:runpulse 1.4s ease-in-out infinite; }
   .agent-chip .dot.warn { background:#e3b04b; }
   .agent-chip > button:not(.ac-main) { font-size:12px; padding:3px 10px; }
-  .agent-chip.done .ac-t, .agent-chip.stopped .ac-t, .agent-chip.ended .ac-t, .agent-chip.halted .ac-t { color:var(--muted); }
+  .agent-chip.pending .ac-t, .agent-chip.done .ac-t, .agent-chip.stopped .ac-t, .agent-chip.ended .ac-t, .agent-chip.halted .ac-t { color:var(--muted); }
   details.agent-report > summary { list-style:none; cursor:pointer; color:var(--muted); font-size:13px; display:flex; align-items:center; gap:8px; padding:0 14px; }
   details.agent-report > summary::-webkit-details-marker { display:none; }
   details.agent-report > summary .car { font-size:10px; width:10px; transition:transform .15s; } details.agent-report[open] > summary .car { transform:rotate(90deg); }
@@ -357,9 +357,9 @@
   .mm-row .ic { font-size:15px; line-height:1.2; }
   .mm-row small { display:block; color:var(--muted); margin-top:2px; line-height:1.35; }
   /* flat controls: no border or fill until hovered */
-  .toolbar #plus, .toolbar #model, .toolbar #effortBtn, .toolbar #modeBtn { background:transparent; border-color:transparent; color:var(--muted); transition:background .12s, color .12s; }
-  .toolbar #plus:hover, .toolbar #model:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover,
-  .toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #effortBtn.open, .toolbar #model:focus-visible { background:#252a35; color:var(--text); outline:none; }
+  .toolbar #plus, .toolbar #modelBtn, .toolbar #effortBtn, .toolbar #modeBtn { background:transparent; border-color:transparent; color:var(--muted); transition:background .12s, color .12s; }
+  .toolbar #plus:hover, .toolbar #modelBtn:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover,
+  .toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #effortBtn.open, .toolbar #modelBtn.open, .toolbar #modelBtn:focus-visible { background:#252a35; color:var(--text); outline:none; }
   .toolbar #modeBtn { font-size:13px; padding:0 10px; }
   .toolbar #modeBtn.auto { color:#f0c674; }
   .toolbar select option { background:var(--panel); color:var(--text); }
@@ -372,6 +372,16 @@
   .em-row { display:block; width:100%; padding:6px 14px; border:none; border-radius:0; background:none; color:var(--text); text-align:left; font-size:13px; }
   .em-row:hover { background:#1b1f27; } .em-row.on { background:#1f2a3d; } .em-row.on::after { content:" ✓"; color:var(--accent); }
   .em-sep { height:1px; background:var(--line); margin:6px 0; }
+  /* loadout picker: name, then engine and what it can do; a dot for the one loaded */
+  .model-menu { width:320px; max-width:calc(100vw - 40px); }
+  .lm-row { display:flex; align-items:flex-start; gap:9px; width:100%; padding:7px 14px; border:none; border-radius:0; background:none; color:var(--text); text-align:left; font-size:13px; }
+  .lm-row:hover, .lm-row:focus-visible { background:#1b1f27; outline:none; } .lm-row.on { background:#1f2a3d; }
+  .lm-row .d { width:7px; height:7px; border-radius:50%; flex:none; margin-top:5px; background:transparent; }
+  .lm-row .d.loaded { background:#4fc98a; } .lm-row .d.loading { background:#e3b04b; }
+  .lm-row .t { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .lm-row.on .nm::after { content:" ✓"; color:var(--accent); }
+  .lm-row small { display:block; color:var(--muted); margin-top:2px; line-height:1.35; }
+  .lm-row small .loaded { color:#4fc98a; } .lm-row small .loading { color:#e3b04b; }
   /* one height for every control in the composer toolbar */
   .toolbar { --h:30px; }
   .toolbar select, .toolbar button.icon, .toolbar .seg, .toolbar .toolslink { height:var(--h); box-sizing:border-box; line-height:1; }
@@ -385,7 +395,9 @@
   form .inner { container-type:inline-size; }
   .toolbar { flex-wrap:nowrap; min-width:0; }
   .toolbar > * { flex:none; white-space:nowrap; }
-  .toolbar select#model { flex:0 1 280px; min-width:120px; text-overflow:ellipsis; }
+  .toolbar .model-wrap { flex:0 1 280px; min-width:120px; display:flex; }
+  .toolbar .model-btn { width:100%; justify-content:flex-start; font-size:13px; }
+  .model-btn .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .toolbar .chips { flex:1 1 0; min-width:0; }
   .toolbar .ctx { margin-left:auto; }
   @container (max-width: 520px) { .toolbar .ctx { display:none; } }
@@ -425,7 +437,7 @@
     <div id="attachments" class="attachments" hidden></div>
     <div class="compose">
       <div class="plus-wrap in-compose">
-        <button type="button" id="plus" class="icon plus" title="Add files; choose MCP servers, skills and tools for this session" aria-label="Add files and tools">＋</button>
+        <button type="button" id="plus" class="icon plus" title="Add files; choose MCP servers, skills and tools for this session" aria-label="Add files and tools"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
         <div id="plusMenu" class="plus-menu" hidden></div>
       </div>
       <input type="file" id="filePick" multiple class="vh" tabindex="-1" aria-hidden="true">
@@ -433,7 +445,11 @@
       <button type="submit" class="primary" id="send" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>
     <div class="toolbar">
-      <select id="model" title="Loadout for this session (engine, model and settings)"><option value="">loading…</option></select>
+      <select id="model" class="vh" tabindex="-1" aria-hidden="true"><option value="">loading…</option></select>
+      <div class="plus-wrap model-wrap">
+        <button type="button" id="modelBtn" class="icon model-btn" aria-haspopup="listbox" aria-expanded="false"><span class="lbl">loading…</span></button>
+        <div id="modelMenu" class="plus-menu model-menu" role="listbox" aria-label="Loadout" hidden></div>
+      </div>
       <div class="plus-wrap">
         <button type="button" id="effortBtn" class="icon effort-btn" title="Effort and thinking for this session"></button>
         <div id="effortMenu" class="plus-menu effort-menu" hidden></div>
@@ -698,7 +714,7 @@ function setThink(field, v) {
 }
 function toggleEffort(force) {
   const menu = $("effortMenu"), open = force ?? menu.hidden;
-  if (open) { togglePlus(false); toggleMode(false); }
+  if (open) { togglePlus(false); toggleMode(false); toggleModelMenu(false); }
   menu.hidden = !open;
   $("effortBtn").classList.toggle("open", open);
   renderEffortMenu();
@@ -737,7 +753,7 @@ function renderModeMenu() {
 function toggleMode(force) {
   const menu = $("modeMenu");
   const open = force ?? menu.hidden;
-  if (open) { togglePlus(false); toggleEffort(false); }
+  if (open) { togglePlus(false); toggleEffort(false); toggleModelMenu(false); }
   menu.hidden = !open;
   $("modeBtn").classList.toggle("open", open);
   renderModeMenu();
@@ -760,10 +776,10 @@ async function loadModels() {
     if (!r.ok) throw new Error(j.error || r.statusText);
     const prev = chat.model || modelSel.value;
     modelSel.innerHTML = "";
-    modelVision = {};
+    modelVision = {}; modelMeta = {};
     // Loadouts by name. One runs at a time; the running one says so. The engine is only in the tooltip.
     for (const m of j.models) {
-      modelVision[m.id] = !!m.vision;
+      modelVision[m.id] = !!m.vision; modelMeta[m.id] = m;
       const name = m.name || m.id;
       const o = modelSel.appendChild(el("option", null, name + (m.status === "loaded" ? "  · loaded" : m.status === "loading" ? "  · loading" : "")));
       o.title = [m.engineName && `Engine: ${m.engineName}`, m.vision && "Can see images", m.id !== name && `id: ${m.id}`].filter(Boolean).join("\n");
@@ -778,8 +794,55 @@ async function loadModels() {
     modelSel.innerHTML = "<option value=''>(unavailable)</option>";
     status.textContent = e.message;
   }
+  renderModelBtn();
 }
-let modelVision = {};
+let modelVision = {}, modelMeta = {};
+// The loadout picker: a button and a menu like Effort and Tool approval. The hidden <select> keeps the value.
+function renderModelBtn() {
+  const o = modelSel.selectedOptions[0], b = $("modelBtn");
+  b.querySelector(".lbl").textContent = (o?.textContent || "No loadout").replace(/\s+·/, " ·");
+  b.title = (o?.title ? o.title + "\n" : "") + "Loadout for this session (engine, model and settings)";
+  b.disabled = modelSel.disabled;
+  renderModelMenu();
+}
+function renderModelMenu() {
+  const menu = $("modelMenu");
+  if (menu.hidden) return;
+  menu.innerHTML = "";
+  menu.appendChild(el("h4", null, "Loadout"));
+  const opts = [...modelSel.options].filter((o) => o.value);
+  if (!opts.length) { const e = menu.appendChild(el("div", "pm-empty")); e.innerHTML = 'No loadouts yet. <a href="/settings#loadouts">Create one in Settings</a>'; return; }
+  const named = {}; for (const o of opts) { const m = modelMeta[o.value]; if (m) named[m.name || m.id] = (named[m.name || m.id] || 0) + 1; }
+  for (const o of opts) {
+    const m = modelMeta[o.value], on = o.value === modelSel.value, st = m?.status === "loaded" || m?.status === "loading" ? m.status : "";
+    const r = menu.appendChild(el("button", "lm-row" + (on ? " on" : "")));
+    r.type = "button"; r.setAttribute("role", "option"); r.setAttribute("aria-selected", String(on)); r.title = o.title || "";
+    r.appendChild(el("span", "d " + st));
+    const t = r.appendChild(el("span", "t"));
+    t.appendChild(el("span", "nm", m ? m.name || m.id : o.textContent));
+    const sub = t.appendChild(el("small", null, m ? [m.engineName || m.engine, m.vision && "sees images", named[m.name || m.id] > 1 && m.id !== (m.name || m.id) && `id ${m.id}`].filter(Boolean).join(" · ") : "no longer set up"));
+    if (st) sub.appendChild(el("span", st, " · " + st));
+    r.onclick = (e) => { e.stopPropagation(); toggleModelMenu(false); $("modelBtn").focus(); if (!on) { modelSel.value = o.value; modelSel.onchange(); } };
+  }
+}
+function toggleModelMenu(force) {
+  const menu = $("modelMenu"), b = $("modelBtn"), open = (force ?? menu.hidden) && !modelSel.disabled;
+  if (open) { togglePlus(false); toggleMode(false); toggleEffort(false); }
+  menu.hidden = !open;
+  b.classList.toggle("open", open); b.setAttribute("aria-expanded", String(open));
+  renderModelMenu();
+  if (open) (menu.querySelector(".lm-row.on") || menu.querySelector(".lm-row"))?.focus();
+}
+$("modelBtn").onclick = (e) => { e.stopPropagation(); toggleModelMenu(); };
+$("modelBtn").addEventListener("keydown", (e) => { if ((e.key === "ArrowDown" || e.key === "ArrowUp") && $("modelMenu").hidden) { e.preventDefault(); toggleModelMenu(true); } });
+$("modelMenu").onclick = (e) => e.stopPropagation();
+$("modelMenu").addEventListener("keydown", (e) => { // arrows move between loadouts; Enter picks (they're buttons); Esc closes (below)
+  const rows = [...$("modelMenu").querySelectorAll(".lm-row")], k = e.key;
+  if (!rows.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(k)) return;
+  e.preventDefault();
+  const i = rows.indexOf(document.activeElement), n = rows.length;
+  rows[k === "Home" ? 0 : k === "End" ? n - 1 : k === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n].focus();
+});
 
 // ---------- pasted / dropped images ----------
 let attachments = []; // [{src, busy, preview}]
@@ -1495,6 +1558,7 @@ function agentChip(info) {
 }
 function chipStats(c) {
   const i = c.info, live = chipLive(i), ms = live ? (i.ms || 0) + (performance.now() - c.at) : i.ms;
+  if (i.status === "pending") return "pending";
   return [i.status === "approval" && i.tc ? shownCall(i.tc).name : null, live ? null : i.status === "stopped" ? "stopped" : i.status === "halted" ? "stopped early" : i.status === "ended" ? "ended" : "done",
     i.tokens != null && ms != null ? `${fmtTok(i.tokens)} in ${fmtDur(ms)}` : null].filter(Boolean).join(" · ");
 }
@@ -1504,7 +1568,7 @@ function drawChip(c) {
   e.innerHTML = "";
   const main = e.appendChild(el("button", "ac-main")); main.type = "button"; main.title = "Open the sub-agent's session (read-only)";
   if (live) main.appendChild(el("span", "dot" + (i.status === "approval" ? " warn" : "")));
-  main.appendChild(el("span", "ac-t", (i.status === "approval" ? "Sub-agent needs approval: " : live ? "Running sub-agent: " : "Sub-agent: ") + (i.title || "Sub-agent")));
+  main.appendChild(el("span", "ac-t", (i.status === "approval" ? "Sub-agent needs approval: " : live ? "Running sub-agent: " : i.status === "pending" ? "Pending sub-agent: " : "Sub-agent: ") + (i.title || "Sub-agent")));
   c.sEl = main.appendChild(el("span", "ac-s", chipStats(c)));
   main.appendChild(el("span", "ac-go", "→"));
   main.onclick = () => loadChat(i.id);
@@ -1517,6 +1581,7 @@ function drawChip(c) {
     no.onclick = () => { post("approve", { id: i.tc.id, approved: false }); agentChip({ id: i.id, status: "running", tc: null }); };
   }
   if (live) { const st = e.appendChild(el("button", null, "Stop")); st.type = "button"; st.title = "Stop this sub-agent (its report so far comes back)"; st.onclick = () => post("stop"); }
+  else if (i.status === "pending") { const st = e.appendChild(el("button", null, "Cancel")); st.type = "button"; st.title = "Cancel this sub-agent before it starts"; st.onclick = () => post("stop"); }
 }
 function reportCard(m) {
   const r = m._agentReport || {}, d = el("details", "agent-report");
@@ -1695,6 +1760,7 @@ async function loadChat(id) {
   renderThink();
   renderToolbarState();
   if (chat.model && [...modelSel.options].some((o) => o.value === chat.model)) modelSel.value = chat.model;
+  renderModelBtn();
   renderChat();
   renderList();
   input.focus();
@@ -1979,7 +2045,7 @@ function setBusy(busy) {
   window.harnessBusy = busy;
   if (!busy && window.harnessReloadPending) return location.reload(); // hot reload deferred during a reply
   updateSendState();
-  modelSel.disabled = busy;
+  modelSel.disabled = busy; if (busy) toggleModelMenu(false); renderModelBtn();
   renderTodo(); // the task underway spins only while a reply runs
 }
 
@@ -2109,7 +2175,7 @@ function onRunEvent(ev, id) {
     case "tool_result": {
       const m = ev.msg;
       chat.messages.push(m);
-      if (m._agent) { agentChip({ ...m._agent, status: "running", tokens: 0, ms: 0 }); follow(); break; } // run_agent: a chip, not a tool card
+      if (m._agent) { agentChip({ ...m._agent, status: m._agent.status || "running", tokens: 0, ms: 0 }); follow(); break; } // run_agent: a chip, not a tool card
       if (m._answers || qCards.has(m.tool_call_id)) { // ask_user: the card already shows the answers (or cancelled)
         if (m._answers) answeredQuestion(m.tool_call_id, m._answers);
         else { const q = qCards.get(m.tool_call_id); q.card.className = "qcard done"; q.card.innerHTML = ""; q.card.appendChild(el("div", "qh", "Questions · " + (m._status || "cancelled"))); if (pendingQuestion?.id === m.tool_call_id) pendingQuestion = null; }
@@ -2272,7 +2338,7 @@ function patchChat(fields) {
 function togglePlus(force) {
   const m = $("plusMenu");
   const open = force ?? m.hidden;
-  if (open) { toggleMode(false); toggleEffort(false); }
+  if (open) { toggleMode(false); toggleEffort(false); toggleModelMenu(false); }
   m.hidden = !open;
   $("plus").classList.toggle("open", open);
   if (open) { plusView = null; renderPlus(); loadTools().then(renderPlus); }
@@ -2358,8 +2424,8 @@ function renderPlus() {
 }
 $("plus").onclick = (e) => { e.stopPropagation(); togglePlus(); };
 $("plusMenu").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); if (!$("effortMenu").hidden) toggleEffort(false); });
-document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (!$("plusMenu").hidden) { if (plusView) { plusView = null; renderPlus(); } else togglePlus(false); } if (!$("modeMenu").hidden) toggleMode(false); if (!$("effortMenu").hidden) toggleEffort(false); });
+document.addEventListener("click", () => { if (!$("plusMenu").hidden) togglePlus(false); if (!$("modeMenu").hidden) toggleMode(false); if (!$("effortMenu").hidden) toggleEffort(false); if (!$("modelMenu").hidden) toggleModelMenu(false); });
+document.addEventListener("keydown", (e) => { if (e.key !== "Escape") return; if (!$("plusMenu").hidden) { if (plusView) { plusView = null; renderPlus(); } else togglePlus(false); } if (!$("modeMenu").hidden) toggleMode(false); if (!$("effortMenu").hidden) toggleEffort(false); if (!$("modelMenu").hidden) { toggleModelMenu(false); $("modelBtn").focus(); } });
 
 // ---------- context meter ----------
 let lastUsage = null, liveUsage = null, ctxSize = {}, ctxTimer = null; // liveUsage: exact counts from the run in progress
@@ -2436,6 +2502,7 @@ window.addEventListener("hashchange", () => route());
 window.addEventListener("focus", () => loadModels()); // no reload button: refresh the model list when the window regains focus
 modelSel.onchange = () => {
   chat.model = modelSel.value;
+  renderModelBtn();
   updateCtx();
   renderAttachments(); // vision note depends on the model
   if (chat.id) fetch(`/api/chats/${chat.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: chat.model }) }).catch(() => {});

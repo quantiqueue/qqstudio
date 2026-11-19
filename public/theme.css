@@ -51,10 +51,10 @@ header { box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .04); }
 
 /* hover / selected states */
 button.mini:hover, .crumbs a:hover, .hdr-btn:hover, .compose #plus:hover, .compose #plus.open,
-.toolbar #plus:hover, .toolbar #model:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover,
-.toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #effortBtn.open, .toolbar #model:focus-visible,
-.wsv-item:hover, .pm-nav:hover, .pm-row:hover, .mm-row:hover, .em-row:hover, .repo-head:hover { background: var(--glass-hover); }
-.seg button.on, .mm-row.on, .em-row.on, aside.tabs a.active { background: var(--glass-on); }
+.toolbar #plus:hover, .toolbar #modelBtn:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover,
+.toolbar #plus.open, .toolbar #modeBtn.open, .toolbar #effortBtn.open, .toolbar #modelBtn.open, .toolbar #modelBtn:focus-visible,
+.wsv-item:hover, .pm-nav:hover, .pm-row:hover, .mm-row:hover, .em-row:hover, .lm-row:hover, .lm-row:focus-visible, .repo-head:hover { background: var(--glass-hover); }
+.seg button.on, .mm-row.on, .em-row.on, .lm-row.on, aside.tabs a.active { background: var(--glass-on); }
 .seg.sm button.on[data-v="on"] { background: rgba(74, 168, 255, .2); color: #9fd0ff; }
 .cat-head { background: rgba(255, 255, 255, .05); }
 .vis-opt { background: rgba(255, 255, 255, .03); }

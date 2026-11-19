@@ -434,9 +434,9 @@
     <div class="lead">Sub-agents take a separate piece of work from a reply and do it in the background, in their own session with their own context, then report back. They use the session's loadout, effort, thinking, approval mode and tools, but can't ask you questions or start sub-agents of their own. The model gets them through the Agents tool group (＋ menu in a session).</div>
     <div class="srv">
       <div class="field"><label for="agMax">Max active</label><input type="text" id="agMax" inputmode="numeric" style="max-width:70px"><span class="muted">sub-agents at a time, per reply</span></div>
-      <div class="muted" style="margin:-4px 0 10px 108px">A request beyond this is refused, so the model waits for a report first. Also capped at the engine's parallel slots minus one. With one GPU, sub-agents running side by side share its speed; while the main reply waits, a single sub-agent runs at full speed.</div>
+      <div class="muted" style="margin:-4px 0 10px 108px">More can be started at once: the extra ones wait as pending and start as others finish. The model is told this number. Also capped at the engine's parallel slots minus one. With one GPU, sub-agents running side by side share its speed; while the main reply waits, a single sub-agent runs at full speed.</div>
       <div class="field"><label for="agWords">Report length</label><input type="text" id="agWords" inputmode="numeric" style="max-width:70px"><span class="muted">words at most</span></div>
-      <div class="muted" style="margin:-4px 0 10px 108px">The sub-agent's final report, which goes back into the main conversation; longer reports are shortened.</div>
+      <div class="muted" style="margin:-4px 0 10px 108px">The sub-agent's final report, which goes back into the main conversation. Both the sub-agent and the model starting it are told this limit; longer reports are shortened.</div>
       <div class="field" style="align-items:flex-start"><label for="agInstr">Instructions</label><textarea id="agInstr" rows="4" style="flex:1; min-height:80px" placeholder="optional: extra instructions for every sub-agent"></textarea></div>
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="agSave" class="load">Save</button><span class="muted" id="agOut"></span></div>
     </div>

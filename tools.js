@@ -329,12 +329,12 @@ const schemas = [
     parameters: { type: "object", properties: {
       from: { type: "string", description: "Current absolute path" },
       to: { type: "string", description: "New absolute path, or destination folder" } }, required: ["from", "to"] } },
-  { name: "web_search", approval: false,
+  { name: "web_search", approval: true,
     description: "Search the web (DuckDuckGo). Returns titles, URLs and snippets. Use fetch_url to read a result.",
     parameters: { type: "object", properties: {
       query: { type: "string", description: "Search query" },
       max_results: { type: "integer", description: "Number of results (default 8, max 20)" } }, required: ["query"] } },
-  { name: "image_search", approval: false,
+  { name: "image_search", approval: true,
     description: "Search the web for images. The results are shown to the user as thumbnails automatically.",
     parameters: { type: "object", properties: {
       query: { type: "string", description: "What to find images of" },
@@ -344,7 +344,7 @@ const schemas = [
     parameters: { type: "object", properties: {
       source: { type: "string", description: "Image URL (http/https) or absolute path to a local image file" },
       caption: { type: "string", description: "Optional caption" } }, required: ["source"] } },
-  { name: "fetch_url", approval: false,
+  { name: "fetch_url", approval: true,
     description: "Open a web page and return its readable text plus a numbered list of links on the page. For long pages, call again with offset to read further.",
     parameters: { type: "object", properties: {
       url: { type: "string", description: "Full http(s) URL" },

@@ -300,6 +300,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       // The loadout must be the one running: loading it (and unloading another) if needed, or waiting while another
       // loadout is mid-reply. Held until this request ends.
       release = await ensureEngine(model, (t, pct) => phase(t, pct ?? null), run.abort.signal);
+      await syncAgentSpec(run).catch(() => {}); // run_agent's description says how many run at once
       sent = true;
       const body = {
         model, messages: [{ role: "system", content: run.system }, ...(await modelMessages(run))],
@@ -500,17 +501,52 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   // by itself; while sub-agents work, a main reply that has nothing left to do waits (no model calls) instead of ending.
   const agentsCfg = () => { const a = getConfig().agents || {}; return { maxActive: Math.max(1, Number(a.maxActive) || 1), reportWords: Math.max(50, Number(a.reportWords) || 300), instructions: String(a.instructions || "") }; };
   const activeSubs = (run) => [...run.subs.values()].filter((s) => s.status === "running").length;
+  // Running or pending (waiting for a free place): the main reply waits for both.
+  const liveSubs = (run) => [...run.subs.values()].filter((s) => s.status === "running" || s.status === "pending").length;
+  // How many sub-agents run at once: Settings > Agents, and at most one fewer than the engine's slots (the main reply
+  // keeps one). Remembered per loadout, so the number in run_agent's description doesn't change from one message to the
+  // next while the engine isn't answering yet (the tool list is at the top of the prompt: prompt cache).
+  const agentMaxMemo = new Map(); // loadout id -> { maxActive, max }
+  async function agentMax(model) {
+    const cfg = agentsCfg(), slots = await nSlots(model).catch(() => null), memo = agentMaxMemo.get(model);
+    if (!slots && memo && memo.maxActive === cfg.maxActive) return memo.max;
+    const max = slots && slots > 1 ? Math.min(cfg.maxActive, slots - 1) : cfg.maxActive;
+    agentMaxMemo.set(model, { maxActive: cfg.maxActive, max });
+    return max;
+  }
+  const agentDesc = (base, max, words) => `${base} At most ${plural(max, "sub-agent")} run${max === 1 ? "s" : ""} at once. You can still start more in the same step: ` +
+    `the extra ones are pending and start by themselves, in order, as running ones finish. Each report is at most ${words} words (longer ones are cut): ask for what fits, and have it save longer results to a file.`;
+  // run_agent's description says the limit: in the tool list, in the Agents group (enable_tools) and in tool_info.
+  // Called before each model request (the engine is up then, so its slots are known); changes only with the setting.
+  async function syncAgentSpec(run) {
+    if (run.parentRun) return;
+    const base = run.agentBase || run.byName.get("run_agent");
+    if (!base) return;
+    run.agentBase = base;
+    const max = await agentMax(run.model), words = agentsCfg().reportWords, key = `${max}/${words}`;
+    if (run.agentKey === key) return;
+    run.agentKey = key;
+    const description = agentDesc(base.description, max, words);
+    const fix = (sp) => (sp?.function?.name === "run_agent" ? { ...sp, function: { ...sp.function, description } } : sp);
+    run.byName.set("run_agent", { ...base, description, spec: fix(base.spec) });
+    run.baseTools = run.baseTools.map(fix);
+    for (const g of run.deferred.values()) g.tools = g.tools.map(fix);
+    const t = run.lazy.get("run_agent");
+    if (t) run.lazy.set("run_agent", { ...t, description, spec: fix(t.spec) });
+    setTools(run);
+  }
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   function agentInfo(s) {
+    if (s.status === "pending" || !s.run) return { id: s.id, alias: s.alias, title: s.title, status: s.status, tokens: 0, ms: Date.now() - s.t0, tc: null };
     const r = s.run, live = s.status === "running", asking = live && r.tool?.status === "approval"; // (set just before the approval wait begins)
     return { id: s.id, alias: s.alias, title: s.title, status: live ? (asking ? "approval" : "running") : s.status,
       tokens: live ? r.genDone + (r.cur?.gen?.total || 0) : s.tokens, ms: (s.end || Date.now()) - s.t0, tc: asking ? r.tool.tc : null };
   }
   const subTokens = (run) => [...run.subs.values()].reduce((n, s) => n + (agentInfo(s).tokens || 0), 0); // its sub-agents' tokens, for the footer
-  const relay = (s) => { s.relayAt = Date.now(); if (runs.get(s.run.parentRun.id) === s.run.parentRun) emit(s.run.parentRun, { type: "agent", ...agentInfo(s) }); };
+  const relay = (s) => { s.relayAt = Date.now(); if (runs.get(s.parent.id) === s.parent) emit(s.parent, { type: "agent", ...agentInfo(s) }); }; // s.parent: s.run is null while it's pending or starting
   function onSubEvent(run, ev) { // the main session's chip follows the sub-agent: approvals right away, progress about once a second
     const s = run.parentRun.subs.get(run.id);
-    if (!s || s.status !== "running") return;
+    if (!s || s.status !== "running" || !s.run) return; // (events while start() hasn't returned yet)
     if (ev.type === "tool" || ev.type === "step" || ((ev.type === "delta" || ev.type === "assistant") && Date.now() - (s.relayAt || 0) > 1000)) relay(s);
   }
   function findSub(run, key) {
@@ -529,7 +565,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   }
   // While a sub-agent waits for the user's approval, the main reply pauses before its next step: otherwise models treat
   // the wait as "stuck" and redo the work themselves, or tell the sub-agent to skip approval.
-  const subAsking = (run) => [...run.subs.values()].some((s) => s.status === "running" && s.run.approval);
+  const subAsking = (run) => [...run.subs.values()].some((s) => s.status === "running" && s.run?.approval);
   async function waitForApproval(run) {
     if (!subAsking(run)) return;
     run.waitWhy = "approval";
@@ -540,7 +576,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   }
   async function idle(run) {
     emit(run, { type: "waiting", on: true });
-    await new Promise((resolve) => { run.wake = resolve; if (run.pending.length || !activeSubs(run) || run.stopped) resolve(); });
+    await new Promise((resolve) => { run.wake = resolve; if (run.pending.length || !liveSubs(run) || run.stopped) resolve(); });
     run.wake = null;
     emit(run, { type: "waiting", on: false });
     return !run.stopped && run.pending.length > 0;
@@ -588,13 +624,42 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return true;
   }
 
+  // Starts a pending sub-agent's run (status first, so two finishing at once don't start the same one).
+  async function launchSub(run, s) {
+    s.status = "running"; s.t0 = Date.now();
+    try { s.run = await start(s.body, { parentRun: run }); }
+    catch (e) { s.status = "halted"; s.reason = "it couldn't start: " + e.message; s.end = Date.now(); relay(s); console.error(`[run] ${run.id} sub-agent ${s.alias}: ${e.message}`); return; }
+    for (const text of s.notes) steer(s.run, { text: `[Message from the main assistant] ${text}` });
+    relay(s);
+    markTask(run, s.title, "in_progress");
+    console.log(`[run] ${run.id} started sub-agent ${s.alias} (${s.id}): ${s.title}`);
+  }
+  // A place freed up: start pending sub-agents, oldest first.
+  async function startNext(run) {
+    if (run.stopped || runs.get(run.id) !== run) return;
+    const max = await agentMax(run.model);
+    for (const s of [...run.subs.values()]) {
+      if (activeSubs(run) >= max || run.stopped) break;
+      if (s.status === "pending") await launchSub(run, s);
+    }
+  }
+  // A pending sub-agent that won't start (stop_agent, Stop, or the reply ended): a short report says so.
+  function cancelPending(run, s, why = "it was cancelled") {
+    if (s.status !== "pending") return;
+    s.status = "stopped"; s.end = Date.now();
+    markTask(run, s.title, "pending");
+    const meta = { id: s.id, alias: s.alias, title: s.title, status: "stopped", tokens: 0, ms: s.end - s.t0 };
+    run.pending.push({ id: "rep-" + s.id, report: meta, text: `[Sub-agent ${s.alias} "${s.title}" never started: ${why} while it was pending.]` });
+    relay(s);
+    if (run.wake) run.wake();
+  }
+  const pendingSub = (id) => { for (const r of runs.values()) { const s = r.subs.get(id); if (s?.status === "pending") return [r, s]; } return null; };
+
   async function agentTool(run, name, tc, args) {
     if (name === "run_agent") {
       const title = String(args.title || args.name || "").trim().slice(0, 60) || "Sub-agent", task = String(args.task || args.instructions || args.prompt || "").trim();
       if (!task) return { status: "bad arguments", text: "ERROR: run_agent needs task: the full instructions for the sub-agent (it doesn't see this conversation)." };
-      const cfg = agentsCfg(), slots = await nSlots(run.model).catch(() => null);
-      const max = slots && slots > 1 ? Math.min(cfg.maxActive, slots - 1) : cfg.maxActive, active = activeSubs(run);
-      if (active >= max) return { status: "error", text: `ERROR: only ${plural(max, "sub-agent")} can run at a time and ${active} ${active === 1 ? "is" : "are"} running. Their reports arrive here automatically; wait for them (end your turn), or stop one with stop_agent.` };
+      const cfg = agentsCfg(), max = await agentMax(run.model);
       if (!newSession) return { status: "error", text: "ERROR: sub-agents aren't available." };
       let parentChat = {}; try { parentChat = await readChat(run.id); } catch {}
       const id = await newSession(run.id, { title, model: run.model, mode: parentChat.mode || "manual", effort: parentChat.effort, thinkBudget: parentChat.thinkBudget, messages: [{ role: "user", content: task }] });
@@ -605,23 +670,39 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       const body = { chatId: id, model: run.model, system: run.baseSystem + note,
         tools: (run.body.tools || []).filter((t) => !NO_SUB.has(t?.function?.name)),
         deferred: (run.body.deferred || []).filter((g) => g.key !== "cat:Questions" && g.key !== "cat:Agents"), think: run.think };
-      const s = { id, alias: "a" + ++run.agentSeq, title, status: "running", t0: Date.now(), tokens: 0, run: null };
-      s.run = await start(body, { parentRun: run });
+      // Past the limit it's pending: its session exists (the chip opens it), and it starts when a running one finishes.
+      const s = { id, alias: "a" + ++run.agentSeq, title, status: "pending", t0: Date.now(), tokens: 0, run: null, parent: run, body, notes: [] };
       run.subs.set(id, s);
-      relay(s);
-      markTask(run, title, "in_progress");
-      console.log(`[run] ${run.id} started sub-agent ${s.alias} (${id}): ${title}`);
-      return { status: "done", agent: { id, alias: s.alias, title },
+      if (activeSubs(run) < max) await launchSub(run, s);
+      else { relay(s); console.log(`[run] ${run.id} sub-agent ${s.alias} (${id}) pending: ${title}`); }
+      if (s.status === "running") return { status: "done", agent: { id, alias: s.alias, title },
         text: `Started sub-agent ${s.alias} ("${title}"). This reply now waits until its report arrives here, then continues. Start any other sub-agents you need in this same step.` };
+      if (s.status !== "pending") return { status: "error", text: `ERROR: sub-agent ${s.alias} couldn't start: ${s.reason || "unknown error"}.` };
+      const line = [...run.subs.values()].filter((x) => x.status === "pending").indexOf(s) + 1;
+      return { status: "done", agent: { id, alias: s.alias, title, status: "pending" },
+        text: `Sub-agent ${s.alias} ("${title}") is pending: ${plural(max, "sub-agent")} run at once and ${activeSubs(run)} ${activeSubs(run) === 1 ? "is" : "are"} running; it's number ${line} in line. ` +
+          `It starts by itself when a place frees up, and its report arrives here. This reply waits for the reports. Start any other sub-agents you need in this same step.` };
     }
     const s = findSub(run, args.id ?? args.agent ?? args.name);
     if (!s) return { status: "error", text: `ERROR: no sub-agent "${args.id ?? ""}". Sub-agents in this reply: ${[...run.subs.values()].map((x) => `${x.alias} (${x.title}, ${x.status})`).join(", ") || "none"}.` };
+    if (s.status === "pending") {
+      if (name === "check_agent") return { status: "done", text: `${s.alias} "${s.title}" is pending: number ${[...run.subs.values()].filter((x) => x.status === "pending").indexOf(s) + 1} in line, waiting for a running sub-agent to finish. It starts by itself; end your turn to wait.` };
+      if (name === "message_agent") {
+        const text = String(args.text || args.message || "").trim();
+        if (!text) return { status: "bad arguments", text: "ERROR: message_agent needs text." };
+        s.notes.push(text);
+        return { status: "done", text: `${s.alias} is pending; it gets the message when it starts.` };
+      }
+      cancelPending(run, s, "stop_agent cancelled it");
+      return { status: "done", text: `Cancelled ${s.alias}; it hadn't started.` };
+    }
+    if (s.status === "running" && !s.run) return { status: "done", text: `${s.alias} "${s.title}" is starting. Its report arrives here by itself; end your turn to wait.` };
     if (name === "check_agent") {
       // A running sub-agent: wait (up to a minute) for it to finish or need the user, instead of answering at once. Small
       // models otherwise call check_agent in a tight loop, and every check is a model request that competes with the
       // sub-agent for the same model, slowing it down until the main assistant decides it's stuck.
       const t0 = Date.now(), tok0 = agentInfo(s).tokens;
-      while (s.status === "running" && !s.run.approval && !run.stopped && !run.pending.length && Date.now() - t0 < CHECK_WAIT) await sleep(500);
+      while (s.status === "running" && !s.run?.approval && !run.stopped && !run.pending.length && Date.now() - t0 < CHECK_WAIT) await sleep(500);
       const waited = Math.round((Date.now() - t0) / 1000);
       if (s.status !== "running") return { status: "done", text: `${s.alias} "${s.title}" has ${s.status === "done" ? "finished" : s.status === "halted" ? `stopped before finishing (${s.reason})` : "stopped"}; its report follows in this conversation.` };
       const i = agentInfo(s), last = [...s.run.messages].reverse().find((m) => m.role === "assistant" && m.content);
@@ -639,7 +720,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       return { status: "done", text: `Sent to ${s.alias}; it sees the message after its current step.` };
     }
     // stop_agent. Not while it waits for the user's approval: the user answers that (or stops it), not the main assistant.
-    if (s.run.approval) return { status: "error", text: `ERROR: ${s.alias} is waiting for the user to approve ${askedTool(s.run)}. Only the user can answer or stop it. Don't do its work yourself: end your turn to wait; its report arrives here by itself.` };
+    if (s.run?.approval) return { status: "error", text: `ERROR: ${s.alias} is waiting for the user to approve ${askedTool(s.run)}. Only the user can answer or stop it. Don't do its work yourself: end your turn to wait; its report arrives here by itself.` };
     stop(s.run);
     return { status: "done", text: `Stopping ${s.alias}; its report (what it had done so far) will arrive here.` };
   }
@@ -650,6 +731,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     // "halted": a guard (repeated calls, repetition) or an error ended it before it finished, so it wrote no real report.
     s.status = run.stopped ? "stopped" : run.endReason ? "halted" : "done"; s.tokens = run.genDone; s.end = Date.now();
     if (s.status === "halted") s.reason = run.endReason;
+    await startNext(parent).catch((e) => console.error(`[run] ${parent.id} next sub-agent: ${e.message}`)); // its place goes to the next pending one
     await markTask(parent, s.title, s.status === "done" ? "done" : "pending");
     const cfg = agentsCfg(), mine = run.messages.slice(run.startLen), last = [...mine].reverse().find((m) => m.role === "assistant" && m.content);
     let report = (last?.content || "").trim();
@@ -854,8 +936,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         if (r.looped) { run.endReason = "it kept repeating the same text"; emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." }); break; }
         if (!r.toolCalls.length) {
           if (run.pending.length && !run.stopped) continue; // a steer arrived as it finished: keep going
-          if (activeSubs(run) && !run.stopped) { if (await idle(run)) continue; } // sub-agents still working: wait for a report or a message
-          if (!run.stopped && !activeSubs(run) && await todoNudge(run)) continue; // really ending: is its task list up to date?
+          if (liveSubs(run) && !run.stopped) { if (await idle(run)) continue; } // sub-agents still working: wait for a report or a message
+          if (!run.stopped && !liveSubs(run) && await todoNudge(run)) continue; // really ending: is its task list up to date?
           break;
         }
         const sig = [];
@@ -864,11 +946,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           sig.push(tc.function.name, tc.function.arguments, res.text);
           // Sub-agents still working: every other tool result says so. Otherwise models take a file that already exists
           // (often left from an earlier attempt) as the sub-agent's finished work and report it before it's done.
-          const busy = [...run.subs.values()].filter((x) => x.status === "running");
+          const busy = [...run.subs.values()].filter((x) => x.status === "running" || x.status === "pending");
           let real = tc.function.name;
           if (real === "call_tool") try { real = JSON.parse(tc.function.arguments || "{}").name || real; } catch {}
           const note = busy.length && !/(^|__)(run|check|message|stop)_agent$/i.test(real)
-            ? `\n\n[${busy.map((x) => `${x.alias} "${x.title}"`).join(", ")} ${busy.length > 1 ? "are" : "is"} still running. What ${busy.length > 1 ? "they make" : "it makes"} may not exist yet, and files with the same name may be left from an earlier attempt: don't use or show ${busy.length > 1 ? "their" : "its"} results until the report arrives here (end your turn to wait).]` : "";
+            ? `\n\n[${busy.map((x) => `${x.alias} "${x.title}"`).join(", ")} ${busy.length > 1 ? "are" : "is"} still running or pending. What ${busy.length > 1 ? "they make" : "it makes"} may not exist yet, and files with the same name may be left from an earlier attempt: don't use or show ${busy.length > 1 ? "their" : "its"} results until the report arrives here (end your turn to wait).]` : "";
           const tm = { role: "tool", tool_call_id: tc.id, content: res.text + note, _status: res.status, _at: Date.now() };
           if (res.images?.length) tm._images = res.images;
           if (res.answers) tm._answers = res.answers; // the card shows them when the session is opened again
@@ -885,7 +967,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         // Sub-agents running: the reply waits here for a report (or a message from the user) before its next step, rather
         // than working alongside them. Working alongside led models to poll, give up on, or redo the sub-agent's work,
         // and every request competes with the sub-agent for the same model anyway.
-        if (activeSubs(run) && !run.stopped) await idle(run);
+        if (liveSubs(run) && !run.stopped) await idle(run);
       }
     } catch (e) {
       console.error(`[run] ${run.id}: ${e.stack || e.message}`);
@@ -893,6 +975,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       emit(run, { type: "failed", text: "Error: " + e.message });
     } finally {
       run.cur = null; run.tool = null;
+      for (const s of run.subs.values()) cancelPending(run, s, run.stopped ? "the reply was stopped" : "the reply ended");
       const stat = { tokens: run.genDone, ms: Date.now() - run.t0 }, sub = subTokens(run);
       if (sub) stat.sub = sub; // "(+N from sub-agents)"
       const last = run.messages.slice(run.startLen).reverse().find((m) => m.role === "assistant");
@@ -920,7 +1003,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (run.stream) try { run.stream.cancel().catch(() => {}); } catch {} // a locked (being read) body throws: the loop's own check ends it
     if (run.approval) run.approval.resolve(false);
     if (run.question) run.question.resolve(null);
-    for (const s of run.subs?.values() || []) if (s.status === "running") stop(s.run); // the main reply's Stop stops its sub-agents
+    for (const s of run.subs?.values() || []) if (s.status === "running") stop(s.run); else if (s.status === "pending") cancelPending(run, s, "the reply was stopped"); // the main reply's Stop stops its sub-agents
     if (run.wake) run.wake();
   }
 
@@ -1012,7 +1095,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cur = run.cur && { ...run.cur, gen: run.cur.gen && { n: run.cur.gen.n, ms: Date.now() - run.cur.gen.t0, tool: run.cur.gen.tool } };
     const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0), sub: subTokens(run) };
     const question = run.question && { id: run.question.id, tc: run.question.tc, questions: run.question.questions };
-    const agents = [...run.subs.values()].filter((s) => s.status === "running").map(agentInfo);
+    const agents = [...run.subs.values()].filter((s) => s.status === "running" || s.status === "pending").map(agentInfo);
     res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending.filter((p) => !p.report), stat, question, agents, waiting: run.waitWhy || !!run.wake })}\n\n`);
     run.clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
@@ -1029,7 +1112,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (!id && req.method === "GET") return sendJson(res, 200, { active: [...runs.keys()] });
       if (!id && req.method === "POST") { const run = await start(JSON.parse(await readBody(req))); return sendJson(res, 200, { ok: true, id: run.id }); }
       if (id && action === "events" && req.method === "GET") return watch(req, res, id);
-      if (id && action === "stop" && req.method === "POST") { stop(runs.get(id)); return sendJson(res, 200, { ok: true }); }
+      if (id && action === "stop" && req.method === "POST") { const p = !runs.get(id) && pendingSub(id); if (p) cancelPending(p[0], p[1], "the user cancelled it"); else stop(runs.get(id)); return sendJson(res, 200, { ok: true }); }
       if (id && action === "steer" && req.method === "POST") {
         const run = runs.get(id);
         if (!run || run.stopped) return sendJson(res, 409, { error: "No reply in progress" }); // the page sends it as a normal message
@@ -1058,14 +1141,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     handle,
     has: (id) => runs.has(id),
     anyActive: () => runs.size > 0,
-    waiting: (id) => { const r = runs.get(id); return r?.approval || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run.approval) ? "approval" : r?.question ? "question" : false; }, // the sidebar's yellow dot
-    stop: (id) => stop(runs.get(id)),
+    waiting: (id) => { const r = runs.get(id); return r?.approval || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.approval) ? "approval" : r?.question ? "question" : false; }, // the sidebar's yellow dot
+    stop: (id) => { const p = !runs.get(id) && pendingSub(id); if (p) cancelPending(p[0], p[1], "the user cancelled it"); else stop(runs.get(id)); },
     deleted: (id) => { const r = runs.get(id); if (r) { r.deleted = true; stop(r); } },
     modeChanged: (id, mode) => {
       const r = runs.get(id);
       if (mode !== "auto" || !r) return;
       if (r.approval) r.approval.resolve(true);
-      for (const s of r.subs.values()) if (s.status === "running" && s.run.approval) s.run.approval.resolve(true); // sub-agents follow the main session
+      for (const s of r.subs.values()) if (s.status === "running" && s.run?.approval) s.run?.approval.resolve(true); // sub-agents follow the main session
     },
   };
 };
