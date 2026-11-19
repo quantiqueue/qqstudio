@@ -824,7 +824,9 @@ async function loadModels() {
     const r = await fetch("/api/models");
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
-    const prev = chat.model || modelSel.value;
+    // A new session that hasn't picked a loadout starts on the one that's loaded (or loading), if any.
+    const active = j.models.find((m) => m.status === "loaded") || j.models.find((m) => m.status === "loading");
+    const prev = chat.model || (!chat.id && active ? active.id : modelSel.value);
     modelSel.innerHTML = "";
     modelVision = {}; modelMeta = {};
     // Loadouts by name. One runs at a time; the running one says so. The engine is only in the tooltip.
@@ -1782,6 +1784,9 @@ async function newChat(workspace) {
   detach(); // a running reply keeps going on the server
   chat = blankChat(workspace || curWs()?.id);
   rememberWs(chat.workspace);
+  const active = Object.values(modelMeta).find((m) => m.status === "loaded" || m.status === "loading"); // right away from what's known,
+  if (active) { modelSel.value = active.id; renderModelBtn(); }
+  loadModels(); // then from the server's current state
   showSessionUi();
   todoOpen = null; renderTodo(); clearChips(); renderReadOnly(); // leave the last session's state behind (a sub-agent's read-only view, its tasks)
   renderMode();
