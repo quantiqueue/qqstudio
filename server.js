@@ -660,7 +660,7 @@ function getConfig() {
   const c = DATA.readJson(DATA.config, {});
   const t = c.thinking || {};
   delete c.lanAccess; delete c.lanKey; // served by /api/server (local requests only)
-  return { ...CONFIG_DEFAULTS, ...c, agents: { ...AGENT_DEFAULTS, ...(c.agents || {}) }, thinking: { budgets: THINK_DEFAULTS.budgets, message: t.message ?? THINK_DEFAULTS.message,
+  return { ...CONFIG_DEFAULTS, ...c, agents: { ...AGENT_DEFAULTS, ...(c.agents || {}) }, version: require("./package.json").version, thinking: { budgets: THINK_DEFAULTS.budgets, message: t.message ?? THINK_DEFAULTS.message,
     effort: EFFORTS.includes(t.effort) ? t.effort : EFFORTS.includes(t.level) ? t.level : THINK_DEFAULTS.effort, budget: BUDGETS.includes(t.budget) ? t.budget : THINK_DEFAULTS.budget }, dataDir: DATA.home };
 }
 async function handleConfig(req, res) {
