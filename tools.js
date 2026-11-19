@@ -286,16 +286,16 @@ const schemas = [
   { name: "load_skill", approval: false,
     description: "Load the full instructions of a skill by name. Call this before doing a task that matches one of the available skills, then follow the instructions.",
     parameters: { type: "object", properties: { name: { type: "string", description: "Skill name" } }, required: ["name"] } },
-  { name: "list_dir", approval: false,
+  { name: "list_dir", approval: true,
     description: "List the files and subfolders in a folder on the user's computer.",
     parameters: { type: "object", properties: { path: { type: "string", description: "Absolute folder path, e.g. C:\\claude-tools" } }, required: ["path"] } },
-  { name: "read_file", approval: false,
+  { name: "read_file", approval: true,
     description: "Read a text file, or the text of a document (PDF, Word .docx, Excel .xlsx, PowerPoint .pptx, OpenDocument). Returns numbered lines. Use offset/limit for long files.",
     parameters: { type: "object", properties: {
       path: { type: "string", description: "Absolute file path" },
       offset: { type: "integer", description: "First line to read (1-based). Default 1." },
       limit: { type: "integer", description: "Max lines to read. Default 400." } }, required: ["path"] } },
-  { name: "search_files", approval: false,
+  { name: "search_files", approval: true,
     description: "Recursively find files/folders by name under a folder. pattern is a substring or a wildcard like *.md",
     parameters: { type: "object", properties: {
       path: { type: "string", description: "Folder to search in" },
@@ -307,7 +307,7 @@ const schemas = [
       old_text: { type: "string", description: "The exact text to replace, copied from the file" },
       new_text: { type: "string", description: "The text to put in its place (\"\" deletes old_text)" },
       replace_all: { type: "boolean", description: "Replace every occurrence instead of exactly one (default false)" } }, required: ["path", "old_text", "new_text"] } },
-  { name: "search_text", approval: false,
+  { name: "search_text", approval: true,
     description: "Search inside files for text or a regular expression. Returns path:line: matching line. path can be a folder (searched recursively) or one file.",
     parameters: { type: "object", properties: {
       path: { type: "string", description: "Absolute folder or file path" },
