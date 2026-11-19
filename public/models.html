@@ -558,21 +558,20 @@ function render() {
       const ub = name.appendChild(el("div", "used-by"));
       if (!uses.length) ub.textContent = "No loadout yet";
       else { ub.appendChild(document.createTextNode("Loadouts: ")); uses.forEach((l, k) => { if (k) ub.appendChild(document.createTextNode(", ")); const a = ub.appendChild(el("a", null, l.name + (m.via?.id === l.id ? " (loaded)" : ""))); a.onclick = () => { location.hash = "#loadouts"; loEditOpen(l.id); }; }); }
+      ub.appendChild(document.createTextNode(" · "));
+      const mk = ub.appendChild(el("a", "mk", "Create Loadout")); // a loadout for this model with default settings, opened in the editor
+      mk.title = "Create a loadout for this model with default settings";
+      mk.onclick = async () => {
+        if (mk.dataset.busy) return; mk.dataset.busy = "1";
+        const r = await fetch("/api/loadouts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: m.id }) });
+        const jx = await r.json().catch(() => ({}));
+        if (!r.ok) { $("status").textContent = jx.error || r.statusText; delete mk.dataset.busy; return; }
+        await loLoad(); location.hash = "#loadouts"; loEditOpen(jx.loadout.id);
+      };
     }
     if (m.path || lf) name.appendChild(el("div", "sub", (lf ? fmtBytes(lf.size) + " · " : "") + (m.path || lf.path)));
     if (busy.has(m.id) || (m.via && busy.has(m.via.id))) row.appendChild(el("span", "state", "working…")); // the dot shows loaded / loading / failed
 
-    if (lf || m.external) {
-      const mk = row.appendChild(el("button", null, "＋ Loadout"));
-      mk.title = "Create a loadout for this model with default settings";
-      mk.onclick = async () => {
-        mk.disabled = true;
-        const r = await fetch("/api/loadouts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: m.id }) });
-        const jx = await r.json().catch(() => ({}));
-        if (!r.ok) { $("status").textContent = jx.error || r.statusText; mk.disabled = false; return; }
-        await loLoad(); location.hash = "#loadouts"; loEditOpen(jx.loadout.id);
-      };
-    }
     if (lf) {
       const armed = delArmed === m.id;
       const del = row.appendChild(el("button", "eject del" + (armed ? " armed" : ""), armed ? `Delete ${fmtBytes(lf.size)}?` : "🗑"));
@@ -945,7 +944,7 @@ function loSummary(l) {
 function loRender() {
   $("loCount").textContent = loList.length ? `${loList.length} loadout${loList.length > 1 ? "s" : ""}` : "";
   const box = $("loList"); box.innerHTML = "";
-  if (!loList.length) box.appendChild(el("div", "empty", "No loadouts yet. Create one here, or with ＋ Loadout on the Models tab."));
+  if (!loList.length) box.appendChild(el("div", "empty", "No loadouts yet. Create one here, or with Create Loadout on the Models tab."));
   const run = engData?.running || loMeta?.running || {};
   for (const l of loList) {
     const eng = loMeta?.engines.find((e) => e.id === l.engine);
