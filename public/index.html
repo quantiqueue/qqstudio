@@ -56,9 +56,13 @@
   .wsv-desc.none { color:var(--muted); font-style:italic; }
   .wsv-cards { display:flex; flex-wrap:wrap; gap:16px; }
   .wsv-cards > div { width:300px; max-width:100%; }
+  .wsv-cards h3 { height:26px; box-sizing:border-box; } /* same height with or without the Upload button, so the cards line up */
+  .wsv-cards h3 button { padding:2px 10px; }
   .wsv-mcard { cursor:default; }
   .wsv-mcard:hover { border-color:var(--line); }
-  .mc-body { height:194px; background:#0b0d11; padding:12px 14px; display:flex; flex-direction:column; gap:7px; overflow:hidden; box-sizing:border-box; }
+  .mc-body { height:194px; background:#0b0d11; padding:12px 14px; display:flex; flex-direction:column; gap:7px; overflow:hidden; box-sizing:border-box;
+    -webkit-mask-image:linear-gradient(to bottom, #000 78%, transparent); mask-image:linear-gradient(to bottom, #000 78%, transparent); }
+  .mc-body:has(.none) { -webkit-mask-image:none; mask-image:none; }
   .mc-body .ent { font-size:12px; color:#b8bdca; line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; flex:none; }
   .mc-body .none, .fc-empty { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; color:var(--muted); font-size:12px; line-height:1.45; padding:0 12px; }
   .mc-body svg, .fc-empty svg { color:var(--muted); opacity:.7; }
@@ -1966,20 +1970,16 @@ async function renderWsView() {
 }
 const ICON_FOLDER = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const ICON_MEMORY = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4a3 3 0 0 0-3 3v.2A3 3 0 0 0 4 10a3 3 0 0 0 1 2.2A3 3 0 0 0 6 17a3 3 0 0 0 3 3V4z"/><path d="M15 4a3 3 0 0 1 3 3v.2A3 3 0 0 1 20 10a3 3 0 0 1-1 2.2A3 3 0 0 1 18 17a3 3 0 0 1-3 3V4z"/><path d="M9 4h6M9 20h6"/></svg>';
-// The memory card: the newest entries (read-only) and "Memory across N sessions · Updated X ago". Not clickable.
+// The memory card: "Memory across N sessions" over the newest entries (read-only), "Last updated X" under them. Not clickable.
 function memoryCard(col, w, nSessions) {
-  const h = col.appendChild(el("h3"));
-  h.appendChild(el("span", null, "Memory"));
-  const cnt = h.appendChild(el("span"));
+  col.appendChild(el("h3", null, `Memory across ${nSessions} session${nSessions === 1 ? "" : "s"}`));
   const card = col.appendChild(el("div", "wsv-fcard wsv-mcard"));
   const body = card.appendChild(el("div", "mc-body"));
   const ft = card.appendChild(el("div", "fc-foot"));
-  ft.appendChild(el("span", null, `Memory across ${nSessions} session${nSessions === 1 ? "" : "s"}`));
-  const upd = ft.appendChild(el("small"));
+  const upd = ft.appendChild(el("span"));
   const show = (j) => {
     const st = j?.stats || w.memoryStats || {};
-    cnt.textContent = st.entries ? `· ${st.entries}` : "";
-    upd.textContent = st.updated ? `· Updated ${ago(st.updated)}` : "";
+    upd.textContent = st.updated ? `Last updated ${ago(st.updated)}` : "Not updated yet";
     body.innerHTML = "";
     const lines = String(j?.text || "").split("\n").map((l) => l.match(/^- \[m(\d+)\]\s*(.*)$/)).filter(Boolean).sort((a, b) => b[1] - a[1]).map((m) => m[2]); // newest first
     if (!lines.length) {
