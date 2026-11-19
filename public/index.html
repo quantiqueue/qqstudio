@@ -2105,7 +2105,7 @@ function wsDialog(w = null) {
   const d = $("wsDialog");
   $("wsDlgTitle").textContent = w ? "Edit workspace" : "New workspace";
   $("wsOk").textContent = w ? "Save" : "Create";
-  $("wsName").value = w ? w.name : ""; $("wsDesc").value = w ? w.description : ""; $("wsMem").checked = !!(w && w.memory); $("wsErr").textContent = "";
+  $("wsName").value = w ? w.name : ""; $("wsDesc").value = w ? w.description : ""; $("wsMem").checked = w ? !!w.memory : true; // new workspaces: memory on $("wsErr").textContent = "";
   const del = $("wsDel");
   del.hidden = !w || w.isDefault; del.classList.remove("armed"); del.textContent = "Delete workspace";
   del.onclick = async () => {
