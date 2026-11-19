@@ -413,12 +413,11 @@
 
   <section data-tab="models">
     <h2>Models</h2>
-    <div class="lead">Model files in the models folder, and models llama.cpp downloaded itself (external). Eject to free memory, delete, or create a loadout for one.</div>
+    <div class="lead">Model files in the models folder, and models llama.cpp downloaded itself (external). Delete a file, or create a loadout for one (load and eject on the Loadouts tab).</div>
     <div id="note"></div>
   <div class="summary">
     <span id="counts"></span>
     <span class="spacer"></span>
-    <button id="ejectAll" class="eject" disabled>Eject all</button>
     <button id="refresh">↻ Refresh</button>
   </div>
   <div class="list" id="list"><div class="empty">Loading…</div></div>
@@ -522,7 +521,7 @@ async function refresh() {
   // Files in the models folder the engine doesn't list (engine stopped, or not restarted since) can still be deleted.
   for (const id of local.keys()) if (!models.some((m) => m.id === id)) models.push({ id, status: "not loaded", localOnly: true });
   // Custom loadouts (ids that aren't file names) live on the Loadouts tab, not here. A file loaded through one of them
-  // shows as loaded here, and Eject unloads that loadout.
+  // shows as loaded here (loading and ejecting happen on the Loadouts tab).
   const byId = new Map(models.map((m) => [m.id, m])), up = (x) => x && (x.status === "loaded" || x.status === "loading");
   models = models.filter((m) => local.has(m.id) || !loList.some((l) => l.id === m.id));
   for (const m of models) m.external = router && !m.localOnly && !local.has(m.id); // listed by the engine, not in the models folder (e.g. downloaded with -hf)
@@ -538,7 +537,6 @@ function render() {
   const loaded = models.filter((m) => m.status === "loaded" || m.status === "loading");
   $("counts").textContent = models.length ? `${models.length} available · ${loaded.length} loaded` : "";
   $("tabModels").textContent = loaded.length ? `${loaded.length} loaded` : "";
-  $("ejectAll").disabled = !router || !loaded.length;
 
   const list = $("list");
   list.innerHTML = "";
@@ -564,12 +562,6 @@ function render() {
     if (m.path || lf) name.appendChild(el("div", "sub", (lf ? fmtBytes(lf.size) + " · " : "") + (m.path || lf.path)));
     if (busy.has(m.id) || (m.via && busy.has(m.via.id))) row.appendChild(el("span", "state", "working…")); // the dot shows loaded / loading / failed
 
-    if (router && (m.status === "loaded" || m.status === "loading")) { // loading happens from a session's loadout
-      const btn = row.appendChild(el("button", "eject", "⏏ Eject"));
-      btn.disabled = busy.has(m.id) || (m.via && busy.has(m.via.id));
-      if (m.via) btn.title = `Loaded through the loadout "${m.via.name}"`;
-      btn.onclick = () => act("unload", m.via ? m.via.id : m.id);
-    }
     if (lf || m.external) {
       const mk = row.appendChild(el("button", null, "＋ Loadout"));
       mk.title = "Create a loadout for this model with default settings";
@@ -1477,10 +1469,6 @@ async function pollDownloads() {
 $("clearDl").onclick = () => fetch("/api/hf/clear", { method: "POST" }).then(pollDownloads);
 pollDownloads();
 
-$("ejectAll").onclick = async () => {
-  const loaded = models.filter((m) => m.status === "loaded" || m.status === "loading");
-  for (const m of loaded) await act("unload", m.via ? m.via.id : m.id);
-};
 $("refresh").onclick = refresh;
 refresh();
 refresh = single(refresh);
