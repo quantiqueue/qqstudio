@@ -532,14 +532,17 @@ async function handleWorkspaces(req, res) {
       }
       return sendJson(res, 405, { error: "Method not allowed" });
     }
-    if (sub === "open" && req.method === "POST") { openFolder(ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
+    // ?dir=<folder in the files folder>: open / upload into that folder (the files view's current folder)
+    const subDir = u.searchParams.get("dir") ? ws.filePath(id, u.searchParams.get("dir")) : ws.filesDir(id);
+    if (!subDir) return sendJson(res, 400, { error: "Bad folder" });
+    if (sub === "open" && req.method === "POST") { openFolder(fs.existsSync(subDir) ? subDir : ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
     if (sub !== "files") return sendJson(res, 404, { error: "Not found" });
     if (!rest) {
       if (req.method === "GET") return sendJson(res, 200, { dir: ws.filesDir(id), files: await ws.files(id) });
       if (req.method === "POST") { // raw body; ?name=<file name>
-        const name = ws.freeName(id, u.searchParams.get("name"));
-        const dest = path.join(ws.filesDir(id), name), part = dest + ".part";
-        await fs.promises.mkdir(ws.filesDir(id), { recursive: true });
+        const name = ws.freeName(id, u.searchParams.get("name"), subDir);
+        const dest = path.join(subDir, name), part = dest + ".part";
+        await fs.promises.mkdir(subDir, { recursive: true });
         let size = 0, tooBig = false;
         await new Promise((resolve, reject) => {
           const out = fs.createWriteStream(part);
@@ -548,7 +551,7 @@ async function handleWorkspaces(req, res) {
         });
         if (tooBig) { await fs.promises.unlink(part).catch(() => {}); return sendJson(res, 413, { error: "File is larger than 1 GB" }); }
         await fs.promises.rename(part, dest);
-        return sendJson(res, 200, { path: name, size });
+        return sendJson(res, 200, { path: path.relative(ws.filesDir(id), dest).split(path.sep).join("/"), size });
       }
       return sendJson(res, 405, { error: "Method not allowed" });
     }

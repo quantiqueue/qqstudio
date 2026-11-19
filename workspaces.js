@@ -141,11 +141,11 @@ async function files(id) {
   return out.sort((a, b) => b.modified - a.modified);
 }
 // A free name in the files folder: "x.png", then "x (2).png", ...
-function freeName(id, name) {
+function freeName(id, name, dir = filesDir(id)) {
   const clean = path.basename(String(name || "file")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 150) || "file";
   const ext = path.extname(clean), stem = clean.slice(0, clean.length - ext.length);
   let n = 1, cand = clean;
-  while (fs.existsSync(path.join(filesDir(id), cand))) cand = `${stem} (${++n})${ext}`;
+  while (fs.existsSync(path.join(dir, cand))) cand = `${stem} (${++n})${ext}`;
   return cand;
 }
 

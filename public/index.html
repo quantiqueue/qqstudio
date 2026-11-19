@@ -74,6 +74,26 @@
   .wsv-file .del { position:absolute; top:4px; right:4px; visibility:hidden; background:rgba(15,17,21,.85); border:1px solid var(--line); padding:1px 6px; font-size:12px; }
   .wsv-file:hover .del, .wsv-file .del.armed { visibility:visible; }
   .wsv-file .del.armed { color:#f0a3aa; }
+  .wsv-fcard { display:block; width:300px; max-width:100%; border:1px solid var(--line); border-radius:12px; background:var(--panel); overflow:hidden; color:var(--text); text-decoration:none; }
+  .wsv-fcard:hover { border-color:var(--accent); }
+  .fc-thumbs { display:grid; grid-template-columns:1fr 1fr; gap:2px; background:var(--line); }
+  .fc-cell { height:96px; background:#0b0d11; display:flex; align-items:center; justify-content:center; font-size:26px; overflow:hidden; }
+  .fc-cell.doc { flex-direction:column; gap:6px; padding:0 8px; }
+  .fc-cell.doc small { font-size:11px; color:var(--muted); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fc-cell img { width:100%; height:100%; object-fit:cover; image-rendering:pixelated; }
+  .fc-foot { display:flex; align-items:baseline; gap:8px; padding:9px 12px; font-size:13px; }
+  .fc-foot small { color:var(--muted); flex:1; }
+  .fc-foot .go { color:var(--muted); }
+  .wsv-fcard:hover .fc-foot .go { color:var(--text); }
+  .wsv-back { font-size:13px; padding:4px 10px; }
+  .fc-thumbs.sm { width:100%; height:100%; }
+  .fc-thumbs.sm .fc-cell { height:47px; font-size:18px; }
+  .wsv-file.folder .pv { padding:0; }
+  .wsview h3.files-h a { color:var(--muted); text-decoration:none; border-radius:5px; padding:1px 4px; margin:0 -4px; }
+  .wsview h3.files-h a:hover { color:var(--text); background:#252a35; }
+  .wsview h3.files-h .cur, .wsview h3.files-h a + .sep ~ a { color:var(--text); text-transform:none; letter-spacing:0; font-size:13px; }
+  .wsview h3.files-h a + .sep ~ a { color:var(--muted); }
+  .wsview h3.files-h .sep { opacity:.6; }
   .wsview.drop { outline:2px dashed var(--accent); outline-offset:-8px; }
   /* dialog */
   .modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:50; }
@@ -482,6 +502,8 @@
 
 const $ = (id) => document.getElementById(id);
 let workspaces = [], defaultWs = "Default", wsView = null; // wsView: id of the workspace shown in the main area, or null for a session
+let wsDir = ""; // the files view's folder ("" = the files folder itself, else e.g. "tick_pages")
+let wsSub = null; // "files": the workspace's files view (#w/<id>/files) instead of its overview
 const SEND_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const STOP_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor"/></svg>';
 const log = $("log"), input = $("input"), sendBtn = $("send"), modelSel = $("model"), status = $("status");
@@ -1827,20 +1849,26 @@ const ago = (t) => { const s = (Date.now() - t) / 1000; return s < 60 ? "just no
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`;
 
 // Shows a workspace (its sessions and files) in the main area instead of a session.
-async function openWorkspace(id) {
+async function openWorkspace(id, sub = null, fromHistory = false, dir = "") {
   if (!workspaces.some((w) => w.id === id)) id = defaultWs;
   detach();
-  wsView = id;
+  dir = sub ? dir : "";
+  // Going down by a click (overview -> files, folder -> a folder in it) adds a history entry marked "down", so Back and
+  // the view's own back button return; anything else replaces the entry.
+  const down = !fromHistory && sub === "files" && wsView === id && (wsSub !== "files" || (dir !== wsDir && dir.startsWith(wsDir ? wsDir + "/" : "")));
+  wsView = id; wsSub = sub; wsDir = dir;
   rememberWs(id);
   chat = blankChat(id);
-  setHash("w/" + encodeURIComponent(id));
+  const hash = "#w/" + encodeURIComponent(id) + (sub ? "/" + sub : "") + (dir ? "/" + dir.split("/").map(encodeURIComponent).join("/") : "");
+  if (down) window.history.pushState({ down: true }, "", hash); else setHash(hash.slice(1));
+  $("wsView").scrollTop = 0;
   $("wsView").hidden = false; $("crumbs").hidden = true;
   document.querySelector(".logwrap").hidden = true; $("form").hidden = true;
   renderList();
   await renderWsView();
 }
 function showSessionUi() {
-  wsView = null;
+  wsView = null; wsSub = null; wsDir = "";
   $("wsView").hidden = true;
   document.querySelector(".logwrap").hidden = false; $("form").hidden = false;
   renderCrumbs();
@@ -1861,6 +1889,7 @@ function renderCrumbs() {
   c.appendChild(el("span", "cur", chat.id ? chat.title || "Untitled" : "New session"));
 }
 async function renderWsView() {
+  if (wsSub === "files") return renderFilesView();
   const id = wsView, w = workspaces.find((x) => x.id === id);
   const v = $("wsView");
   if (!w) return;
@@ -1886,29 +1915,109 @@ async function renderWsView() {
     }
     viewAll(l, "view:" + id, sessions.length, renderWsView);
   }
-  const h = v.appendChild(el("h3"));
-  h.appendChild(el("span", null, "Files"));
+  const fh = v.appendChild(el("h3"));
+  fh.appendChild(el("span", null, "Files"));
+  const fcnt = fh.appendChild(el("span"));
+  const fbox = v.appendChild(el("div"));
+  fbox.appendChild(el("div", "wsv-empty", "Loading…"));
+  const files = await wsFileList(id);
+  if (wsView !== id || wsSub) return;
+  fcnt.textContent = `· ${files.length}`;
+  fbox.innerHTML = "";
+  if (!files.length) {
+    fh.appendChild(el("span", "sp"));
+    const up = fh.appendChild(el("button", null, "Upload")); up.type = "button"; up.onclick = () => pickUpload(id);
+    fbox.appendChild(el("div", "wsv-empty", "No files yet. Drop files here, or the model saves what it makes here."));
+    return;
+  }
+  // One card: the four newest files and the count; it opens the files view. Dropping files anywhere here still uploads.
+  const card = fbox.appendChild(el("a", "wsv-fcard")); card.href = "#w/" + encodeURIComponent(id) + "/files"; card.title = "Show all files";
+  card.onclick = (e) => { e.preventDefault(); openWorkspace(id, "files"); };
+  const newest = [...files].sort((a, b) => b.modified - a.modified);
+  card.appendChild(previewGrid(id, newest));
+  const ft = card.appendChild(el("div", "fc-foot"));
+  ft.appendChild(el("span", null, `${files.length} file${files.length === 1 ? "" : "s"}`));
+  ft.appendChild(el("small", null, `newest ${ago(newest[0].modified)}`));
+  ft.appendChild(el("span", "go", "→"));
+}
+const IMG_FILE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+// 2x2 preview of the first four files (newest first): pictures as thumbnails, other files as an icon and their name.
+function previewGrid(id, files, small = false) {
+  const th = el("div", "fc-thumbs" + (small ? " sm" : ""));
+  for (let i = 0; i < 4; i++) {
+    const f = files[i], cell = th.appendChild(el("div", "fc-cell"));
+    if (!f) continue;
+    if (IMG_FILE.test(f.path)) { const img = cell.appendChild(el("img")); img.loading = "lazy"; img.alt = ""; img.src = wsFileUrl(id, f) + "?v=" + Math.round(f.modified); }
+    else { cell.classList.add("doc"); cell.appendChild(el("span", null, fileIcon(f.path))); if (!small) cell.appendChild(el("small", null, f.path.split("/").pop())); }
+  }
+  return th;
+}
+const fileIcon = (p) => (/\.(json|md|txt|csv|lua|js|py|html)$/i.test(p) ? "📄" : "📦");
+const wsFileUrl = (id, f) => `/api/workspaces/${encodeURIComponent(id)}/files/${f.path.split("/").map(encodeURIComponent).join("/")}`;
+async function wsFileList(id) { try { return (await (await fetch(`/api/workspaces/${encodeURIComponent(id)}/files`)).json()).files || []; } catch { return []; } }
+function pickUpload(id, dir = "") { const i = el("input"); i.type = "file"; i.multiple = true; i.onchange = () => uploadWsFiles(id, [...i.files], dir); i.click(); }
+const dirQuery = (dir) => (dir ? "dir=" + encodeURIComponent(dir) : "");
+// The files view: one folder's files, with its folders first as cards (a preview, the count); "Files › a › b" leads back up.
+async function renderFilesView() {
+  const id = wsView, w = workspaces.find((x) => x.id === id), dir = wsDir;
+  const v = $("wsView");
+  if (!w) return;
+  v.innerHTML = "";
+  const go = (d) => openWorkspace(id, "files", false, d);
+  const parts = dir ? dir.split("/") : [], up1 = parts.slice(0, -1).join("/");
+  const head = v.appendChild(el("div", "wsv-head"));
+  const back = head.appendChild(el("button", "wsv-back", "← " + (dir ? parts[parts.length - 2] || "Files" : w.name))); back.type = "button";
+  back.title = dir ? "Up one folder" : "Back to the workspace";
+  // Came down by a click: go back in history (so it doesn't grow); opened directly: go up.
+  back.onclick = () => { if (history.state?.down) history.back(); else if (dir) openWorkspace(id, "files", false, up1); else openWorkspace(id); };
+  const h = v.appendChild(el("h3", "files-h"));
+  if (!dir) h.appendChild(el("span", null, "Files"));
+  else {
+    const a = h.appendChild(el("a", null, "Files")); a.href = "#"; a.onclick = (e) => { e.preventDefault(); go(""); };
+    parts.forEach((p, i) => {
+      h.appendChild(el("span", "sep", "›"));
+      if (i === parts.length - 1) { h.appendChild(el("span", "cur", p)); return; }
+      const b = h.appendChild(el("a", null, p)); b.href = "#"; b.onclick = (e) => { e.preventDefault(); go(parts.slice(0, i + 1).join("/")); };
+    });
+  }
   const cnt = h.appendChild(el("span")); h.appendChild(el("span", "sp"));
-  const up = h.appendChild(el("button", null, "Upload")); up.type = "button";
-  const op = h.appendChild(el("button", null, "Open folder")); op.type = "button"; op.title = w.dir;
-  op.onclick = () => fetch(`/api/workspaces/${encodeURIComponent(id)}/open`, { method: "POST" });
-  up.onclick = () => { const i = el("input"); i.type = "file"; i.multiple = true; i.onchange = () => uploadWsFiles(id, [...i.files]); i.click(); };
+  const upb = h.appendChild(el("button", null, "Upload")); upb.type = "button"; upb.title = dir ? `Upload into ${dir}` : "Upload into the files folder";
+  const op = h.appendChild(el("button", null, "Open folder")); op.type = "button"; op.title = w.dir + (dir ? "\\" + dir.split("/").join("\\") : "");
+  op.onclick = () => fetch(`/api/workspaces/${encodeURIComponent(id)}/open?${dirQuery(dir)}`, { method: "POST" });
+  upb.onclick = () => pickUpload(id, dir);
   const box = v.appendChild(el("div"));
   box.appendChild(el("div", "wsv-empty", "Loading…"));
-  let files = [];
-  try { files = (await (await fetch(`/api/workspaces/${encodeURIComponent(id)}/files`)).json()).files || []; } catch {}
-  if (wsView !== id) return;
-  cnt.textContent = `· ${files.length}`;
+  const all = await wsFileList(id);
+  if (wsView !== id || wsSub !== "files" || wsDir !== dir) return;
+  const pre = dir ? dir + "/" : "", inside = all.filter((f) => f.path.startsWith(pre));
+  const folders = new Map(), files = [];
+  for (const f of inside) {
+    const rel = f.path.slice(pre.length), i = rel.indexOf("/");
+    if (i < 0) { files.push(f); continue; }
+    const name = rel.slice(0, i);
+    if (!folders.has(name)) folders.set(name, []);
+    folders.get(name).push(f);
+  }
+  cnt.textContent = `· ${inside.length}`;
   box.innerHTML = "";
-  if (!files.length) { box.appendChild(el("div", "wsv-empty", "No files yet. Drop files here, or the model saves what it makes here.")); return; }
+  if (!inside.length) { box.appendChild(el("div", "wsv-empty", dir ? "This folder is empty (or no longer exists)." : "No files yet. Drop files here, or the model saves what it makes here.")); return; }
   const grid = box.appendChild(el("div", "wsv-files"));
+  // Folders first, the one changed most recently first (the list is newest first, so a folder's first file is its newest).
+  for (const [name, fs] of [...folders].sort((a, b) => b[1][0].modified - a[1][0].modified)) {
+    const sub = pre + name;
+    const card = grid.appendChild(el("a", "wsv-file folder")); card.href = "#w/" + encodeURIComponent(id) + "/files/" + sub.split("/").map(encodeURIComponent).join("/");
+    card.title = sub; card.onclick = (e) => { e.preventDefault(); go(sub); };
+    card.appendChild(el("div", "pv")).appendChild(previewGrid(id, fs, true));
+    card.appendChild(el("div", "nm", "📁 " + name));
+    card.appendChild(el("small", null, `${fs.length} file${fs.length === 1 ? "" : "s"} · ${ago(fs[0].modified)}`));
+  }
   for (const f of files) {
-    const url = `/api/workspaces/${encodeURIComponent(id)}/files/${f.path.split("/").map(encodeURIComponent).join("/")}`;
+    const url = wsFileUrl(id, f);
     const card = grid.appendChild(el("a", "wsv-file")); card.href = url; card.target = "_blank"; card.rel = "noopener"; card.title = f.path;
     const pv = card.appendChild(el("div", "pv"));
-    if (/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(f.path)) { const img = pv.appendChild(el("img")); img.loading = "lazy"; img.src = url + "?v=" + Math.round(f.modified); img.alt = ""; }
-    else pv.textContent = /\.(json|md|txt|csv|lua|js|py|html)$/i.test(f.path) ? "📄" : "📦";
-    card.appendChild(el("div", "nm", f.path));
+    if (IMG_FILE.test(f.path)) { const img = pv.appendChild(el("img")); img.loading = "lazy"; img.src = url + "?v=" + Math.round(f.modified); img.alt = ""; }
+    else pv.textContent = fileIcon(f.path);
+    card.appendChild(el("div", "nm", f.path.slice(pre.length)));
     card.appendChild(el("small", null, `${fmtSize(f.size)} · ${ago(f.modified)}`));
     const del = card.appendChild(el("button", "del", "🗑")); del.type = "button"; del.title = "Delete file";
     del.onclick = async (e) => {
@@ -1919,11 +2028,11 @@ async function renderWsView() {
     };
   }
 }
-async function uploadWsFiles(id, list) {
+async function uploadWsFiles(id, list, dir = "") {
   for (const file of list) {
     status.textContent = `Uploading ${file.name}…`;
     try {
-      const r = await fetch(`/api/workspaces/${encodeURIComponent(id)}/files?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+      const r = await fetch(`/api/workspaces/${encodeURIComponent(id)}/files?name=${encodeURIComponent(file.name)}${dir ? "&" + dirQuery(dir) : ""}`, { method: "POST", body: file });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
     } catch (e) { status.textContent = `Upload failed: ${e.message}`; return; }
   }
@@ -1932,7 +2041,7 @@ async function uploadWsFiles(id, list) {
 }
 $("wsView").addEventListener("dragover", (e) => { if (wsView && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); $("wsView").classList.add("drop"); } });
 $("wsView").addEventListener("dragleave", (e) => { if (!$("wsView").contains(e.relatedTarget)) $("wsView").classList.remove("drop"); });
-$("wsView").addEventListener("drop", (e) => { $("wsView").classList.remove("drop"); if (!wsView || !e.dataTransfer.files.length) return; e.preventDefault(); uploadWsFiles(wsView, [...e.dataTransfer.files]); });
+$("wsView").addEventListener("drop", (e) => { $("wsView").classList.remove("drop"); if (!wsView || !e.dataTransfer.files.length) return; e.preventDefault(); uploadWsFiles(wsView, [...e.dataTransfer.files], wsSub === "files" ? wsDir : ""); });
 
 // New / edit workspace dialog. Deleting a workspace deletes its sessions and files.
 function wsDialog(w = null) {
@@ -2512,7 +2621,10 @@ renderMode();
 // #w/<workspace> shows a workspace, #<session id> opens a session, nothing shows the workspace used last.
 async function route() {
   const h = decodeURIComponent(location.hash.slice(1));
-  if (h.startsWith("w/")) { if (wsView !== h.slice(2)) await openWorkspace(h.slice(2)); }
+  if (h.startsWith("w/")) { // #w/<id>, #w/<id>/files, #w/<id>/files/<folder>/<folder>
+    const r = h.slice(2), m = r.match(/^(.*?)\/files(?:\/(.*))?$/), id = m ? m[1] : r, sub = m ? "files" : null, dir = (m && m[2] || "").replace(/\/+$/, "");
+    if (wsView !== id || wsSub !== sub || wsDir !== dir) await openWorkspace(id, sub, true, dir);
+  }
   else if (h) { if (h !== chat.id || wsView) await loadChat(h); }
   else await openWorkspace(lastWs());
 }
