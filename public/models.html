@@ -197,6 +197,11 @@
   .lo-card .lo-st { font-size:12px; color:var(--muted); margin-left:6px; font-weight:400; }
   .lo-card.loaded .lo-st { color:var(--green); } .lo-card.loading .lo-st { color:var(--amber); } .lo-card.failed .lo-st { color:var(--red); }
   .lo-card .err-text { color:#f0a3aa; font-size:12px; margin-top:2px; }
+  /* "Show logs" under a loadout's summary opens its server log right under the card, like an accordion */
+  .lo-card .lo-logs { display:inline-block; margin-top:4px; font-size:12px; color:var(--accent); cursor:pointer; background:none; border:none; padding:0; }
+  .lo-card .lo-logs:hover { text-decoration:underline; }
+  .lo-logwrap { padding:0 14px 12px 33px; background:var(--panel); }
+  pre.lo-log { margin:0; height:300px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:11.5px/1.45 ui-monospace,Consolas,monospace; color:#b8bdca; white-space:pre-wrap; word-break:break-all; }
   .lo-card button.logsel { color:var(--muted); } .lo-card button.logsel.on { color:var(--text); border-color:var(--accent); }
   .lo-form { background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:14px 16px; margin-bottom:16px; }
   .lo-form h3 { margin:0 0 12px; font-size:15px; }
@@ -259,7 +264,6 @@
   .srv textarea { width:100%; font:12px/1.5 ui-monospace,Consolas,monospace; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; resize:vertical; min-height:56px; }
   .srv .field label { width:90px; }
   .srv .checks { display:flex; gap:18px; margin:6px 0 10px 98px; font-size:13px; color:var(--muted); }
-  #srvLog { margin:8px 0 0; height:320px; overflow:auto; background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:11.5px/1.45 ui-monospace,Consolas,monospace; color:#b8bdca; white-space:pre-wrap; word-break:break-all; }
   .empty { padding:30px; text-align:center; color:var(--muted); background:var(--panel); }
   /* top-right: settings cog (sessions page) / return to sessions (settings page) */
   .hdr-btn { margin-left:auto; display:inline-flex; align-items:center; gap:6px; color:var(--muted); text-decoration:none; padding:5px 8px; border-radius:8px; font-size:14px; transition:background .12s, color .12s; }
@@ -401,10 +405,6 @@
     <div class="eng-opts" style="margin-top:12px">
       <label><input type="checkbox" id="engAuto"> load the last used loadout when qqstudio starts</label>
     </div>
-    <details id="srvLogBox">
-      <summary>Log · <span id="engLogName"></span></summary>
-      <pre id="srvLog"></pre>
-    </details>
   </section>
 
   <section data-tab="models">
@@ -928,6 +928,7 @@ mcpLoad = single(mcpLoad);
 setInterval(() => { if (!document.hidden && location.hash === "#mcp") mcpLoad(); }, 3000);
 
 // ---------- loadouts ----------
+const loLogsOpen = new Set(), loLogs = new Map(); // open loadout logs; id -> {text, stick, top}
 let loList = [], loMeta = null, loEditing = null, loArmed = null; // loEditing: loadout id, "new", or null
 async function loLoad() {
   try { loMeta = await (await fetch("/api/loadouts")).json(); loList = loMeta.loadouts || []; }
@@ -962,10 +963,13 @@ function loRender() {
     info.appendChild(el("div", "sub", loSummary(l))).title = loSummary(l);
     if (st === "failed" && run.error) info.appendChild(el("div", "err-text", run.error));
     if (st === "loading" && run.progress?.text) info.appendChild(el("div", "sub lo-prog", run.progress.text + (run.progress.pct != null ? ` (${Math.floor(run.progress.pct)}%)` : "")));
+    const open = loLogsOpen.has(l.id);
+    const lk = info.appendChild(el("button", "lo-logs", open ? "Hide logs" : "Show logs")); lk.type = "button";
+    lk.title = "This loadout's server log (llama-server or Strata output; written each time it loads)";
+    lk.onclick = () => { open ? loLogsOpen.delete(l.id) : loLogsOpen.add(l.id); loRender(); if (!open) loRefreshLogs(); };
     const b = (t, fn, cls) => { const x = row.appendChild(el("button", cls || null, t)); x.onclick = fn; return x; };
     if (st === "loaded" || st === "loading") b("⏏ Eject", () => loAct(l.id, "unload"), "eject").title = "Unload to free memory";
     else b("▶ Load", () => loAct(l.id, "load"), "load").title = run.loadout && run.state !== "stopped" && run.state !== "failed" ? `Unloads ${loList.find((x) => x.id === run.loadout)?.name || run.loadout} and loads this one` : "Load now, so the first reply doesn't wait";
-    b("Log", () => { engLogId = l.id; loRender(); $("srvLogBox").open = true; srvLoadLog(); }, "logsel" + (engLogId === l.id ? " on" : "")).title = "Show this loadout's llama-server log below";
     b("Edit", () => loEditOpen(l.id));
     b("Duplicate", () => loEditOpen("new", { ...l, name: l.name + " copy" }));
     const armed = loArmed === l.id;
@@ -978,11 +982,32 @@ function loRender() {
       loLoad();
     }, "eject" + (armed ? " armed" : ""));
     del.title = "Delete this loadout (the model file stays)";
+    if (open) box.appendChild(el("div", "lo-logwrap")).appendChild(loLogPanel(l.id));
+  }
+}
+// Loadout logs: open ones are refreshed with the 2-second status poll; each keeps following the end unless scrolled up.
+function loLogPanel(id) {
+  const p = el("pre", "lo-log"), st = loLogs.get(id);
+  p.dataset.id = id;
+  p.textContent = st?.text ?? "Loading…";
+  requestAnimationFrame(() => { p.scrollTop = !st || st.stick !== false ? p.scrollHeight : st.top; });
+  p.onscroll = () => { const x = loLogs.get(id) || {}; x.stick = p.scrollTop + p.clientHeight >= p.scrollHeight - 30; x.top = p.scrollTop; loLogs.set(id, x); };
+  return p;
+}
+async function loRefreshLogs() {
+  for (const id of loLogsOpen) {
+    let text;
+    try { text = (await (await fetch("/api/loadouts/" + encodeURIComponent(id) + "/log")).text()) || "(no log yet: it's written when the loadout loads)"; } catch { continue; }
+    const x = loLogs.get(id) || {}; x.text = text; loLogs.set(id, x);
+    const p = [...document.querySelectorAll("pre.lo-log")].find((n) => n.dataset.id === id);
+    if (!p || p.textContent === text) continue;
+    const stick = p.scrollTop + p.clientHeight >= p.scrollHeight - 30;
+    p.textContent = text;
+    if (stick) p.scrollTop = p.scrollHeight;
   }
 }
 async function loAct(id, a) {
   document.querySelectorAll("#loList button").forEach((x) => (x.disabled = true));
-  engLogId = id;
   try { const r = await engPost(`/api/loadouts/${encodeURIComponent(id)}/${a}`); if (!r.ok) $("status").textContent = (await r.json().catch(() => ({}))).error || r.statusText; } catch (e) { $("status").textContent = e.message; }
   await srvRefresh();
   setTimeout(refresh, 800);
@@ -1125,7 +1150,7 @@ $("loNew").onclick = () => loEditOpen("new");
 loLoad();
 
 // ---------- engines (builds) and the running loadout ----------
-let engData = null, engLogId = null, engArmed = null;
+let engData = null, engArmed = null;
 const engSize = (n) => !n ? "" : n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : (n / 1e6).toFixed(0) + " MB";
 const engPost = (u, body) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
 const backendLabel = (b) => (b || "").replace(/^cuda-?/, "CUDA ").replace(/^rocm-?/, "ROCm ").replace(/^vulkan$/, "Vulkan").replace(/^cpu$/, "CPU").replace(/^sycl$/, "SYCL").trim();
@@ -1133,7 +1158,6 @@ async function srvRefresh() {
   try { engData = await (await fetch("/api/engines")).json(); } catch { engData = null; }
   if (!engData) { $("engList").innerHTML = '<div class="srv err"><span class="err-text">harness unreachable</span></div>'; return; }
   const run = engData.running || {};
-  if (!engLogId || !loList.some((l) => l.id === engLogId)) engLogId = run.loadout || loList[0]?.id || null;
   const list = $("engList"); list.innerHTML = "";
   for (const e of engData.engines) {
     const card = list.appendChild(el("div", "srv eng"));
@@ -1198,10 +1222,9 @@ async function srvRefresh() {
   const t = $("tabLoadouts");
   t.textContent = run.state === "loaded" || run.state === "loading" ? "●" : run.state === "failed" ? "!" : "";
   t.style.color = run.state === "loaded" ? "var(--green)" : run.state === "loading" ? "var(--amber)" : run.state === "failed" ? "var(--red)" : "";
-  $("engLogName").textContent = loList.find((l) => l.id === engLogId)?.name || "";
   const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text]);
   if (sig !== srvRefresh.last) { srvRefresh.last = sig; loRender(); } // the cards' state
-  if ($("srvLogBox").open) srvLoadLog();
+  loRefreshLogs();
 }
 // Strata's update line under its card: progress while updating, else what the last check found.
 const engChecking = new Map(); // engine id -> error text of a failed check ("" while it runs)
@@ -1239,13 +1262,6 @@ async function engCheck(id) {
   srvRefresh();
 }
 function engError(msg) { const x = $("engErr"); x.textContent = msg || ""; x.style.display = msg ? "" : "none"; }
-async function srvLoadLog() {
-  const pre = $("srvLog");
-  if (!engLogId) { pre.textContent = "(no loadout)"; return; }
-  const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
-  try { pre.textContent = (await (await fetch("/api/loadouts/" + encodeURIComponent(engLogId) + "/log")).text()) || "(no log yet: it's written when the loadout loads)"; } catch {}
-  if (atBottom) pre.scrollTop = pre.scrollHeight;
-}
 async function engReleases() {
   try {
     const r = await fetch("/api/engines/releases"); const j = await r.json();
@@ -1290,7 +1306,6 @@ $("engAdd").onclick = async () => {
   srvRefresh();
 };
 $("engAuto").onchange = () => fetch("/api/engines/options", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autostart: $("engAuto").checked }) });
-$("srvLogBox").addEventListener("toggle", () => { if ($("srvLogBox").open) srvLoadLog(); });
 srvRefresh();
 engReleases();
 strataInfo();
