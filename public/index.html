@@ -22,8 +22,25 @@
   /* sidebar */
   aside { width:260px; flex:none; background:var(--side); border-right:1px solid var(--line); display:flex; flex-direction:column; }
   aside .top { padding:10px; border-bottom:1px solid var(--line); }
-  .ws-head { display:flex; align-items:center; padding:12px 10px 8px 14px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line); }
-  .ws-head span { flex:1; }
+  .ws-head { display:flex; align-items:center; padding:9px 10px 8px 8px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line); }
+  .ws-head span { flex:1; text-align:center; }
+  /* Sidebar toggle: in the Workspaces row; collapsed, the sidebar is gone and the same button rides the top-left. */
+  button.sb-btn { display:inline-flex; align-items:center; justify-content:center; width:28px; height:26px; padding:0; position:relative; }
+  .layout { position:relative; }
+  aside { transition:width .15s ease, border-color .15s ease; overflow:hidden; }
+  aside > * { min-width:259px; }
+  body.sb-closed aside { width:0; border-right-color:transparent; border-right-width:0; }
+  #sbOpen { display:none; position:absolute; top:9px; left:8px; z-index:9; }
+  body.sb-closed #sbOpen { display:inline-flex; }
+  body.sb-closed .crumbs { left:44px; }
+  #sbOpen .sb-dot { position:absolute; top:3px; right:3px; width:7px; height:7px; border-radius:50%; display:none; }
+  #sbOpen.running .sb-dot, #sbOpen.waiting .sb-dot, #sbOpen.unread .sb-dot { display:block; }
+  #sbOpen.running .sb-dot { background:var(--accent); animation:pulse 1.2s ease-in-out infinite; } #sbOpen.waiting .sb-dot { background:#e3b04b; } #sbOpen.unread .sb-dot { background:#4fc98a; }
+  /* Narrow screens (iPad portrait): the sidebar opens over the content and closes again when something is picked. */
+  @media (max-width:899px) {
+    aside { position:absolute; top:0; bottom:0; left:0; z-index:8; box-shadow:12px 0 30px rgba(0,0,0,.4); }
+    body.sb-closed aside { box-shadow:none; }
+  }
   button.mini { background:transparent; border:none; color:var(--muted); padding:0 6px; height:22px; font-size:14px; line-height:1; border-radius:6px; }
   button.mini:hover { background:#252a35; color:var(--text); }
   .ws-row { display:flex; align-items:center; gap:2px; margin-top:6px; padding:5px 4px 5px 2px; border-radius:8px; cursor:pointer; color:var(--text); font-size:14px; font-weight:600; }
@@ -470,9 +487,10 @@
 </header>
 <div class="layout">
 <aside>
-  <div class="ws-head"><span>Workspaces</span><button type="button" id="newWs" class="mini" title="New workspace">＋</button></div>
+  <div class="ws-head"><button type="button" id="sbToggle" class="mini sb-btn" title="Hide the sidebar (Ctrl+B)" aria-label="Hide the sidebar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg></button><span>Workspaces</span><button type="button" id="newWs" class="mini" title="New workspace">＋</button></div>
   <div id="chatList"></div>
 </aside>
+<button type="button" id="sbOpen" class="mini sb-btn" title="Show the sidebar (Ctrl+B)" aria-label="Show the sidebar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg><span class="sb-dot"></span></button>
 <div class="main">
   <div id="crumbs" class="crumbs" hidden></div>
   <div id="wsView" class="wsview" hidden></div>
@@ -2172,8 +2190,33 @@ function viewAll(box, key, total, rerender) {
     showAll.has(key) ? showAll.delete(key) : showAll.add(key); rerender();
   };
 }
+// ---------- sidebar toggle ----------
+// Remembered per device (localStorage). With nothing remembered, narrow screens start with it hidden.
+const narrow = () => matchMedia("(max-width: 899px)").matches;
+function setSidebar(open, remember = true) {
+  document.body.classList.toggle("sb-closed", !open);
+  if (remember) try { localStorage.setItem("qq.sidebar", open ? "open" : "closed"); } catch {}
+}
+{ let saved = null; try { saved = localStorage.getItem("qq.sidebar"); } catch {}
+  setSidebar(saved ? saved === "open" : !narrow(), false);
+  // Nothing chosen yet: follow the window's width (open when wide, hidden when narrow) as it changes.
+  matchMedia("(max-width: 899px)").addEventListener("change", (e) => { let s2 = null; try { s2 = localStorage.getItem("qq.sidebar"); } catch {} if (!s2) setSidebar(!e.matches, false); }); }
+$("sbToggle").onclick = () => setSidebar(false);
+$("sbOpen").onclick = () => setSidebar(true);
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") { e.preventDefault(); setSidebar(document.body.classList.contains("sb-closed")); }
+  else if (e.key === "Escape" && narrow() && !document.body.classList.contains("sb-closed") && $("wsDialog").hidden) setSidebar(false, false);
+});
+// On a narrow screen, picking a session or workspace closes it (it covers the content there).
+$("chatList").addEventListener("click", (e) => { if (narrow() && e.target.closest(".chat-item, .ws-row, .view-all") && !e.target.closest(".act, .caret, input, button.mini")) setTimeout(() => setSidebar(false, false)); });
+
 function renderList() {
   const list = $("chatList");
+  { // the expand button shows what's happening while the sidebar is hidden
+    const dots = chatList.map(dotOf).filter(Boolean), d = dots.find((x) => x[0] === "waiting") || dots.find((x) => x[0] === "running") || dots[0];
+    $("sbOpen").className = "mini sb-btn" + (d ? " " + d[0] : "");
+    $("sbOpen").title = (d ? d[1] + " · " : "") + "Show the sidebar (Ctrl+B)";
+  }
   list.innerHTML = "";
   // Most recently used first: the latest session update in each workspace (or when it was created, if it has none).
   const lastUsed = (w) => Math.max(w.created || 0, ...chatList.filter((c) => (c.workspace || defaultWs) === w.id).map((c) => c.updated || 0));

@@ -108,3 +108,6 @@ input[type=checkbox]:not(.task):disabled { opacity: .45; cursor: default; }
   background: var(--page-bg); background-attachment: fixed;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 28px); mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
 }
+
+/* narrow screens: the sidebar opens over the content (index.html), so there it needs the page's background */
+@media (max-width: 899px) { body aside { background: var(--page-bg); background-attachment: fixed; } }
