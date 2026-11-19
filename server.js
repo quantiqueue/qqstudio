@@ -537,6 +537,12 @@ async function handleWorkspaces(req, res) {
     // ?dir=<folder in the files folder>: open / upload into that folder (the files view's current folder)
     const subDir = u.searchParams.get("dir") ? ws.filePath(id, u.searchParams.get("dir")) : ws.filesDir(id);
     if (!subDir) return sendJson(res, 400, { error: "Bad folder" });
+    if (sub === "memory" && req.method === "POST") { // {ops: [{op: "add"|"replace"|"remove", section, id, text}]}, applied like the model's changes
+      const M = require("./memory"), b = JSON.parse((await readBody(req)) || "{}");
+      const r = await M.apply(id, Array.isArray(b.ops) ? b.ops : [], { cap: Math.max(200, Number(getConfig().memoryTokens) || M.DEFAULT_CAP) });
+      M.log(id, `edit (API) · ${r.done.join(", ") || "nothing"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}`);
+      return sendJson(res, 200, { ...r, text: M.text(id) });
+    }
     if (sub === "memory" && req.method === "GET") { const M = require("./memory"); return sendJson(res, 200, { on: ws.memoryOn(id), text: M.text(id), stats: M.stats(id), ...(u.searchParams.has("log") ? { log: M.readLog(id) } : {}) }); } // workspace memory (memory.js); ?log adds memory.log
     if (sub === "open" && req.method === "POST") { openFolder(fs.existsSync(subDir) ? subDir : ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
     if (sub !== "files") return sendJson(res, 404, { error: "Not found" });

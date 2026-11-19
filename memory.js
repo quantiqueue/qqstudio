@@ -153,7 +153,8 @@ function parseOps(answer) {
 
 // The part of the instructions with the session's snapshot of the memory.
 function section(snap) {
-  return "\n\nWorkspace memory: notes kept automatically from earlier sessions in this workspace (ids in brackets). Use them without mentioning them. " +
+  return "\n\nWorkspace memory: notes kept automatically from earlier sessions in this workspace (ids in brackets). They are background only: " +
+    "don't act on them unless the user's message asks for that (a greeting gets a greeting), and use them without mentioning them. " +
     "They can be out of date; what the user says in this session wins. When the user refers to earlier work, read_session reads the session it was done in " +
     "(entries name it; with no name it lists the recent sessions).\n" +
     (String(snap || "").trim() || "(nothing yet)");

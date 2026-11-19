@@ -461,7 +461,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
     let think0 = null, think1 = null, timings = null, failed = false, retry = false, gotChunk = false, lastSave = Date.now();
-    let looped = false, finish = null, ended = false, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
+    let looped = false, runaway = null, finish = null, ended = false, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
     const calls = [];
     emit(run, { type: "step", model });
     const phase = (text, pct = null) => {
@@ -558,6 +558,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           }
           for (const tc of d.tool_calls || []) {
             const i = tc.index ?? calls.length;
+            // Runaway guard: when a new call starts, the ones before it are complete. The same call (name and arguments)
+            // a 4th time in one step ends the stream there (small models can emit hundreds); one copy of each is run.
+            if (!calls[i] && i >= 4) {
+              const seen = new Map();
+              for (const c of calls.slice(0, i)) { if (!c) continue; const k = c.function.name + "\u0000" + c.function.arguments; seen.set(k, (seen.get(k) || 0) + 1); }
+              const top = [...seen].sort((a, b) => b[1] - a[1])[0];
+              if (top && top[1] > 3) { runaway = { at: i, name: top[0].split("\u0000")[0] }; run.abort.abort(); break; }
+            }
             calls[i] = calls[i] || { id: "", type: "function", function: { name: "", arguments: "" } };
             if (tc.id) calls[i].id = tc.id;
             if (tc.function?.name) calls[i].function.name += tc.function.name;
@@ -565,6 +573,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
             phase("Preparing tool call" + (calls[i].function.name ? ` · ${calls[i].function.name}` : ""));
             cur.gen.tool = calls[i].function.name || cur.gen.tool;
           }
+          if (runaway) break;
           if (d.tool_calls && (!cur.gen.toolSent || Date.now() - cur.gen.sent >= 250)) { // tool-call arguments stream silently otherwise
             cur.gen.sent = Date.now(); cur.gen.toolSent = true;
             emit(run, { type: "delta", n: cur.gen.n, tot: run.genDone + cur.gen.total, tool: cur.gen.tool || "" });
@@ -580,11 +589,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     } catch (e) {
       // The reply already finished and the server then dropped the connection without ending the stream (Strata's
       // server does this): Node's fetch reports "terminated", but nothing is missing.
-      if ((ended || finish) && !run.stopped && !looped && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET")) e = null;
+      if ((ended || finish) && !run.stopped && !looped && !runaway && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET")) e = null;
       if (!e) {} else
       // llama-server couldn't read the model's tool call (e.g. "does not match the expected peg-native format": a stray
       // space or token in the template's tool-call syntax, common with small or heavily quantized models). Sampling
       // differs each time, so the same step is asked again, up to twice in a row, before it counts as a failure.
+      if (runaway && !run.stopped) e = null; else // the runaway guard ended the stream itself
       if (!run.stopped && !looped && /does not match the expected .*format|failed to parse/i.test(e.message) && (run.unreadable || 0) < 2) {
         retry = true; run.unreadable = (run.unreadable || 0) + 1;
         console.log(`[run] ${run.id} unreadable tool call (${e.message}); asking again (${run.unreadable} of 2)`);
@@ -599,7 +609,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       run.abort = null; run.stream = null;
       if (release) release();
     }
-    const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
+    let toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${Date.now()}_${i}` }));
+    if (runaway) { // the complete calls before the cut, one copy of each
+      const keep = new Map();
+      for (const c of toolCalls.slice(0, runaway.at)) { const k = c.function.name + "\u0000" + c.function.arguments; if (!keep.has(k)) keep.set(k, c); }
+      runaway.dropped = toolCalls.length - keep.size;
+      toolCalls = [...keep.values()];
+      console.log(`[run] ${run.id} runaway tool calls: ${runaway.name} repeated; kept ${toolCalls.length}, dropped ${runaway.dropped}`);
+    }
     { // prompt cache report: how much llama-server reused, and what changed when it read a lot again
       const total = timings?.prompt_n != null && timings?.cache_n != null ? timings.prompt_n + timings.cache_n : cached?.total;
       const hit = timings?.cache_n ?? cached?.cache;
@@ -613,12 +630,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
     const meta = `${model} · ${secs}s` +
       (replied ? ` · ${g.n} tok` + (timings?.predicted_per_second ? ` @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") : "") +
-      (run.stopped ? " · stopped" : looped ? " · stopped: repeating" : finish === "length" ? " · cut off (length limit)" : "");
+      (run.stopped ? " · stopped" : looped ? " · stopped: repeating" : runaway ? " · stopped: repeated tool calls" : finish === "length" ? " · cut off (length limit)" : "");
     const thinkSecs = think0 === null ? null : +(((think1 ?? Date.now()) - think0) / 1000).toFixed(1);
     const tb = run.think.budget, note = (run.think.message || "").trim();
     const budgetHit = !!(cur.reasoning && tb > 0 && (cur.reasoning.length / 3.6 >= tb * 0.9 || (note && cur.reasoning.trim().endsWith(note))));
     if (!retry && !failed) run.unreadable = 0;
-    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, retry, thinkSecs, budgetHit, looped, t0 };
+    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, retry, thinkSecs, budgetHit, looped, runaway, t0 };
   }
 
   // The instructions: the page's system prompt plus the compact list of tools on request (minus those with full details).
@@ -1124,6 +1141,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         run.messages.push(msg);
         emit(run, { type: "assistant", msg, tot: run.genDone });
         await save(run);
+        if (r.runaway) {
+          emit(run, { type: "notice", text: `The model repeated the same tool call (${r.runaway.name}) over and over, so qqstudio cut the step short and ran each call once.` });
+          run.dropNote = `\n\n[qqstudio: this step repeated the same call to ${r.runaway.name}; ${r.runaway.dropped} identical call${r.runaway.dropped === 1 ? " was" : "s were"} dropped. Make each tool call once, with real arguments.]`;
+        }
         if (r.looped) { run.endReason = "it kept repeating the same text"; emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." }); break; }
         if (!r.toolCalls.length) {
           if (run.pending.length && !run.stopped) continue; // a steer arrived as it finished: keep going
@@ -1142,7 +1163,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (real === "call_tool") try { real = JSON.parse(tc.function.arguments || "{}").name || real; } catch {}
           const note = busy.length && !/(^|__)(run|check|message|stop)_agent$/i.test(real)
             ? `\n\n[${busy.map((x) => `${x.alias} "${x.title}"`).join(", ")} ${busy.length > 1 ? "are" : "is"} still running or pending. What ${busy.length > 1 ? "they make" : "it makes"} may not exist yet, and files with the same name may be left from an earlier attempt: don't use or show ${busy.length > 1 ? "their" : "its"} results until the report arrives here (end your turn to wait).]` : "";
-          const tm = { role: "tool", tool_call_id: tc.id, content: res.text + note, _status: res.status, _at: Date.now() };
+          const tm = { role: "tool", tool_call_id: tc.id, content: res.text + note + (run.dropNote || ""), _status: res.status, _at: Date.now() };
+          run.dropNote = "";
           if (res.images?.length) tm._images = res.images;
           if (res.answers) tm._answers = res.answers; // the card shows them when the session is opened again
           if (res.agent) tm._agent = res.agent; // run_agent: the chip for the sub-agent it started
