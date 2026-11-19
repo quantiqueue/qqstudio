@@ -367,7 +367,8 @@ function updateChat(file, fn) {
   return next;
 }
 const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
-  filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server) });
+  filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server),
+  memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL });
 // A sub-agent's session (runs.js run_agent): in its main session's workspace, marked with parent so the sidebar hides it.
 async function newSubSession(parentId, data) {
   const id = parentId.slice(0, 30) + "s" + (Date.now().toString(36) + Math.random().toString(36).slice(2, 5)).slice(-7);
@@ -535,6 +536,7 @@ async function handleWorkspaces(req, res) {
     // ?dir=<folder in the files folder>: open / upload into that folder (the files view's current folder)
     const subDir = u.searchParams.get("dir") ? ws.filePath(id, u.searchParams.get("dir")) : ws.filesDir(id);
     if (!subDir) return sendJson(res, 400, { error: "Bad folder" });
+    if (sub === "memory" && req.method === "GET") return sendJson(res, 200, { on: ws.memoryOn(id), text: require("./memory").text(id), stats: require("./memory").stats(id) }); // workspace memory (memory.js)
     if (sub === "open" && req.method === "POST") { openFolder(fs.existsSync(subDir) ? subDir : ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
     if (sub !== "files") return sendJson(res, 404, { error: "Not found" });
     if (!rest) {
@@ -640,7 +642,7 @@ const lazyInfo = () => ({ lazyAt: lazyTools.threshold(getConfig()), serverTokens
 const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
 const EFFORTS = ["default", "off", "low", "medium", "high", "max"]; // "default" is shown as Auto (nothing sent)
 const BUDGETS = ["auto", "off", "low", "medium", "high", "unlimited"]; // low/medium/high: the caps in budgets
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000 };
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000, memoryTokens: 2000 }; // memoryTokens: workspace memory cap
 const AGENT_DEFAULTS = { maxActive: 1, reportWords: 300, instructions: "" }; // Settings > Agents // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
@@ -665,6 +667,7 @@ async function handleConfig(req, res) {
       cur.agents = a;
     }
     if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
+    if ("memoryTokens" in patch) { const v = Math.round(Number(patch.memoryTokens)); if (Number.isFinite(v) && v >= 200 && v <= 20000) cur.memoryTokens = v; }
     if ("lazyToolsAt" in patch) { const v = patch.lazyToolsAt === "" || patch.lazyToolsAt == null ? 0 : Math.round(Number(patch.lazyToolsAt)); if (Number.isFinite(v) && v >= 0) cur.lazyToolsAt = v; }
     if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }
     if (patch.thinking && typeof patch.thinking === "object") {
@@ -704,7 +707,7 @@ async function handleChats(req, res) {
       c.id = id;
       const placed = ws.placeSession(id, c.workspace); // a new session goes into the workspace it names (else Default)
       c.workspace = ws.workspaceOf(id);
-      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; if (!Array.isArray(c.todo) && Array.isArray(disk?.todo)) c.todo = disk.todo; return c; }); // keep groups the model turned on, tools given full details
+      await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; if (!Array.isArray(c.todo) && Array.isArray(disk?.todo)) c.todo = disk.todo; if (typeof c.memory !== "string" && typeof disk?.memory === "string") c.memory = disk.memory; return c; }); // keep groups the model turned on, tools given full details
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "PATCH") {

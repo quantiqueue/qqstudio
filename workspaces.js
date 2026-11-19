@@ -1,11 +1,13 @@
 // Workspaces: %USERPROFILE%\.qqstudio\workspaces\<id>\
-//   workspace.json   {name, description, created}
+//   workspace.json   {name, description, created, memory}   memory: workspace memory on (memory.js)
+//   memory.md        the workspace memory (memory.js)
 //   sessions\<id>.json   one file per session (chat)
 //   files\           files the user drops in, and files the model creates without another destination
 // "Default" always exists and can't be deleted. Session ids are unique across workspaces; an index maps id -> workspace.
 const fs = require("fs");
 const path = require("path");
 const DATA = require("./paths");
+const memory = require("./memory");
 
 const ROOT = DATA.workspaces;
 const DEFAULT = "Default";
@@ -51,14 +53,19 @@ function info(id) {
   const m = DATA.readJson(metaFile(id), {});
   let sessions = 0;
   try { sessions = fs.readdirSync(sessionsDir(id)).filter((f) => f.endsWith(".json")).length; } catch {}
-  return { id, name: m.name || id, description: m.description || "", created: m.created || 0, isDefault: id === DEFAULT, sessions, dir: filesDir(id) };
+  return { id, name: m.name || id, description: m.description || "", created: m.created || 0, isDefault: id === DEFAULT, sessions, dir: filesDir(id),
+    memory: m.memory === true, memoryStats: m.memory === true ? memory.stats(id) : null };
+}
+// Workspace memory on? (read for every reply, so just the flag)
+function memoryOn(id) {
+  return exists(id) && DATA.readJson(metaFile(id), {}).memory === true;
 }
 // Default first, then by name.
 function list() {
   return ids().map(info).sort((a, b) => (b.isDefault - a.isDefault) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
-function create({ name, description }) {
+function create({ name, description, memory: mem }) {
   name = String(name || "").trim().slice(0, 80);
   if (!name) throw Object.assign(new Error("A workspace needs a name"), { status: 400 });
   if (list().some((w) => w.name.toLowerCase() === name.toLowerCase())) throw Object.assign(new Error(`A workspace called "${name}" already exists`), { status: 409 });
@@ -66,7 +73,7 @@ function create({ name, description }) {
   let id = /^[A-Za-z0-9]/.test(base) ? base : "w-" + base, n = 2;
   while (fs.existsSync(path.join(ROOT, id)) || id.toLowerCase() === DEFAULT.toLowerCase()) id = `${base}-${n++}`;
   ensure(id, name);
-  DATA.writeJson(metaFile(id), { name, description: String(description || "").slice(0, 4000), created: Date.now() });
+  DATA.writeJson(metaFile(id), { name, description: String(description || "").slice(0, 4000), created: Date.now(), memory: mem === true });
   return info(id);
 }
 function update(id, patch) {
@@ -79,6 +86,7 @@ function update(id, patch) {
     m.name = name;
   }
   if (typeof patch.description === "string") m.description = patch.description.slice(0, 4000);
+  if (typeof patch.memory === "boolean") m.memory = patch.memory;
   DATA.writeJson(metaFile(id), m);
   return info(id);
 }
@@ -149,5 +157,5 @@ function freeName(id, name, dir = filesDir(id)) {
   return cand;
 }
 
-module.exports = { DEFAULT, ROOT, init, list, info, exists, create, update, remove, filesDir, filePath, files, freeName,
+module.exports = { DEFAULT, ROOT, init, list, info, exists, memoryOn, create, update, remove, filesDir, filePath, files, freeName,
   workspaceOf, sessionFile, placeSession, forgetSession, allSessions };

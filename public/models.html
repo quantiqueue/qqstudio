@@ -353,6 +353,13 @@
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="caSave" class="load">Save</button><span class="muted" id="caOut"></span></div>
     </div>
   
+    <h2 style="margin-top:28px; font-size:15px">Workspace Memory</h2>
+    <div class="srv">
+      <div class="field"><label for="memTok">Memory size</label><input type="text" id="memTok" inputmode="numeric" placeholder="2000" style="max-width:90px"><span class="muted">tokens per workspace</span></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">For workspaces with Memory on (Edit on the workspace). Every session there gets the memory in its instructions. When it passes 80% of this size, it is tidied up: related entries are merged and outdated ones removed.</div>
+      <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="memSave" class="load">Save</button><span class="muted" id="memOut"></span></div>
+    </div>
+
     <h2 style="margin-top:28px; font-size:15px">Privacy</h2>
     <div class="srv">
       <label class="lo-f" style="gap:10px"><input type="checkbox" id="maskSecrets"> <span>Mask secrets in tool results</span></label>
@@ -690,7 +697,7 @@ $("defEffort").onchange = () => saveDefault({ effort: $("defEffort").value });
 $("defBudget").onchange = () => saveDefault({ budget: $("defBudget").value });
 fetch("/api/config").then((r) => r.json()).then((c) => {
   const t = c.thinking || { budgets: {} };
-  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("maskSecrets").checked = c.maskSecrets !== false;
+  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("memTok").value = c.memoryTokens || ""; $("maskSecrets").checked = c.maskSecrets !== false;
 }).catch(() => {});
 $("tbSave").onclick = async () => {
   const thinking = { message: $("tbMsg").value };
@@ -702,6 +709,13 @@ $("tbSave").onclick = async () => {
 };
 
 $("maskSecrets").onchange = () => fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ maskSecrets: $("maskSecrets").checked }) });
+$("memSave").onclick = async () => {
+  const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ memoryTokens: $("memTok").value.trim() || 2000 }) });
+  const c = await r.json().catch(() => ({}));
+  $("memTok").value = c.memoryTokens || "";
+  $("memOut").textContent = r.ok ? "Saved" : "Error";
+  setTimeout(() => ($("memOut").textContent = ""), 1500);
+};
 $("caSave").onclick = async () => {
   const r = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ compactAt: $("compactAt").value.trim() }) });
   const c = await r.json().catch(() => ({}));

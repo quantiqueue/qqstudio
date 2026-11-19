@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const secrets = require("./secrets");
 const lazy = require("./lazytools");
+const memory = require("./memory");
 
 // Images re-sent to a vision model on each step: the newest 4 to 8. Older ones become a short note, 4 at a time, so the
 // conversation sent doesn't change at every new image (that would make llama-server read it again from there).
@@ -57,7 +58,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, memoryWs = () => null, externalEngine = () => false }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -175,6 +176,119 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return msgs;
   }
 
+  // ---------- workspace memory (memory.js) ----------
+  // In a workspace with memory on, each session gets a snapshot of the memory in its instructions when it starts. The
+  // snapshot doesn't change during the session (the top of the prompt must stay the same for the prompt cache); it is
+  // taken again at compaction, which reads the prompt again anyway. Right after each reply (and before compaction) a
+  // hidden update turn asks the model what to keep: the session's own prompt plus one user message, so the cache covers
+  // nearly all of it. The answer is a list of changes the harness applies; nothing of it is saved to the session.
+  const memCap = () => Math.max(200, Number(getConfig().memoryTokens) || memory.DEFAULT_CAP);
+  const loadedNow = async (model) => externalEngine() || (await modelState(model).catch(() => null)) === "loaded";
+  const memJobs = new Map(); // chatId -> AbortController of an update running after a reply
+  // A real request is about to go to the engine: updates after replies give way (they run again after the next reply).
+  function yieldMemory() { for (const c of memJobs.values()) c.abort(); }
+  // One non-thinking completion, streamed (closing the stream stops the engine at once). Returns the text and any calls.
+  async function complete(body, signal) {
+    const r = await fetch(`${llama.url()}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, stream: true }), signal });
+    if (!r.ok) { const t = await r.text().catch(() => ""); let m = t; try { const j = JSON.parse(t); m = j.error?.message || j.error || t; } catch {} throw new Error(m || r.statusText); }
+    const dec = new TextDecoder(), calls = [];
+    let buf = "", text = "", ended = false;
+    try {
+      for await (const chunk of r.body) {
+        if (signal?.aborted) break;
+        buf += dec.decode(chunk, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") { ended = true; continue; }
+          let j; try { j = JSON.parse(data); } catch { continue; }
+          if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+          if (j.choices?.[0]?.finish_reason) ended = true;
+          const d = j.choices?.[0]?.delta;
+          if (d?.content) text += d.content;
+          for (const tc of d?.tool_calls || []) {
+            const i = tc.index ?? calls.length;
+            calls[i] = calls[i] || { name: "", arguments: "" };
+            if (tc.function?.name) calls[i].name += tc.function.name;
+            if (tc.function?.arguments) calls[i].arguments += tc.function.arguments;
+          }
+        }
+      }
+    } catch (e) { if (!(ended && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET"))) throw e; } // Strata ends streams without a final chunk
+    if (signal?.aborted) throw new Error("stopped");
+    return { text, calls: calls.filter(Boolean) };
+  }
+  // Thinking off for these requests, everything else as in the session's own requests (reasoning_effort, for one, is part
+  // of some templates' system message, so changing it would make the engine read the whole prompt again).
+  const noThink = (run) => ({ ...(run.think.body || {}), chat_template_kwargs: { ...(run.think.body?.chat_template_kwargs || {}), enable_thinking: false },
+    reasoning_budget_tokens: 0, thinking_budget_tokens: 0 });
+  // The hidden update turn. Runs only on the loadout that is already loaded (it never loads one for this).
+  async function memoryPass(run, signal) {
+    if (!run.memWs || run.deleted) return;
+    if (!(await loadedNow(run.model))) return;
+    const msgs = await modelMessages(run);
+    if (!msgs.some((m) => m.role === "assistant")) return;
+    const cap = memCap(), cur = memory.text(run.memWs), t0 = Date.now();
+    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 2000,
+      messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap) }] };
+    if (run.tools.length) body.tools = run.tools; // the same tool list as the session's requests (it's part of the prompt)
+    const slot = slotOf.get(run.id);
+    if (slot !== undefined) body.id_slot = slot;
+    let release = null, out;
+    try {
+      release = await ensureEngine(run.model, null, signal);
+      out = await complete(body, signal);
+    } finally { if (release) release(); }
+    // Changes as text lines, or (some models answer with the tool they have) as memory tool calls.
+    const ops = memory.parseOps(out.text);
+    for (const c of out.calls) if (/(^|__)memory$/.test(c.name)) try { const a = JSON.parse(c.arguments || "{}"); ops.push({ op: a.action || a.op, section: a.section, id: a.id, text: a.text }); } catch {}
+    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${((Date.now() - t0) / 1000).toFixed(1)}s)`); return; }
+    const r = await memory.apply(run.memWs, ops, { cap });
+    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · ${r.tokens}/${cap} tokens (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+  }
+  // Past 80% of the cap: a request with only the memory merges and removes entries. A result that throws away most of
+  // the memory is not applied.
+  async function memoryTidy(run, signal) {
+    const cap = memCap(), cur = memory.text(run.memWs), used = memory.tokens(cur);
+    if (!cur || used <= cap * 0.8) return;
+    if (!(await loadedNow(run.model))) return;
+    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 3000,
+      messages: [{ role: "user", content: memory.TIDY_PROMPT(cur, used, cap) }] };
+    const slot = await pickSlot(run, slotOf.get(run.id) ?? -1); // not the session's slot: its cache stays for the next message
+    if (slot !== undefined) body.id_slot = slot;
+    let release = null, out;
+    try { release = await ensureEngine(run.model, null, signal); out = await complete(body, signal); }
+    finally { if (release) release(); }
+    const ops = memory.parseOps(out.text);
+    if (!ops.length) return;
+    const dry = await memory.apply(run.memWs, ops, { cap, dry: true });
+    if (dry.tokens < used * 0.3) { console.log(`[memory] ${run.id} tidy-up rejected: it would keep only ${dry.tokens} of ${used} tokens`); return; }
+    const r = await memory.apply(run.memWs, ops, { cap });
+    console.log(`[memory] ${run.id} tidied: ${used} -> ${r.tokens}/${cap} tokens (${r.done.length} changes)`);
+  }
+  // Right after a reply: the update, then a tidy-up if it's getting full. In the background; a new request cancels it.
+  function afterReply(run) {
+    if (!run.memWs || run.parentRun || run.deleted || runs.has(run.id)) return;
+    memJobs.get(run.id)?.abort();
+    const ctl = new AbortController();
+    memJobs.set(run.id, ctl);
+    (async () => {
+      try { await memoryPass(run, ctl.signal); if (!ctl.signal.aborted) await memoryTidy(run, ctl.signal); }
+      catch (e) { if (!ctl.signal.aborted) console.error(`[memory] ${run.id}: ${e.message}`); else console.log(`[memory] ${run.id} update gave way to a request`); }
+      finally { if (memJobs.get(run.id) === ctl) memJobs.delete(run.id); }
+    })();
+  }
+  // The memory tool: changes the user asks for ("remember that…", "forget…").
+  async function memoryTool(run, args) {
+    const action = String(args.action || args.op || "").toLowerCase();
+    if (!["add", "replace", "remove"].includes(action)) return { status: "bad arguments", text: 'ERROR: memory needs action: "add" (section, text), "replace" (id, text) or "remove" (id).' };
+    const r = await memory.apply(run.memWs, [{ op: action, section: args.section, id: args.id, text: args.text }], { cap: memCap() });
+    console.log(`[memory] ${run.id} tool: ${r.done.join(", ") || "nothing"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}`);
+    if (!r.done.length) return { status: "error", text: `ERROR: not saved: ${r.refused.join("; ")}.` };
+    return { status: "done", text: `Memory: ${r.done.join(", ")} (${r.tokens} of ${r.cap} tokens). Later sessions in this workspace get it.` };
+  }
+
   // ---------- compaction ----------
   // When the next request would pass Settings > Engine > "Context window max" (% of the model's context), the older
   // part of the session is summarised by the model and a summary message is inserted. The full history stays in the
@@ -235,6 +349,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     let summary = "", release = null;
     try {
       run.abort = new AbortController();
+      // What compaction is about to summarize away: memory gets what's worth keeping first.
+      if (run.memWs) await memoryPass(run, run.abort.signal).catch((e) => { if (!run.stopped) console.error(`[memory] ${run.id}: ${e.message}`); });
+      if (run.stopped) return;
       release = await ensureEngine(run.model, null, run.abort.signal);
       const r = await fetch(`${llama.url()}/v1/chat/completions`, {
         method: "POST", headers: { "Content-Type": "application/json" }, signal: run.abort.signal,
@@ -261,14 +378,16 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const add = [...run.used].filter((n) => run.lazy.has(n) && !run.promoted.has(n));
     for (const n of add) run.promoted.add(n);
     for (const n of run.lazy.keys()) run.listed.add(n);
+    if (run.memWs) { run.memSnap = memory.text(run.memWs); run.baseSystem = run.pageSystem + memory.section(run.memSnap); } // a fresh snapshot of the memory
     setTools(run);
     setSystem(run);
     if (add.length) console.log(`[run] ${run.id} full details for ${add.length} tools on request: ${add.join(", ")}`);
-    await save(run, null, { promoted: [...run.promoted], inPrompt: [...run.loaded] });
+    await save(run, null, { promoted: [...run.promoted], inPrompt: [...run.loaded], ...(run.memWs ? { memory: run.memSnap } : {}) });
   }
 
   async function step(run) {
     const { model } = run;
+    yieldMemory(); // a memory update after another reply gives way
     const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
     let think0 = null, think1 = null, timings = null, failed = false, retry = false, gotChunk = false, lastSave = Date.now();
@@ -803,6 +922,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       const g = groupOf(run, name); // a tool from a group the model hasn't turned on yet: say how
       return { status: "error", text: g ? `ERROR: ${name} is in the "${g.name}" tool group, which isn't on yet. Call enable_tools {"name": "${g.name}"} first, then call it.` : `ERROR: the tool "${name}" is not available in this chat.` };
     }
+    if (name === "memory" && run.memWs) return memoryTool(run, args);
     if (!isEnabled(name)) return { status: "error", text: `ERROR: the tool "${name}" is disabled in Settings > Tools.` };
     if (name === "ask_user") return askUser(run, tc, args);
     if (name === "todo") return todoTool(run, args);
@@ -992,6 +1112,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       emit(run, { type: "done", ...stat });
       for (const c of run.clients) c.end();
       console.log(`[run] ${run.id} finished${run.stopped ? " (stopped)" : ""}`);
+      if (run.messages.length > run.startLen) afterReply(run);
       if (run.parentRun) finishSub(run).catch((e) => console.error(`[run] report ${run.id}: ${e.message}`));
     }
   }
@@ -1019,6 +1140,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const id = body.chatId;
     if (!id || !chatFile(id)) throw Object.assign(new Error("Bad chat id"), { status: 400 });
     if (runs.has(id)) throw Object.assign(new Error("This chat already has a reply in progress."), { status: 409 });
+    yieldMemory();
     let chat;
     try { chat = await readChat(id); } catch { throw Object.assign(new Error("Chat not found (save it first)"), { status: 404 }); }
     if (!body.model) throw Object.assign(new Error("No model selected"), { status: 400 });
@@ -1063,9 +1185,16 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         if (inPrompt.has(g.key)) listed.add(t.name);
       }
     }
+    // Workspace memory: the session's snapshot (taken now if it has none) and the memory tool. Sub-agents get the
+    // snapshot through their instructions (built from the main session's) and no tool: they don't write to memory.
+    const memWs = opts.parentRun ? null : memoryWs(id);
+    const memSnap = memWs ? (typeof chat.memory === "string" ? chat.memory : memory.text(memWs)) : null;
+    if (memWs) tools.push(memory.SPEC(memCap()));
+    const pageSystem = String(body.system || "");
     const budget = body.think?.budget;
     const run = {
-      id, model: body.model, baseSystem: String(body.system || ""), system: "", baseTools: tools, tools: [], allowed: new Set(),
+      id, model: body.model, pageSystem, baseSystem: pageSystem + (memWs ? memory.section(memSnap) : ""), system: "", baseTools: tools, tools: [], allowed: new Set(),
+      memWs, memSnap,
       vision: visionOf(body.model), imgCache: new Map(),
       lazy: lazyPool, promoted, listed, used: new Set(), byName, order: new Map(all.map((t, i) => [t.name, i])),
       viaCall: lazyPool.size > 0 || deferred.size > 0, // tool_info / call_tool are offered
@@ -1082,6 +1211,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     setSystem(run);
     runs.set(id, run);
     if (unloaded) { emit(run, { type: "loaded", loaded: [...loaded] }); save(run, null, { loaded: [...loaded] }).catch(() => {}); }
+    if (memWs && typeof chat.memory !== "string") save(run, null, { memory: memSnap }).catch(() => {});
     if (lazyPool.size) console.log(`[run] ${id} ${lazyPool.size - [...lazyPool.keys()].filter((n) => promoted.has(n)).length} tools on request (${[...new Set([...lazyPool.values()].map((t) => t.group || t.server))].join(", ")})`);
     console.log(`[run] ${id} started (${run.model}, ${run.tools.length} tools${deferred.size ? `, ${deferred.size} on Auto` : ""}${run.vision ? ", vision" : ""})`);
     loop(run);
