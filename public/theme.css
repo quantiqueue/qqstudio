@@ -18,13 +18,16 @@
   --glass-shadow: 0 10px 30px rgba(0, 0, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .1);
   --glass-blur: blur(16px) saturate(1.4);
 }
-body {
-  background:
+:root {
+  --page-bg:
     radial-gradient(1200px 700px at 8% 2%, rgba(64, 110, 255, .28), rgba(64, 110, 255, 0) 62%),
     radial-gradient(1000px 620px at 93% 5%, rgba(168, 85, 247, .24), rgba(168, 85, 247, 0) 60%),
     radial-gradient(1100px 720px at 84% 95%, rgba(34, 211, 238, .16), rgba(34, 211, 238, 0) 62%),
     radial-gradient(900px 640px at 6% 90%, rgba(99, 102, 241, .22), rgba(99, 102, 241, 0) 60%),
     #0b1020;
+}
+body {
+  background: var(--page-bg);
   background-attachment: fixed;
   scrollbar-color: rgba(255, 255, 255, .16) transparent;
 }
@@ -97,3 +100,11 @@ input[type=checkbox]:not(.task):indeterminate::before { left: 9px; background: #
 input[type=checkbox]:not(.task):hover:not(:disabled) { box-shadow: 0 0 0 1px #3b4356; }
 input[type=checkbox]:not(.task):focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
 input[type=checkbox]:not(.task):disabled { opacity: .45; cursor: default; }
+
+/* Behind the floating composer: the page's own background, pinned to the window like the body's, so it lines up exactly
+   and looks like empty page, while hiding the conversation that scrolls under it. Its top edge fades in. */
+#form::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: var(--page-bg); background-attachment: fixed;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 28px); mask-image: linear-gradient(to bottom, transparent 0, #000 28px);
+}
