@@ -335,7 +335,7 @@
   form { display:flex; gap:10px; padding:12px 16px; }
   /* The composer (and the task list above it) floats over the end of the conversation: no band of its own, the
      conversation fades out under it. Clicks outside the controls go through to the conversation. */
-  #form { position:absolute; left:0; right:0; bottom:0; z-index:4; padding-top:28px; pointer-events:none; background:none; }
+  #form { position:absolute; left:0; right:var(--sbw, 0px); bottom:0; z-index:4; padding-top:28px; pointer-events:none; background:none; }
   #form .inner { pointer-events:auto; }
   form .inner { display:flex; flex-direction:column; gap:8px; max-width:900px; width:100%; margin:0 auto; }
   /* one bordered box: the textarea grows from 1 line to about 5, the send/stop icon sits inside on the right */
@@ -2707,6 +2707,10 @@ async function route() {
 }
 // The floating composer's height, so the conversation can scroll its last message clear of it (#log's bottom padding).
 // Hidden (a workspace overview): keep the last height. At the bottom before: stay at the bottom (the task list appearing).
+// The conversation's scrollbar stays uncovered: the composer area ends where it starts (--sbw, its width).
+const fitScrollbar = () => { const l = $("log"); if (l.offsetWidth) document.documentElement.style.setProperty("--sbw", (l.offsetWidth - l.clientWidth) + "px"); };
+new ResizeObserver(fitScrollbar).observe($("log"));
+new MutationObserver(fitScrollbar).observe($("log"), { childList: true }); // the scrollbar appears once the conversation is long enough
 new ResizeObserver(() => {
   const f = $("form"), l = $("log");
   if (f.hidden || !f.offsetHeight) return;
