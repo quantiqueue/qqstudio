@@ -138,7 +138,7 @@ function launch(spec) {
     const e = byId(spec.engine);
     if (!e) throw new Error(`The loadout "${spec.name}" has no engine. Pick one in Settings > Loadouts.`);
     if (up() || cur.strata) await stopNow();
-    if (e.type === "strata" && strataBusy.has(e.id)) throw new Error(`${e.name} is updating; the loadout can load once the update is done`);
+    if ((e.type === "strata" && strataBusy.has(e.id)) || swapping.has(e.id)) throw new Error(`${e.name} is updating; the loadout can load once the update is done`);
     if (e.type === "strata") return launchStrata(e, spec);
     for (let i = 0; i < 25 && (await health()) !== "unreachable"; i++) await new Promise((r) => setTimeout(r, 200)); // the old one letting go of the port
     cur = { loadout: spec.loadout, name: spec.name, engine: e.id, pid: null, sig: spec.sig, state: "stopped", error: null, startedAt: null, child: null };
@@ -193,8 +193,8 @@ const current = () => ({ loadout: up() ? cur.loadout : null, engine: up() ? cur.
 
 async function list() {
   const s = await status();
-  const out = data.engines.map((e) => ({ ...e, type: e.type || "llama.cpp", inUse: up() && s.engine === e.id, downloaded: e.type === "strata" || isInside(engineDir(e), e.exe) }));
-  return { engines: out, autostart: data.autostart, running: s, jobs: [...jobs.values()].map(({ child, abort, ...j }) => j) };
+  const out = data.engines.map((e) => ({ ...e, type: e.type || "llama.cpp", inUse: up() && s.engine === e.id, downloaded: e.type === "strata" || isInside(engineDir(e), e.exe), update: llamaUpdateOf(e) }));
+  return { engines: out, autostart: data.autostart, running: s, releasesAt: relLoad().value ? relLoad().at || null : null, jobs: [...jobs.values()].map(({ child, abort, ...j }) => j) };
 }
 
 function log(loadoutId, bytes = 64 * 1024) {
@@ -380,7 +380,7 @@ function relLoad() {
   if (!relCache) { try { relCache = JSON.parse(fs.readFileSync(REL_FILE, "utf8")); } catch { relCache = {}; } }
   // A saved list whose download links point anywhere but GitHub is dropped (an earlier build fetched it through a
   // third-party mirror).
-  if (relCache.value && !(relCache.value.backends || []).every((b) => trustedUrl(b.asset?.url) && (!b.runtime || trustedUrl(b.runtime.url)))) relCache = {};
+  if (relCache.value && !process.env.LLAMA_RELEASES_API && !(relCache.value.backends || []).every((b) => trustedUrl(b.asset?.url) && (!b.runtime || trustedUrl(b.runtime.url)))) relCache = {};
   return relCache;
 }
 // Builds and Strata are only ever downloaded from GitHub itself (its release pages redirect to its own file hosts).
@@ -435,6 +435,86 @@ async function releasesNow() {
 }
 
 const jobs = new Map(); // job id -> { id, name, build, backend, state, done, total, error, engine }
+
+// ---------- updating a downloaded llama.cpp build ----------
+// A downloaded engine is updated in place: the newer build of the same backend is downloaded next to it, then swapped
+// into the engine's folder. The engine keeps its id, so its loadouts stay on it. Its loaded loadout is ejected only for
+// the swap (beforeSwap, from server.js, waits for a reply using it to finish).
+const buildNum = (b) => Number(String(b || "").replace(/^b/, "")) || 0;
+// What an update would bring, from the cached release list (no request): { build, size } or null.
+function llamaUpdateOf(e) {
+  if ((e.type && e.type !== "llama.cpp") || !e.backend || !buildNum(e.build) || !isInside(engineDir(e), e.exe)) return null;
+  const v = relLoad().value;
+  if (!v || v.system !== SYSTEM_LABEL || buildNum(v.build) <= buildNum(e.build)) return null;
+  const b = (v.backends || []).find((x) => x.backend === e.backend);
+  return b ? { build: v.build, size: b.asset.size + (b.runtime?.size || 0) } : null;
+}
+const swapping = new Set(); // engines being swapped: their loadouts can't load meanwhile
+// The update check for a downloaded build (the refresh icon on its card): fetch the release list now.
+async function checkLlama(id) {
+  const e = byId(id);
+  if (!e || (e.type && e.type !== "llama.cpp")) throw Object.assign(new Error("No such llama.cpp engine"), { status: 404 });
+  const v = await releases({ force: true });
+  if (v.stale) throw Object.assign(new Error(v.note || "GitHub didn't answer"), { status: 502 });
+  return { at: relLoad().at, build: v.build, update: llamaUpdateOf(e) };
+}
+async function updateLlama(id, { beforeSwap = async () => {} } = {}) {
+  const e = byId(id);
+  if (!e || (e.type && e.type !== "llama.cpp")) throw Object.assign(new Error("No such llama.cpp engine"), { status: 404 });
+  if (!isInside(engineDir(e), e.exe)) throw Object.assign(new Error("Only builds qqstudio downloaded can be updated; add a newer one from Add an engine"), { status: 400 });
+  const old = jobs.get("upd-" + id);
+  if (old && !["done", "error", "cancelled"].includes(old.state)) throw Object.assign(new Error("Already updating"), { status: 409 });
+  const rel = await releases({ force: true });
+  const b = rel.backends.find((x) => x.backend === e.backend);
+  if (!b) throw Object.assign(new Error(`The latest release (${rel.build}) has no ${labelOf(e.backend)} build for ${SYSTEM_LABEL}`), { status: 400 });
+  if (buildNum(rel.build) <= buildNum(e.build)) throw Object.assign(new Error(`${e.name} is already the latest build (${e.build})`), { status: 400 });
+  const parts = [b.asset, b.runtime].filter(Boolean);
+  const job = { id: "upd-" + id, name: e.name, kind: "llama", build: rel.build, backend: e.backend, state: "downloading", label: rel.build,
+    done: 0, total: parts.reduce((n, p) => n + p.size, 0), error: null, engine: id };
+  jobs.set(job.id, job);
+  const dir = engineDir(e), fresh = dir + ".new", stale = dir + ".old";
+  (async () => {
+    try {
+      await rmRetry(fresh).catch(() => {});
+      fs.mkdirSync(fresh, { recursive: true });
+      for (const p of parts) {
+        const file = path.join(fresh, p.name);
+        await fetchTo(p.url, file, (n) => (job.done += n), job);
+        if (job.cancelled) throw new Error("cancelled");
+        job.state = "unpacking";
+        await extract(file, fresh);
+        await fs.promises.unlink(file).catch(() => {});
+        if (job.cancelled) throw new Error("cancelled");
+        job.state = "downloading";
+      }
+      const exe = findExe(fresh);
+      if (!exe) throw new Error("llama-server was not found in the download");
+      job.state = "installing";
+      swapping.add(id);
+      await beforeSwap(); // ejects this engine's loadout if it's loaded
+      if (cur.engine === id && cur.pid) await stop();
+      for (let i = 0; i < 25 && cur.engine === id && cur.pid && alive(cur.pid); i++) await new Promise((r) => setTimeout(r, 200));
+      await rmRetry(stale).catch(() => {});
+      await fs.promises.rename(dir, stale);
+      try { await fs.promises.rename(fresh, dir); }
+      catch (err) { await fs.promises.rename(stale, dir).catch(() => {}); throw err; }
+      const was = e.build;
+      e.exe = path.join(dir, path.relative(fresh, exe));
+      e.build = rel.build;
+      if (e.name.includes(was)) e.name = e.name.split(was).join(rel.build); // "llama.cpp Vulkan b12521" → "… b12556"
+      e.updatedAt = Date.now();
+      save();
+      await rmRetry(stale).catch(() => {});
+      job.state = "done"; job.name = e.name;
+      console.log(`[engines] updated ${e.name} (${was} -> ${rel.build})`);
+    } catch (err) {
+      job.state = job.cancelled ? "cancelled" : "error"; job.error = job.cancelled ? null : err.message;
+      await rmRetry(fresh).catch(() => {});
+    } finally { swapping.delete(id); job.endedAt = Date.now(); }
+  })();
+  const { child, abort, ...shown } = job;
+  return shown;
+}
 async function download({ build, backend, name }) {
   const rel = await releases();
   if (build && build !== rel.build) throw Object.assign(new Error(`Only the latest build (${rel.build}) can be downloaded`), { status: 400 });
@@ -1018,7 +1098,7 @@ async function init() {
 
 module.exports = {
   init, launch, stop, status, current, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip, untar, extract, parseAsset, backendsOf, pickBackend, gpus,
-  strataRelease, downloadStrata, updateStrata, checkStrata, strataCatalog, strataCatalogCached,
+  strataRelease, downloadStrata, updateStrata, updateLlama, checkLlama, checkStrata, strataCatalog, strataCatalogCached,
   byId, all: () => data.engines, defaultEngine, subcmd,
   settings: () => ({ autostart: data.autostart, last: data.last }),
 };

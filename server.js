@@ -448,7 +448,18 @@ async function handleEngines(req, res) {
     if (a === "jobs" && b === "clear" && req.method === "POST") { llama.clearJobs(); return sendJson(res, 200, { ok: true }); }
     if (a === "jobs" && c === "cancel" && req.method === "POST") { llama.cancel(b); return sendJson(res, 200, { ok: true }); }
     if (a && !llama.byId(a)) return sendJson(res, 404, { error: "No such engine" });
-    if (a && b === "check" && req.method === "POST") return sendJson(res, 200, { check: await llama.checkStrata(a) }); // Strata: what an update would change
+    if (a && b === "check" && req.method === "POST") // Strata: what an update would change; llama.cpp: the release list, fetched now
+      return sendJson(res, 200, { check: llama.byId(a).type === "strata" ? await llama.checkStrata(a) : await llama.checkLlama(a) });
+    if (a && b === "update" && req.method === "POST" && llama.byId(a).type !== "strata") { // a downloaded llama.cpp build: newer build of the same backend, swapped in place
+      const beforeSwap = async () => { // eject its loadout for the swap, once no reply is using it (up to 10 min)
+        for (let i = 0; llama.current().engine === a && busyCount(); i++) {
+          if (i > 1200) throw new Error("A reply kept using this engine's loadout; try the update again");
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        if (llama.current().engine === a) await llama.stop();
+      };
+      return sendJson(res, 200, { job: await llama.updateLlama(a, { beforeSwap }) });
+    }
     if (a && b === "update" && req.method === "POST") { // Strata: its own updater. A loaded Strata loadout is ejected first (Strata won't update while it serves)
       if (llama.current().engine === a) await unloadLoadout(null);
       return sendJson(res, 200, { job: await llama.updateStrata(a) });

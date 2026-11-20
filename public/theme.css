@@ -111,3 +111,34 @@ input[type=checkbox]:not(.task):disabled { opacity: .45; cursor: default; }
 
 /* narrow screens: the sidebar opens over the content (index.html), so there it needs the page's background */
 @media (max-width: 899px) { body aside { background: var(--page-bg); background-attachment: fixed; } }
+
+/* the four pickers (sessions: loadout, effort, approval; Settings → Engines: llama.cpp build): a thin rounded outline, no fill */
+.toolbar #modelBtn, .toolbar #effortBtn, .toolbar #modeBtn, .pick-btn {
+  background: transparent; border: 1px solid rgba(255, 255, 255, .16); border-radius: 8px; color: var(--muted);
+  transition: border-color .12s, color .12s;
+}
+.toolbar #modelBtn:hover, .toolbar #effortBtn:hover, .toolbar #modeBtn:hover, .pick-btn:hover:not(:disabled),
+.toolbar #modelBtn.open, .toolbar #effortBtn.open, .toolbar #modeBtn.open, .pick-btn.open,
+.toolbar #modelBtn:focus-visible, .toolbar #effortBtn:focus-visible, .toolbar #modeBtn:focus-visible, .pick-btn:focus-visible {
+  background: transparent; border-color: rgba(255, 255, 255, .34); color: var(--text); outline: none;
+}
+/* …with a selector icon (up/down chevrons) at the right, inside the outline */
+.toolbar #modelBtn::after, .toolbar #effortBtn::after, .toolbar #modeBtn::after, .pick-btn::after {
+  content: ""; flex: none; width: 8px; height: 12px; margin-left: 8px; background-color: currentColor; opacity: .75;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.toolbar #modelBtn .lbl { flex: 1; min-width: 0; text-align: left; } /* the label takes the room, so the icon sits at the right edge */
+/* every other dropdown (native <select>: Settings defaults, the loadout editor's fields): the same outline and selector icon.
+   A background image can't follow currentColor, so the icon is drawn in the muted colour and swapped for the text colour on hover. */
+select:not([hidden]):not(.vh) {
+  -webkit-appearance: none; appearance: none; background-color: transparent; color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, .16); border-radius: 8px; padding: 5px 28px 5px 12px; line-height: 1.35; font-size: 13px; transition: border-color .12s, color .12s;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14' fill='none' stroke='%238d94ab' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 8px 12px;
+}
+select:not([hidden]):not(.vh):hover:not(:disabled), select:not([hidden]):not(.vh):focus-visible, select:not([hidden]):not(.vh):focus {
+  border-color: rgba(255, 255, 255, .34); color: var(--text); outline: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 14' fill='none' stroke='%23e8ebf4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E");
+}
+select:not([hidden]):not(.vh):disabled { opacity: .5; }

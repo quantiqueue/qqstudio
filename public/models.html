@@ -248,9 +248,26 @@
   .eng .upd { display:flex; gap:10px; align-items:center; margin-top:8px; font-size:12px; color:var(--muted); }
   .eng .upd.new { color:var(--accent); } .eng .upd.bad { color:var(--red); }
   .eng .upd .bar { flex:0 0 160px; margin-top:0; }
+  /* Strata's update line: a small refresh icon after "checked …" asks the update feed again */
+  .eng .upd .ref-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; margin-left:-4px; padding:0; border:none; border-radius:6px; background:none; color:var(--muted); cursor:pointer; flex:none; }
+  .eng .upd .ref-btn:hover:not(:disabled) { color:var(--text); background:var(--glass-hover, rgba(255,255,255,.07)); }
+  .eng .upd .ref-btn:disabled { cursor:default; opacity:1; }
+  .eng .upd .ref-btn svg { width:13px; height:13px; }
+  .eng .upd .ref-btn.spin svg { animation:spin 1s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  /* "Update now" after the update status, a quiet text link like "Show logs" */
+  .eng .upd .upd-now { display:inline; margin-left:-2px; padding:0; border:none; background:none; color:var(--accent); font:inherit; font-weight:600; cursor:pointer; flex:none; }
+  .eng .upd .upd-now:hover:not(:disabled) { text-decoration:underline; }
+  .eng .upd .upd-now:disabled { opacity:.5; cursor:default; }
   .eng .nm { font-weight:600; font-size:14px; }
   .eng .tag-active { font-size:11px; color:var(--green); border:1px solid #2a5a3a; border-radius:6px; padding:0 6px; }
   .eng .path { font:12px ui-monospace,Consolas,monospace; color:var(--muted); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* "Remove" (an engine from an executable: the file stays) / "Delete" (a build qqstudio downloaded: its files go), bottom right */
+  .eng .eng-foot { display:flex; align-items:baseline; gap:10px; }
+  .eng .eng-foot > .path, .eng .eng-foot > .upd-text { flex:1; min-width:0; }
+  .eng .eng-rm { flex:none; margin-left:auto; padding:0; border:none; background:none; font-size:12px; color:var(--muted); cursor:pointer; white-space:nowrap; }
+  .eng .eng-rm:hover { color:var(--red); text-decoration:underline; }
+  .eng .eng-rm.armed { color:var(--red); font-weight:600; }
   .eng .loaded { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px; font-size:12px; color:var(--muted); }
   .eng .loaded .lm { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:8px; padding:2px 4px 2px 8px; color:var(--text); }
   .eng .loaded button { font-size:11px; padding:1px 8px; }
@@ -273,6 +290,31 @@
   .hdr-btn { margin-left:auto; display:inline-flex; align-items:center; gap:6px; color:var(--muted); text-decoration:none; padding:5px 8px; border-radius:8px; font-size:14px; transition:background .12s, color .12s; }
   .hdr-btn:hover { background:#252a35; color:var(--text); }
   #status { display:none !important; } /* still written to by the page; not shown */
+  /* Build picker: a flat button and a glass menu, like the loadout menu in sessions. The hidden <select> keeps the value. */
+  .pick-wrap { position:relative; flex:none; }
+  .pick-btn { display:inline-flex; align-items:center; gap:6px; max-width:340px; background:transparent; border-color:transparent; color:var(--muted); font-size:13px; transition:background .12s, color .12s; }
+  .pick-btn .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pick-btn:hover:not(:disabled), .pick-btn.open, .pick-btn:focus-visible { background:#252a35; color:var(--text); outline:none; }
+  .pick-menu { position:absolute; top:calc(100% + 6px); left:0; width:340px; max-width:calc(100vw - 40px); max-height:60vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.5); padding:6px 0; z-index:20; font-size:13px; white-space:normal; }
+  .pick-menu[hidden] { display:none; }
+  .pick-menu h4 { margin:8px 14px 4px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; }
+  .pick-menu .lm-row { display:flex; align-items:flex-start; gap:9px; width:100%; padding:7px 14px; border:none; border-radius:0; background:none; color:var(--text); text-align:left; font-size:13px; }
+  .pick-menu .lm-row:hover, .pick-menu .lm-row:focus-visible { outline:none; }
+  .pick-menu .lm-row .t { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .pick-menu .lm-row small { display:block; color:var(--muted); margin-top:2px; line-height:1.35; }
+  .pick-menu .lm-row.on .nm::after { content:" ✓"; color:var(--accent); }
+  .pick-menu .sugg { color:var(--accent); }
+  .pick-menu .lm-row:disabled { opacity:.45; cursor:default; }
+  .pick-menu .lm-row:disabled:hover { background:none; }
+  /* every other dropdown: the <select> stays as the value store (hidden), a picker button and a glass menu stand in */
+  select.gsel { display:none !important; }
+  .gpick { display:inline-flex; min-width:0; }
+  .gpick.wide { display:flex; flex:1; width:100%; }
+  .gpick .pick-btn { max-width:100%; }
+  .gpick.wide .pick-btn { width:100%; }
+  .gpick .pick-btn .lbl { flex:1; min-width:0; text-align:left; }
+  .gmenu { position:fixed; width:auto; z-index:1000; }
+  .gmenu .lm-row:disabled { opacity:.45; cursor:default; }
 </style>
 <link rel="stylesheet" href="/theme.css">
 </head>
@@ -307,7 +349,11 @@
     <div class="srv">
       <div class="row2">
         <span>Download from llama.cpp releases</span>
-        <select id="engBackend"><option>loading…</option></select>
+        <select id="engBackend" hidden><option>loading…</option></select>
+        <div class="pick-wrap">
+          <button type="button" id="engBackendBtn" class="pick-btn" aria-haspopup="listbox" aria-expanded="false" disabled><span class="lbl">loading…</span></button>
+          <div id="engBackendMenu" class="plus-menu pick-menu" role="listbox" aria-label="llama.cpp build" hidden></div>
+        </div>
         <span class="muted" id="engBuild"></span>
         <span class="spacer"></span>
         <button id="engDl" class="load" disabled>Download</button>
@@ -1165,6 +1211,7 @@ const engPost = (u, body) => fetch(u, { method: "POST", headers: { "Content-Type
 const backendLabel = (b) => (b || "").replace(/^cuda-?/, "CUDA ").replace(/^rocm-?/, "ROCm ").replace(/^vulkan$/, "Vulkan").replace(/^cpu$/, "CPU").replace(/^sycl(-|$)/, "SYCL ").replace(/^metal$/, "Metal").replace(/^openvino-?/, "OpenVINO ").trim();
 async function srvRefresh() {
   try { engData = await (await fetch("/api/engines")).json(); } catch { engData = null; }
+  if (engData && engRel && JSON.stringify(engInstalled()) !== engPickSig) renderEngPick();
   if (!engData) { $("engList").innerHTML = '<div class="srv err"><span class="err-text">harness unreachable</span></div>'; return; }
   const run = engData.running || {};
   const list = $("engList"); list.innerHTML = "";
@@ -1179,22 +1226,14 @@ async function srvRefresh() {
       ? [e.build && `Strata Terminal ${e.build}`, e.engineVersion ? `engine ${e.engineVersion}` : "no engine yet", backendLabel(e.backend), `${n} loadout${n === 1 ? "" : "s"}`]
       : [backendLabel(e.backend), e.build, `${n} loadout${n === 1 ? "" : "s"}`]).filter(Boolean).join(" · ")));
     r1.appendChild(el("span", "spacer"));
-    const updJob = strata && engData.jobs.find((j) => j.id === "upd-" + e.id);
+    const updJob = engData.jobs.find((j) => j.id === "upd-" + e.id);
     const updating = updJob && !["done", "error", "cancelled"].includes(updJob.state);
-    if (strata && !updating) { // Strata's own updater: ask it first, offer Update only when there's something new
-      const checking = engChecking.has(e.id);
-      const ck = r1.appendChild(el("button", null, checking ? "Checking…" : "Check for updates"));
-      ck.disabled = checking; ck.title = "Ask Strata's update feed whether a newer Terminal or engine is out (downloads nothing)";
-      ck.onclick = () => engCheck(e.id);
-      if (e.check?.available && !checking) {
-        const up = r1.appendChild(el("button", "load", "Update"));
-        up.title = "Download and install the new version through Strata's own updater" + (e.inUse ? ". Updating ejects the loaded Strata loadout." : "");
-        up.onclick = async () => { up.disabled = true; const r = await engPost(`/api/engines/${encodeURIComponent(e.id)}/update`); if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError(""); srvRefresh(); };
-      }
-    }
-    if (engData.engines.length > 1) {
+    // Updates (Strata and downloaded llama.cpp builds) start from "Update now" on the card's update line
+    let del = null;
+    if (engData.engines.length > 1 && !updating) { // two clicks: "Delete" → "Delete engine and its files?" (4 s to confirm)
       const armed = engArmed === e.id;
-      const del = r1.appendChild(el("button", "eject" + (armed ? " armed" : ""), armed ? (e.downloaded ? "Delete engine and its files?" : "Remove engine?") : "🗑"));
+      del = el("button", "eng-rm" + (armed ? " armed" : ""), armed ? (e.downloaded ? "Delete engine and its files?" : "Remove engine?") : e.downloaded ? "Delete" : "Remove");
+      del.type = "button";
       del.onclick = async () => {
         if (engArmed !== e.id) { engArmed = e.id; srvRefresh(); setTimeout(() => { if (engArmed === e.id) { engArmed = null; srvRefresh(); } }, 4000); return; }
         engArmed = null;
@@ -1202,10 +1241,15 @@ async function srvRefresh() {
         if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText);
         srvRefresh(); loLoad();
       };
-      del.title = (e.downloaded ? "Remove this engine and delete its downloaded build" : "Remove this engine (the executable is left alone)") + (n ? `. Its ${n} loadout${n === 1 ? "" : "s"} will need another engine.` : "");
+      del.title = (e.downloaded ? "Remove this engine and delete its files" + (strata ? " (Strata's Terminal, engine and state)" : " (the downloaded build)") : "Remove this engine from qqstudio; the executable is left where it is") + (n ? `. Its ${n} loadout${n === 1 ? "" : "s"} will need another engine.` : "");
     }
     card.appendChild(el("div", "path", e.type === "strata" ? e.root : e.exe)).title = e.type === "strata" ? e.root : e.exe;
-    if (strata) engUpdLine(card, e, updJob, updating);
+    if (strata) engUpdLine(card, e, updJob, updating); else llamaUpdLine(card, e, updJob, updating);
+    if (del) { // on the card's last line, at the right
+      const last = card.lastElementChild;
+      if (last.classList.contains("upd")) { if (!last.querySelector(".spacer")) last.appendChild(el("span", "spacer")); last.appendChild(del); }
+      else { const foot = card.appendChild(el("div", "eng-foot")); foot.appendChild(last); foot.appendChild(del); }
+    }
   }
   $("strataRow").hidden = engData.engines.some((e) => e.type === "strata"); // installed: updates live on its card
   $("engAuto").checked = engData.autostart;
@@ -1238,26 +1282,82 @@ async function srvRefresh() {
 // Strata's update line under its card: progress while updating, else what the last check found.
 const engChecking = new Map(); // engine id -> error text of a failed check ("" while it runs)
 const engAgo = (t) => { const s = (Date.now() - t) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : new Date(t).toLocaleDateString(); };
+// The refresh icon after an update status: checks for updates now (downloads nothing).
+function refreshIcon(row, e, checking, what) {
+  const rf = row.appendChild(el("button", "ref-btn" + (checking ? " spin" : "")));
+  rf.type = "button"; rf.disabled = checking;
+  rf.title = rf.ariaLabel = checking ? "Checking…" : `Check for updates (${what}; downloads nothing)`;
+  rf.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3.2h-3.2"/></svg>';
+  rf.onclick = () => engCheck(e.id);
+}
+// "Update now" after an update status: starts the engine's update (Strata's own updater, or the newer llama.cpp build).
+function updNow(row, e, title) {
+  const a = row.appendChild(el("button", "upd-now", "Update now"));
+  a.type = "button"; a.title = title;
+  a.onclick = async () => {
+    a.disabled = true;
+    const r = await engPost(`/api/engines/${encodeURIComponent(e.id)}/update`);
+    if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError("");
+    srvRefresh();
+  };
+}
 function engUpdLine(card, e, job, updating) {
-  const c = e.check, row = el("div", "upd");
+  const c = e.check, row = el("div", "upd"), checking = engChecking.has(e.id) && !engChecking.get(e.id);
   if (updating) {
     row.appendChild(el("span", null, "Updating · " + (job.total ? `${job.label}: ${engSize(job.done)} of ${engSize(job.total)}` : job.note || job.label || "starting…")));
     if (job.total) { const bar = row.appendChild(el("div", "bar")).appendChild(el("div")); bar.style.width = Math.round(job.done / job.total * 100) + "%"; }
     row.appendChild(el("span", "spacer"));
     const x = row.appendChild(el("button", "eject", "Cancel")); x.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(job.id)}/cancel`).then(srvRefresh);
-  } else if (engChecking.get(e.id)) { row.classList.add("bad"); row.textContent = "Couldn't check for updates: " + engChecking.get(e.id); }
-  else if (engChecking.has(e.id)) row.textContent = "Checking Strata's update feed…";
-  else if (job && job.state === "error" && !(c && c.at > (job.endedAt || 0))) { row.classList.add("bad"); row.textContent = "Update failed: " + job.error; }
+    card.appendChild(row);
+    return;
+  }
+  let text;
+  if (engChecking.get(e.id)) { row.classList.add("bad"); text = "Couldn't check for updates: " + engChecking.get(e.id); }
+  else if (checking) text = "Checking Strata's update feed…";
+  else if (job && job.state === "error" && !(c && c.at > (job.endedAt || 0))) { row.classList.add("bad"); text = "Update failed: " + job.error; }
   else if (c && c.available) {
     row.classList.add("new");
     const parts = [];
     if (c.control.status === "available" && c.control.offered) parts.push(`Terminal ${c.control.offered}`);
     if (["available", "install"].includes(c.engine.status) && c.engine.offered) parts.push(`engine ${c.engine.offered}`);
     const size = (c.engine.local ? 0 : c.engine.bytes) + (c.control.status === "available" ? c.control.bytes : 0);
-    row.textContent = `New version: ${parts.join(" · ") || "available"}${size ? ` (${engSize(size)})` : ""}` + (e.inUse ? " · updating will eject the loaded Strata loadout" : "");
-  } else if (c) row.textContent = (job && job.state === "done" ? "Updated · " : "") + `Up to date · checked ${engAgo(c.at)}` + (c.engine.status && !["current", "available", "install"].includes(c.engine.status) && c.engine.note ? ` · ${c.engine.note}` : "");
-  else if (job && job.state === "done") row.textContent = "Updated";
-  else return;
+    text = `New version: ${parts.join(" · ") || "available"}${size ? ` (${engSize(size)})` : ""}` + (e.inUse ? " · updating will eject the loaded Strata loadout" : "") + ` · checked ${engAgo(c.at)}`;
+  } else if (c) text = (job && job.state === "done" ? "Updated · " : "") + `Up to date · checked ${engAgo(c.at)}` + (c.engine.status && !["current", "available", "install"].includes(c.engine.status) && c.engine.note ? ` · ${c.engine.note}` : "");
+  else if (job && job.state === "done") text = "Updated";
+  else text = "Not checked for updates yet";
+  row.appendChild(el("span", null, text));
+  if (c && c.available && !checking && !engChecking.get(e.id))
+    updNow(row, e, "Download and install the new version through Strata's own updater" + (e.inUse ? ". Updating ejects the loaded Strata loadout." : ""));
+  refreshIcon(row, e, checking, "asks Strata's update feed");
+  card.appendChild(row);
+}
+// A llama.cpp build's update line: progress while updating, the result after, or the newer build that's out.
+function llamaUpdLine(card, e, job, updating) {
+  if (!e.downloaded) return; // an engine from an executable: qqstudio doesn't update it
+  const row = el("div", "upd"), checking = engChecking.has(e.id) && !engChecking.get(e.id), at = engData.releasesAt;
+  if (updating) {
+    row.appendChild(el("span", null, `Updating to ${job.build} · ` + (job.state === "downloading" ? `${engSize(job.done)} of ${engSize(job.total)}` : job.state === "unpacking" ? "unpacking…" : "switching to the new build…")));
+    if (job.state === "downloading" && job.total) { const bar = row.appendChild(el("div", "bar")).appendChild(el("div")); bar.style.width = Math.round(job.done / job.total * 100) + "%"; }
+    row.appendChild(el("span", "spacer"));
+    if (job.state !== "installing") { const x = row.appendChild(el("button", "eject", "Cancel")); x.onclick = () => engPost(`/api/engines/jobs/${encodeURIComponent(job.id)}/cancel`).then(srvRefresh); }
+    card.appendChild(row);
+    return;
+  }
+  const ago = at ? ` · checked ${engAgo(at)}` : "";
+  let text, now = null;
+  if (engChecking.get(e.id)) { row.classList.add("bad"); text = "Couldn't check for updates: " + engChecking.get(e.id); }
+  else if (checking) text = "Checking llama.cpp's releases…";
+  else if (job && job.state === "error" && !(at && at > (job.endedAt || 0))) { row.classList.add("bad"); text = "Update failed: " + job.error; }
+  else if (e.update) {
+    row.classList.add("new");
+    text = `New build: ${e.update.build} (${engSize(e.update.size)})` + (e.inUse ? " · updating ejects the loaded loadout for the switch" : "") + ago;
+    now = `Download ${e.update.build} and swap it in. The engine keeps its loadouts.` + (e.inUse ? " The loaded loadout is ejected for the swap (after a reply using it finishes)." : "");
+  } else if (at) text = (job && job.state === "done" ? `Updated to ${job.build} · ` : "") + "Up to date" + ago;
+  else if (job && job.state === "done") text = `Updated to ${job.build}`;
+  else text = "Not checked for updates yet";
+  row.appendChild(el("span", null, text));
+  if (now) updNow(row, e, now);
+  refreshIcon(row, e, checking, "asks llama.cpp's releases on GitHub");
   card.appendChild(row);
 }
 async function engCheck(id) {
@@ -1267,6 +1367,7 @@ async function engCheck(id) {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || r.statusText);
     engChecking.delete(id);
+    if (engData?.engines.find((x) => x.id === id)?.type !== "strata") engReleases(); // the picker shows the same release list
   } catch (err) { engChecking.set(id, err.message); setTimeout(() => { if (engChecking.get(id) === err.message) { engChecking.delete(id); srvRefresh(); } }, 15000); }
   srvRefresh();
 }
@@ -1276,22 +1377,77 @@ async function engReleases() {
     const r = await fetch("/api/engines/releases"); const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
     const sel = $("engBackend"); sel.innerHTML = "";
-    for (const b of j.backends) {
-      const o = sel.appendChild(el("option", null, `${b.label}  (${engSize(b.asset.size + (b.runtime?.size || 0))}${b.runtime ? ", incl. CUDA runtime" : ""})${b.backend === j.suggested ? " · suggested" : ""}`));
-      o.value = b.backend;
-    }
-    if (j.suggested) sel.value = j.suggested;
-    const note = () => {
-      const b = j.backends.find((x) => x.backend === sel.value);
-      $("engNote").textContent = [b?.note, b && b.backend === j.suggested && j.suggestedFor ? `Suggested for your ${j.suggestedFor}.` : ""].filter(Boolean).join(" ");
-    };
-    sel.onchange = note; note();
+    for (const b of j.backends) { const o = sel.appendChild(el("option", null, b.label)); o.value = b.backend; }
+    engRel = j;
+    sel.value = engDefault();
+    sel.onchange = renderEngPick; renderEngPick();
     if (j.platform && j.platform !== "win32") $("engExe").placeholder = j.platform === "darwin" ? "/opt/homebrew/bin/llama-server" : "/path/to/llama-server";
     $("engBuild").textContent = "build " + j.build + (j.stale ? " (cached)" : "");
     $("engBuild").title = j.stale ? j.note : "Latest llama.cpp release, " + new Date(j.published).toLocaleDateString();
-    $("engDl").disabled = false; $("engDl").dataset.build = j.build;
-  } catch (e) { $("engBackend").innerHTML = "<option>unavailable</option>"; $("engBuild").textContent = "Could not list releases: " + e.message; }
+    $("engDl").dataset.build = j.build;
+    renderEngPick();
+  } catch (e) { $("engBackend").innerHTML = "<option>unavailable</option>"; engRel = null; renderEngPick("unavailable"); $("engBuild").textContent = "Could not list releases: " + e.message; }
 }
+// The build picker (button + menu) and the note under it, from the release list (engRel) and the hidden <select>.
+// Builds already installed (downloaded by qqstudio; their cards offer updates) are greyed out and can't be picked.
+let engRel = null;
+const engInstalled = () => Object.fromEntries((engData?.engines || []).filter((e) => e.type !== "strata" && e.downloaded && e.backend).map((e) => [e.backend, e.build]));
+// The build to preselect: the suggested one, else the first that isn't installed (null: all are)
+function engDefault() {
+  const inst = engInstalled(), free = (engRel?.backends || []).filter((b) => !(b.backend in inst));
+  return (free.find((b) => b.backend === engRel.suggested) || free[0])?.backend || "";
+}
+const engSizeOf = (b) => `${engSize(b.asset.size + (b.runtime?.size || 0))}${b.runtime ? ", incl. CUDA runtime" : ""}`;
+function renderEngPick(text) {
+  const sel = $("engBackend"), btn = $("engBackendBtn");
+  if (engRel && (sel.value in engInstalled() || !sel.value)) sel.value = engDefault(); // e.g. the picked build just finished downloading
+  const b = engRel?.backends.find((x) => x.backend === sel.value), allIn = engRel && !b;
+  btn.querySelector(".lbl").textContent = b ? b.label : allIn ? "All installed" : text || "loading…";
+  btn.title = b ? `${b.label} (${engSizeOf(b)})` : "";
+  btn.disabled = !engRel;
+  $("engDl").disabled = !b; $("engDl").hidden = !!allIn;
+  $("engNote").textContent = b ? [b.note, b.backend === engRel.suggested && engRel.suggestedFor ? `Suggested for your ${engRel.suggestedFor}.` : ""].filter(Boolean).join(" ")
+    : allIn ? "All builds for this PC are installed. Newer builds show on each engine's card." : "";
+  engPickSig = JSON.stringify(engInstalled());
+  renderEngMenu();
+}
+let engPickSig = "";
+function renderEngMenu() {
+  const menu = $("engBackendMenu");
+  if (menu.hidden || !engRel) return;
+  menu.innerHTML = "";
+  menu.appendChild(el("h4", null, "llama.cpp build"));
+  for (const b of engRel.backends) {
+    const on = b.backend === $("engBackend").value, inst = engInstalled()[b.backend];
+    const r = menu.appendChild(el("button", "lm-row" + (on ? " on" : "")));
+    r.type = "button"; r.setAttribute("role", "option"); r.setAttribute("aria-selected", String(on)); r.title = inst ? "" : b.note || "";
+    r.disabled = !!inst; if (inst) r.setAttribute("aria-disabled", "true");
+    const t = r.appendChild(el("span", "t"));
+    t.appendChild(el("span", "nm", b.label));
+    const sub = t.appendChild(el("small", null, inst ? `Installed · ${inst}${inst !== engRel.build ? " · update on its card" : ""}` : engSizeOf(b)));
+    if (!inst && b.backend === engRel.suggested) sub.appendChild(el("span", "sugg", " · suggested"));
+    r.onclick = (e) => { e.stopPropagation(); toggleEngMenu(false); $("engBackendBtn").focus(); if (!on) { $("engBackend").value = b.backend; renderEngPick(); } };
+  }
+}
+function toggleEngMenu(force) {
+  const menu = $("engBackendMenu"), btn = $("engBackendBtn"), open = (force ?? menu.hidden) && !btn.disabled;
+  menu.hidden = !open;
+  btn.classList.toggle("open", open); btn.setAttribute("aria-expanded", String(open));
+  renderEngMenu();
+  if (open) (menu.querySelector(".lm-row.on:not(:disabled)") || menu.querySelector(".lm-row:not(:disabled)"))?.focus();
+}
+$("engBackendBtn").onclick = (e) => { e.stopPropagation(); toggleEngMenu(); };
+$("engBackendBtn").addEventListener("keydown", (e) => { if ((e.key === "ArrowDown" || e.key === "ArrowUp") && $("engBackendMenu").hidden) { e.preventDefault(); toggleEngMenu(true); } });
+$("engBackendMenu").onclick = (e) => e.stopPropagation();
+$("engBackendMenu").addEventListener("keydown", (e) => { // arrows move between builds; Enter picks (they're buttons); Esc closes
+  const rows = [...$("engBackendMenu").querySelectorAll(".lm-row:not(:disabled)")], k = e.key;
+  if (k === "Escape") { e.preventDefault(); e.stopPropagation(); toggleEngMenu(false); $("engBackendBtn").focus(); return; }
+  if (!rows.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(k)) return;
+  e.preventDefault();
+  const i = rows.indexOf(document.activeElement), n = rows.length;
+  rows[k === "Home" ? 0 : k === "End" ? n - 1 : k === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n].focus();
+});
+document.addEventListener("click", () => { if (!$("engBackendMenu").hidden) toggleEngMenu(false); });
 async function strataInfo() {
   try {
     const r = await fetch("/api/engines/strata/release"); const j = await r.json();
@@ -1493,6 +1649,85 @@ $("refresh").onclick = refresh;
 refresh();
 refresh = single(refresh);
 setInterval(() => { if (!busy.size && !document.hidden) refresh(); }, 3000);
+// ---------- glass pickers for every other dropdown ----------
+// Each visible <select> gets a picker button and a glass menu like the build picker (the build picker has its own rows).
+// The <select> stays, hidden, as the value store: code that reads or sets .value or listens for "change" is unchanged.
+let pickOpen = null; // { menu, btn }
+function closePick() {
+  if (!pickOpen) return;
+  pickOpen.menu.remove(); pickOpen.btn.classList.remove("open"); pickOpen.btn.setAttribute("aria-expanded", "false");
+  pickOpen = null;
+}
+function glassSelect(s) {
+  if (s.dataset.glass || s.hidden || s.multiple || s.id === "engBackend" || !s.parentNode) return;
+  s.dataset.glass = "1";
+  const wrap = el("span", "gpick" + (s.closest(".lo-f, .lo-in, .lo-row") ? " wide" : ""));
+  const btn = wrap.appendChild(el("button", "pick-btn"));
+  btn.type = "button"; btn.setAttribute("aria-haspopup", "listbox"); btn.setAttribute("aria-expanded", "false");
+  const lbl = btn.appendChild(el("span", "lbl"));
+  s.after(wrap); s.classList.add("gsel");
+  const render = () => { lbl.textContent = s.selectedOptions[0]?.textContent ?? ""; btn.disabled = s.disabled; btn.title = s.title || ""; };
+  for (const prop of ["value", "selectedIndex"]) { // a value set from code updates the button too
+    const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, prop);
+    Object.defineProperty(s, prop, { configurable: true, get() { return d.get.call(this); }, set(v) { d.set.call(this, v); render(); } });
+  }
+  s.addEventListener("change", render);
+  new MutationObserver(render).observe(s, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "title"] });
+  if (s.id) document.querySelectorAll(`label[for="${CSS.escape(s.id)}"]`).forEach((l) => l.addEventListener("click", (e) => { e.preventDefault(); btn.focus(); }));
+  btn.onclick = (e) => { e.stopPropagation(); if (pickOpen?.btn === btn) closePick(); else openPick(s, btn); };
+  btn.addEventListener("keydown", (e) => { if ((e.key === "ArrowDown" || e.key === "ArrowUp") && pickOpen?.btn !== btn) { e.preventDefault(); openPick(s, btn); } });
+  render();
+}
+function openPick(s, btn) {
+  closePick();
+  if (btn.disabled) return;
+  const menu = document.body.appendChild(el("div", "plus-menu pick-menu gmenu"));
+  menu.setAttribute("role", "listbox");
+  const label = (s.id && document.querySelector(`label[for="${CSS.escape(s.id)}"]`)) || s.closest(".lo-row, .lo-f, .field")?.querySelector("label");
+  const head = label?.textContent.trim();
+  if (head) { menu.appendChild(el("h4", null, head)); menu.setAttribute("aria-label", head); }
+  for (const o of s.options) {
+    const on = o.selected;
+    const r = menu.appendChild(el("button", "lm-row" + (on ? " on" : "")));
+    r.type = "button"; r.setAttribute("role", "option"); r.setAttribute("aria-selected", String(on)); r.disabled = o.disabled; r.title = o.title || "";
+    r.appendChild(el("span", "t")).appendChild(el("span", "nm", o.textContent));
+    r.onclick = (e) => {
+      e.stopPropagation(); closePick(); btn.focus();
+      if (!on) { s.value = o.value; s.dispatchEvent(new Event("input", { bubbles: true })); s.dispatchEvent(new Event("change", { bubbles: true })); }
+    };
+  }
+  menu.onclick = (e) => e.stopPropagation();
+  menu.addEventListener("keydown", (e) => { // arrows move; Enter picks (they're buttons); Esc closes without closing a dialog behind it
+    const k = e.key;
+    if (k === "Escape" || k === "Tab") { if (k === "Escape") { e.preventDefault(); e.stopPropagation(); } closePick(); btn.focus(); return; }
+    const rows = [...menu.querySelectorAll(".lm-row:not(:disabled)")];
+    if (!rows.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(k)) return;
+    e.preventDefault();
+    const i = rows.indexOf(document.activeElement), n = rows.length;
+    rows[k === "Home" ? 0 : k === "End" ? n - 1 : k === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n].focus();
+  });
+  // Fixed to the page so a dialog's scrolling doesn't clip it: under the button, or above when there's more room there.
+  const rc = btn.getBoundingClientRect(), below = innerHeight - rc.bottom - 12, above = rc.top - 12;
+  const up = below < 220 && above > below;
+  menu.style.minWidth = Math.max(rc.width, 180) + "px";
+  menu.style.maxWidth = Math.min(420, innerWidth - 24) + "px";
+  menu.style.maxHeight = Math.max(120, Math.min(innerHeight * 0.6, up ? above : below)) + "px";
+  if (up) menu.style.bottom = innerHeight - rc.top + 6 + "px"; else menu.style.top = rc.bottom + 6 + "px";
+  menu.style.left = Math.max(12, Math.min(rc.left, innerWidth - 12 - menu.offsetWidth)) + "px";
+  pickOpen = { menu, btn };
+  btn.classList.add("open"); btn.setAttribute("aria-expanded", "true");
+  (menu.querySelector(".lm-row.on:not(:disabled)") || menu.querySelector(".lm-row:not(:disabled)"))?.focus();
+}
+document.addEventListener("click", closePick);
+addEventListener("resize", closePick);
+document.addEventListener("scroll", (e) => { if (pickOpen && !pickOpen.menu.contains(e.target)) closePick(); }, true);
+document.querySelectorAll("select").forEach(glassSelect);
+new MutationObserver((ms) => { // selects made later (the loadout editor builds its fields when it opens)
+  for (const m of ms) for (const n of m.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (n.tagName === "SELECT") glassSelect(n); else n.querySelectorAll?.("select").forEach(glassSelect);
+  }
+}).observe(document.body, { childList: true, subtree: true });
 </script>
 </body>
 </html>
