@@ -1,0 +1,46 @@
+# Checks every push and pull request: syntax on every supported Node version and OS (including the pages' inline
+# scripts), and that the server starts with a fresh data folder and serves the page and its API. No engine or model is
+# needed: qqstudio starts without one.
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        node: [18, 22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax check (server)
+        shell: bash
+        run: for f in *.js; do node --check "$f"; done
+      - name: Syntax check (pages)
+        run: node .github/scripts/check-pages.js
+      - name: Package metadata
+        run: node -e "const p=require('./package.json'); if(!/^\d+\.\d+\.\d+$/.test(p.version)) throw new Error('bad version '+p.version); console.log(p.name, p.version)"
+      - name: Server smoke test
+        shell: bash
+        env:
+          QQSTUDIO_HOME: ${{ runner.temp }}/qqstudio-home
+          PORT: '8123'
+          HOT_RELOAD: '0'
+        run: |
+          node server.js > server.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
+          ok=1
+          check() { if curl -sf "http://127.0.0.1:8123$1" | grep -q "$2"; then echo "ok   $1"; else echo "FAIL $1"; ok=0; fi; }
+          check / '<html'
+          check /settings '<html'
+          check /theme.css '{'
+          check /api/tools '"roots"'
+          check /api/engines '"running"'
+          echo "--- server log"; cat server.log
+          [ "$ok" = 1 ]
