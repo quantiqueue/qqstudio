@@ -35,7 +35,7 @@ let cur = { loadout: null, name: null, engine: null, pid: null, sig: null, state
 function load() {
   try {
     const d = JSON.parse(fs.readFileSync(FILE, "utf8"));
-    if (Array.isArray(d.engines)) return { autostart: true, last: null, ...d };
+    if (Array.isArray(d.engines)) return { autostart: false, last: null, ...d }; // Auto-Load is off unless turned on
   } catch {}
   return migrate();
 }
@@ -57,7 +57,7 @@ function migrate() {
     extraArgs.push(t);
   }
   const d = { engines: [{ id: "llama", name: "llama.cpp", type: "llama.cpp", exe, backend: guessBackend(exe), build: "", extraArgs, legacy: true }],
-    autostart: old.autostart !== false, last: null };
+    autostart: old.autostart === true, last: null };
   try { save(d); } catch {}
   if (old.exe || old.args) console.log(`[engines] moved the engine settings into engines.json${extraArgs.length ? ` (kept flags: ${extraArgs.join(" ")})` : ""}`);
   return d;

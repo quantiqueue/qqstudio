@@ -189,6 +189,11 @@
   .srv .muted { color:var(--muted); font-size:12px; }
   .lo-card { display:flex; align-items:center; gap:10px; padding:10px 14px; border-top:1px solid var(--line); background:var(--panel); }
   .lo-card:first-child { border-top:none; }
+  /* "N loadouts" with a + after it (new loadout) */
+  .lo-sum { align-items:center; gap:4px; }
+  .add-btn { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:none; border-radius:6px; background:none; color:var(--muted); cursor:pointer; flex:none; }
+  .add-btn:hover { color:var(--text); background:var(--glass-hover, rgba(255,255,255,.07)); }
+  .add-btn svg { width:14px; height:14px; }
   /* buttons on the right, "Delete" under them at the card's bottom right */
   .lo-card .lo-side { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex:none; align-self:flex-end; }
   .lo-card .lo-act { display:flex; gap:10px; align-items:center; }
@@ -467,7 +472,7 @@
   <section data-tab="loadouts">
     <h2>Loadouts</h2>
     <div class="lead">An engine, a model and how to run it. Sessions pick a loadout, and it loads when it's used. One loadout runs at a time: loading another unloads it. One model can have several (e.g. a long-context one and a fast one).</div>
-    <div class="summary"><span id="loCount"></span><span class="spacer"></span><button id="loNew" class="load">＋ New loadout</button></div>
+    <div class="summary lo-sum"><span id="loCount"></span><button id="loNew" class="add-btn" type="button" title="New loadout" aria-label="New loadout"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button></div>
     <div id="loDlg" class="lo-modal" hidden><div class="lo-dlg" role="dialog" aria-modal="true" aria-label="Loadout"><div id="loEdit"></div></div></div>
     <div class="list" id="loList"><div class="empty">Loading…</div></div>
     <div class="eng-opts" style="margin-top:12px">
@@ -481,8 +486,6 @@
     <div id="note"></div>
   <div class="summary">
     <span id="counts"></span>
-    <span class="spacer"></span>
-    <button id="refresh">↻ Refresh</button>
   </div>
   <div class="list" id="list"><div class="empty">Loading…</div></div>
   </section>
@@ -1686,7 +1689,6 @@ async function pollDownloads() {
 $("clearDl").onclick = () => fetch("/api/hf/clear", { method: "POST" }).then(pollDownloads);
 pollDownloads();
 
-$("refresh").onclick = refresh;
 refresh();
 refresh = single(refresh);
 setInterval(() => { if (!busy.size && !document.hidden) refresh(); }, 3000);

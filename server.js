@@ -419,7 +419,8 @@ function openFolder(dir) {
   return new Promise((resolve) => {
     let child, done = false;
     const end = (err) => { if (!done) { done = true; resolve(err); } };
-    try { child = spawn(cmd, [dir], { detached: true, stdio: "ignore", windowsHide: true }); } catch (e) { return end(`Couldn't open a file manager (${e.message})`); }
+    // no windowsHide: on Windows it would hide Explorer's window too
+    try { child = spawn(cmd, [dir], { detached: true, stdio: "ignore" }); } catch (e) { return end(`Couldn't open a file manager (${e.message})`); }
     child.on("error", (e) => end(e.code === "ENOENT" ? `No file manager to open here (${cmd} is missing)` : `Couldn't open a file manager (${e.message})`));
     // explorer.exe exits with 1 even when it worked, so only xdg-open/open's exit code counts.
     child.on("exit", (code) => end(code && process.platform !== "win32" ? `Couldn't open a file manager (${cmd} exited with ${code})` : null));
