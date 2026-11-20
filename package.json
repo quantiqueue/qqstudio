@@ -24,8 +24,20 @@
   "license": "MIT",
   "author": "quantiqueue",
   "main": "server.js",
+  "bin": {
+    "qqstudio": "bin/qqstudio.js"
+  },
+  "files": [
+    "bin/",
+    "install/",
+    "public/",
+    "*.js",
+    "!dev.js",
+    "strata_catalog.py",
+    "tray.ps1"
+  ],
   "scripts": {
-    "start": "node server.js",
+    "start": "node bin/qqstudio.js",
     "dev": "node dev.js"
   },
   "engines": {

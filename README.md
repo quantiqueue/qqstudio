@@ -12,7 +12,27 @@
 - **Workspaces with memory.** Each workspace has its own files and can remember what matters across sessions, so a new session can pick up earlier work.
 - **No dependencies.** Plain Node.js 18 or newer. No `npm install`.
 
-## Run it
+## Install
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://github.com/quantiqueue/qqstudio/releases/latest/download/install.ps1 | iex
+```
+
+**macOS and Linux:**
+
+```sh
+curl -fsSL https://github.com/quantiqueue/qqstudio/releases/latest/download/install.sh | sh
+```
+
+No admin rights and nothing to install first: it uses your Node.js if it's 18 or newer, otherwise it downloads a private copy just for qqstudio. You get a `qqstudio` command and a shortcut (Start Menu on Windows, your applications menu on Linux, `~/Applications` on a Mac) that opens qqstudio in its own window. Closing the window keeps qqstudio running; on Windows its tray icon has **Open qqstudio** and **Quit qqstudio**, everywhere `qqstudio --stop` stops it.
+
+- **Update:** run the same line again. Your sessions, settings, engines and models (in `~/.qqstudio`) are never touched.
+- **Uninstall:** `qqstudio --uninstall`. It asks before deleting engines and models, and separately before deleting your settings and sessions.
+- **From a terminal:** `qqstudio` (runs there, Ctrl+C stops it), `qqstudio --open` (opens your browser), `qqstudio --help`.
+
+### Run from a clone
 
 You need [Node.js](https://nodejs.org) 18 or newer and [Git](https://git-scm.com).
 
@@ -62,7 +82,9 @@ On Windows you can also double-click `start.bat` (it restarts qqstudio when its 
 
 ## Options
 
-Set these as environment variables before starting:
+Command-line flags (`qqstudio --help`): `--port`, `--host`, `--open`, `--app` (its own window, in the background), `--stop`, `--data-dir`, `--uninstall`, `--version`.
+
+Or set these as environment variables before starting:
 
 | Variable | Default | What it does |
 |---|---|---|
@@ -79,7 +101,7 @@ qqstudio is developed and used on Windows. Linux and macOS are supported in the 
 
 ## Troubleshooting
 
-- **It won't start ("EADDRINUSE: address already in use"):** qqstudio (or something else) is already using port 8003. Close it, or start with another `PORT`.
+- **It won't start ("EADDRINUSE: address already in use"):** qqstudio (or something else) is already using port 8003. Close it (`qqstudio --stop`), or start with another port (`qqstudio --port 8010`).
 - **The model never calls tools:** check its chat template supports tool calls. qqstudio always starts llama.cpp with `--jinja`.
 - **Engine releases don't load:** GitHub allows 60 checks an hour without a token. qqstudio shows the last list it got meanwhile, or set `GITHUB_TOKEN`.
 - **The page doesn't load from another device:** turn on Network access in Settings → Server, and allow the port through your firewall.

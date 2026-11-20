@@ -1063,9 +1063,43 @@ function handleFile(req, res) {
   });
 }
 
+// ---- The app's own routes (bin/app.js, the tray icon) ----
+// GET /api/ping: "is qqstudio running here?" for `qqstudio --app` / `--stop` and the installers (dir = the app folder,
+// so an installer only stops its own copy). POST /api/stop and /api/tray/open: this computer only, and only with the
+// X-QQStudio header, which a web page can't send cross-site without a CORS preflight (never allowed here).
+// /api/stop exits qqstudio like Ctrl+C does: MCP servers and background commands stop with it, a loaded loadout keeps
+// running and is picked up on the next start.
+function handleApp(req, res) {
+  if (req.url === "/api/ping" && req.method === "GET")
+    return sendJson(res, 200, { app: "qqstudio", version: require("./package.json").version, pid: process.pid, port: PORT, dir: __dirname }), true;
+  const u = new URL(req.url, "http://x");
+  const what = u.pathname === "/api/stop" ? "stop" : u.pathname === "/api/tray/open" ? "open" : null;
+  if (!what || req.method !== "POST") return false;
+  if (!isLoopback(req.socket.remoteAddress) || req.headers["x-qqstudio"] !== what) return sendJson(res, 403, { error: "Only allowed from this computer" }), true;
+  if (what === "stop") {
+    // ?eject=1 (the uninstallers): unload the running loadout first, so no engine is left behind holding VRAM.
+    (async () => {
+      let ejected = null;
+      if (u.searchParams.get("eject") === "1") {
+        try { const st = await llama.status(); if (st && st.loadout && st.state !== "stopped") { await unloadLoadout(st.loadout); ejected = st.name || st.loadout; } }
+        catch (e) { console.error("[server] eject before stop:", e.message); }
+      }
+      console.log(`[server] stop requested${ejected ? ` (ejected ${ejected})` : ""} - exiting`);
+      sendJson(res, 200, { ok: true, ejected });
+      setTimeout(() => process.exit(0), 150);
+    })();
+  } else {
+    const via = require("./bin/app").openWindow(`http://localhost:${PORT}/`);
+    console.log(`[server] tray opened qqstudio in ${via}`);
+    sendJson(res, 200, { ok: true, via });
+  }
+  return true;
+}
+
 const server = http.createServer((req, res) => {
     if (!allowedRequest(req)) return sendJson(res, 403, { error: "Forbidden (cross-site request)" });
     if (remoteGate(req, res)) return;
+    if (handleApp(req, res)) return;
     if (req.url === "/api/server") return handleServer(req, res);
     if (HOT && req.method === "GET" && req.url === "/__reload") return handleReloadStream(req, res);
     if (req.method === "GET" && req.url === "/api/models") return handleModels(res);
@@ -1128,4 +1162,8 @@ server.listen(PORT, HOST, () => {
     console.log(`File tools:   any path, with approval; relative paths in the session's workspace folder`);
     console.log(`Hot reload:   ${HOT ? "on" : "off"}`);
     console.log(`User data:    ${DATA.home}`);
+    // The Windows tray icon (Open qqstudio / Quit qqstudio) belongs to this process: it shows however qqstudio was
+    // started and goes away when this process ends. QQSTUDIO_TRAY=0 turns it off (CI, test copies).
+    require("./tray").start({ port: PORT, version: require("./package.json").version });
+    if (process.env.QQSTUDIO_OPEN === "1") require("./bin/open")(`http://localhost:${PORT}/`);
   });

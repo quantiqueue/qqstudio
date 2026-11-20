@@ -21,7 +21,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Syntax check (server)
         shell: bash
-        run: for f in *.js; do node --check "$f"; done
+        run: for f in *.js bin/*.js; do node --check "$f"; done
       - name: Syntax check (pages)
         run: node .github/scripts/check-pages.js
       - name: Package metadata
@@ -32,6 +32,7 @@ jobs:
           QQSTUDIO_HOME: ${{ runner.temp }}/qqstudio-home
           PORT: '8123'
           HOT_RELOAD: '0'
+          QQSTUDIO_TRAY: '0'
         run: |
           node server.js > server.log 2>&1 &
           for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
@@ -43,5 +44,120 @@ jobs:
           check /theme.css '{'
           check /api/tools '"roots"'
           check /api/engines '"running"'
+          check /api/ping '"app":"qqstudio"'
           echo "--- server log"; cat server.log
           [ "$ok" = 1 ]
+
+  # The release archives (built as the release workflow builds them) and the real installers on each OS:
+  # install with a private Node.js, run on the default port, install again (must stop the running copy), run and
+  # stop with the qqstudio command, uninstall (QQSTUDIO_DELETE_DATA answers the data questions).
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: bash .github/scripts/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qqstudio-package
+          path: dist/
+
+  install-unix:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: qqstudio-package
+          path: dist
+      - name: Install, update, run, stop, uninstall
+        shell: bash
+        env:
+          QQSTUDIO_TRAY: '0'
+        run: |
+          set -u
+          Q="$HOME/.local/bin/qqstudio"
+          ping() { curl -fsS -m 2 http://127.0.0.1:8003/api/ping 2>/dev/null || true; }
+          up() { for i in $(seq 1 40); do [[ "$(ping)" == *'"app":"qqstudio"'* ]] && return 0; sleep 0.5; done; echo "not up"; cat run.log; return 1; }
+          down() { for i in $(seq 1 20); do [ -z "$(ping)" ] && return 0; sleep 0.5; done; echo "still up"; return 1; }
+          echo "::group::install (private Node.js)"
+          QQSTUDIO_PRIVATE_NODE=1 QQSTUDIO_TARBALL=dist/qqstudio.tar.gz sh install/install.sh
+          echo "::endgroup::"
+          "$Q" --version
+          [ -x "$HOME/.local/share/qqstudio/node/bin/node" ]
+          if [ "$(uname -s)" = Darwin ]; then [ -x "$HOME/Applications/qqstudio.app/Contents/MacOS/qqstudio" ]; else grep -q -- '--app' "$HOME/.local/share/applications/qqstudio.desktop"; fi
+          "$Q" > run.log 2>&1 &
+          up
+          [[ "$(ping)" == *"\"dir\":\"$HOME/.local/share/qqstudio/app\""* ]]
+          echo "::group::update while running"
+          QQSTUDIO_TARBALL=dist/qqstudio.tar.gz sh install/install.sh | tee update.log
+          echo "::endgroup::"
+          grep -q "Stopped the running qqstudio" update.log
+          down
+          grep -q "stop requested" run.log
+          "$Q" > run.log 2>&1 &
+          up
+          "$Q" --stop
+          down
+          "$Q" > run.log 2>&1 &
+          up
+          QQSTUDIO_DELETE_DATA=all "$Q" --uninstall
+          down
+          [ ! -e "$Q" ] && [ ! -e "$HOME/.local/share/qqstudio" ] && [ ! -e "$HOME/.qqstudio" ]
+          echo "all good"
+
+  install-windows:
+    needs: package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: qqstudio-package
+          path: dist
+      - name: Install, update, run, stop, uninstall (Windows PowerShell 5.1, tray icon on)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:LOCALAPPDATA 'qqstudio'
+          $cmd = Join-Path $root 'bin\qqstudio.cmd'
+          function Ping { try { Invoke-RestMethod -Uri 'http://127.0.0.1:8003/api/ping' -TimeoutSec 2 -UseBasicParsing } catch { $null } }
+          function Up { for ($i = 0; $i -lt 60; $i++) { $p = Ping; if ($p -and $p.app -eq 'qqstudio') { return $p }; Start-Sleep -Milliseconds 500 }; throw 'qqstudio did not start' }
+          function Down { for ($i = 0; $i -lt 30; $i++) { if (-not (Ping)) { return }; Start-Sleep -Milliseconds 500 }; throw 'qqstudio is still running' }
+          function Start-Q { Start-Process -FilePath $cmd -WindowStyle Hidden -RedirectStandardOutput run.log -RedirectStandardError run.err }
+          $env:QQSTUDIO_ZIP = (Resolve-Path dist\qqstudio.zip).Path
+          $env:QQSTUDIO_NO_START = '1'; $env:QQSTUDIO_DESKTOP = '0'; $env:QQSTUDIO_PRIVATE_NODE = '1'
+          & .\install\install.ps1
+          if (-not (Test-Path (Join-Path $root 'node\node.exe'))) { throw 'no private node.exe' }
+          if (-not (Test-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'qqstudio.lnk'))) { throw 'no Start Menu shortcut' }
+          & $cmd --version
+          Start-Q
+          $p = Up
+          if ($p.dir.TrimEnd('\') -ine (Join-Path $root 'app')) { throw "ping dir is $($p.dir)" }
+          Start-Sleep -Seconds 3   # let the tray helper come up (it holds the icon file open)
+          Get-Content run.log
+          $out = & .\install\install.ps1 *>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'Stopped the running qqstudio') { throw 'the update did not stop the running copy' }
+          Down
+          Start-Q
+          $null = Up
+          & $cmd --stop
+          Down
+          Start-Q
+          $null = Up
+          $env:QQSTUDIO_DELETE_DATA = 'all'
+          cmd /c "`"$cmd`" --uninstall"
+          Down
+          Start-Sleep -Seconds 5
+          if (Test-Path $root) { Get-ChildItem $root -Recurse | Out-String | Write-Host; throw "$root is still there" }
+          if (Test-Path (Join-Path $env:USERPROFILE '.qqstudio')) { throw 'the data folder is still there' }
+          if ((Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" | Where-Object { $_.CommandLine -like '*tray.ps1*' })) { throw 'a tray helper is still running' }
+          Write-Host 'all good'
