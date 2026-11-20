@@ -1042,7 +1042,7 @@ function deferredGroups() {
     out.push({ key: "mcp:" + sv.name, name: sv.name, desc, tools, note: `Tool names start with "${sv.name}__".` });
   }
   const CAT_DESC = {
-    "File Access": `list, read (also PDF and Office documents), search, write, edit, move and delete files in ${visibleRoots().join(", ")}`,
+    "File Access": `list, read (also PDF and Office documents), search, write, edit, move and delete files (the workspace folder is ${wsFolder()}; other places when the user asks)`,
     Web: "search the web, read web pages, download files and call web APIs",
     Images: "search for images and show images to the user",
     System: `run ${win ? "cmd.exe" : "shell"} commands and scripts (Python, PowerShell, Node), including long-running ones in the background`,
@@ -1055,7 +1055,7 @@ function deferredGroups() {
     const tools = toolInfo.tools.filter((t) => t.enabled && !t.server && t.category === cat);
     if (!tools.length) continue;
     out.push({ key: "cat:" + cat, name: cat, desc: CAT_DESC[cat] || cat, tools,
-      note: cat === "File Access" ? `Allowed folders: ${visibleRoots().join(", ")}. Use absolute ${win ? "Windows " : ""}paths.` : "" });
+      note: cat === "File Access" ? `Workspace folder: ${wsFolder()}. Relative paths are in it; use absolute ${win ? "Windows " : ""}paths elsewhere.` : "" });
   }
   return out;
 }
@@ -1074,8 +1074,8 @@ function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGro
   const fileOps = [["list_dir", "list folders"], ["read_file", "read files and documents (PDF, Word, Excel, PowerPoint)"], ["search_files", "find files by name"], ["search_text", "search inside files"], ["write_file", "write files"], ["edit_file", "edit files"],
     ["move_file", "move or rename files"], ["delete_file", "delete files"]].filter(([n]) => on.has(n)).map(([, d]) => d);
   if (fileOps.length) {
-    lines.push(`You have tools to ${fileOps.join(", ")} in these folders: ${visibleRoots().join(", ")}.`);
-    lines.push(`When the user asks about files or folders, call the tools yourself instead of telling the user how to do it. Use absolute ${win ? "Windows " : ""}paths.`);
+    lines.push(`You have tools to ${fileOps.join(", ")}. This session's workspace folder is ${wsFolder()}: work there unless the user names another place. Relative paths are in the workspace folder.`);
+    lines.push(`When the user asks about files or folders, call the tools yourself instead of telling the user how to do it. Use absolute ${win ? "Windows " : ""}paths outside the workspace folder.`);
   }
   if (has("web_search", "fetch_url", "download_file")) {
     const w = [["web_search", "search the web (web_search)"], ["fetch_url", "read web pages (fetch_url)"], ["download_file", "download files (download_file)"]]
@@ -1884,13 +1884,8 @@ function lastWs() {
   return [...workspaces].sort((a, b) => used(b) - used(a))[0]?.id || defaultWs;
 }
 const wsName = (id) => workspaces.find((w) => w.id === id)?.name || id;
-// The tool folders the model is told about: this workspace's files folder first, then the rest except other
-// workspaces' files folders.
-function visibleRoots() {
-  const mine = curWs()?.dir, others = new Set(workspaces.filter((w) => w !== curWs()).map((w) => w.dir));
-  const rest = toolInfo.roots.filter((r) => !others.has(r) && r !== mine);
-  return mine && toolInfo.roots.includes(mine) ? [mine, ...rest] : rest;
-}
+// The folder the model is told to work in: this session's workspace files folder.
+const wsFolder = () => curWs()?.dir || toolInfo.cwd || "the workspace folder";
 // Open folder: when the machine running qqstudio has no file manager, say so on the button for a moment.
 async function openFolderBtn(btn, url) {
   let j = null;

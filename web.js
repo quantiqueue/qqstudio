@@ -135,10 +135,10 @@ async function fetch_url({ url, offset = 0 }) {
   return head + (title ? `Title: ${title}\n` : "") + "\n" + chunk + more + linkList;
 }
 
-async function download_file({ url, path: dest }, resolveSafe) {
+async function download_file({ url, path: dest }, resolvePath) {
   const u = checkUrl(url);
   if (!dest) throw new Error("path is required");
-  let target = resolveSafe(dest);
+  let target = resolvePath(dest);
   try { if (fs.statSync(target).isDirectory()) target = path.join(target, decodeURIComponent(path.basename(u.pathname)) || "download"); } catch {}
   if (fs.existsSync(target)) throw new Error(`File already exists: ${target}`);
   const r = await get(u.href, 10 * 60 * 1000);

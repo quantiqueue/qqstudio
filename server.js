@@ -13,7 +13,7 @@ const DATA = require("./paths"); // must load first: migrates old data into %USE
 const ws = require("./workspaces");
 ws.init(); // makes Default, moves the old chats\ folder into it
 const lazyTools = require("./lazytools");
-const { ROOTS, addRoot, removeRoot, runTool, toolList, toolSettings, saveToolSettings, isEnabled, resolveSafe, IMAGE_EXT } = require("./tools");
+const { ROOTS, addRoot, removeRoot, runTool, toolList, toolSettings, saveToolSettings, isEnabled, resolvePath, servable, allowServe, IMAGE_EXT } = require("./tools");
 const hf = require("./hf");
 const presets = require("./presets");
 const loadouts = require("./loadouts");
@@ -208,7 +208,7 @@ async function loadImage(src) {
       buf = await fs.promises.readFile(file);
       mime = IMG_MIME[path.extname(file).slice(1).toLowerCase()];
     } else if (src.startsWith("/api/file?")) {
-      const file = resolveSafe(new URL(src, "http://x").searchParams.get("path"));
+      const file = servable(new URL(src, "http://x").searchParams.get("path"));
       buf = await fs.promises.readFile(file);
       mime = IMG_MIME[path.extname(file).slice(1).toLowerCase()];
     } else if (/^https?:\/\//i.test(src)) {
@@ -226,12 +226,12 @@ async function loadImage(src) {
     return `data:${mime};base64,${buf.toString("base64")}`;
   } catch { return null; }
 }
-// Image files named in a tool's text result (e.g. an MCP tool that exported a PNG), inside the allowed folders.
+// Image files named in a tool's text result (e.g. an MCP tool that exported a PNG); each found is allowed on /api/file.
 function imagePathsIn(text) {
   const out = [];
   const rx = /(?:[A-Za-z]:[\\/]|\/)[^\s"'<>|*?\r\n]*?\.(?:png|jpe?g|gif|bmp|webp)\b/gi;
   for (const m of String(text || "").matchAll(rx)) {
-    try { const f = resolveSafe(m[0]); if (fs.statSync(f).isFile() && !out.includes(f)) out.push(f); } catch {}
+    try { const f = resolvePath(m[0]); if (fs.statSync(f).isFile() && !out.includes(f)) { out.push(f); allowServe(f); } } catch {}
     if (out.length >= 4) break;
   }
   // &v=<modified time>: a re-exported file with the same name must not show (or reach the model as) the old version
@@ -347,7 +347,7 @@ async function handleRouterAction(req, res, action) {
 }
 
 // ---- Chat history: one JSON file per chat in ./chats ----
-for (const w of ws.list()) addRoot(w.dir); // each workspace's files folder is an allowed folder for the tools
+for (const w of ws.list()) addRoot(w.dir); // each workspace's files folder is one of qqstudio's folders (served by /api/file)
 const chatFile = (id) => ws.sessionFile(id); // sessions live in workspaces\<ws>\sessions\
 
 // All chat-file writes go through one queue per file, so a run's saves and the page's edits (title, mode, ...)
@@ -1051,7 +1051,7 @@ async function handleTool(req, res) {
 function handleFile(req, res) {
   const p = new URL(req.url, "http://x").searchParams.get("path");
   let file;
-  try { file = resolveSafe(p); } catch (e) { return sendJson(res, 403, { error: e.message }); }
+  try { file = servable(p); } catch (e) { return sendJson(res, 403, { error: e.message }); }
   if (!IMAGE_EXT.test(file)) return sendJson(res, 415, { error: "Only image files can be served" });
   const types = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
     ".bmp": "image/bmp", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
@@ -1125,7 +1125,7 @@ server.listen(PORT, HOST, () => {
       if (!pickedUp && autostart && last && loadouts.get(last) && !process.env.LLAMA_URL) { console.log(`[loadouts] loading ${loadouts.get(last).name} (used last)`); await preload(last); }
     }).catch((e) => console.error("[llama] init:", e.message));
     mcp.init().then(() => { const s = mcp.status(); if (s.length) console.log(`[mcp] ${s.map((x) => `${x.name}: ${x.status}`).join(", ")}`); });
-    console.log(`Tool roots:   ${ROOTS.join(", ")}`);
+    console.log(`File tools:   any path, with approval; relative paths in the session's workspace folder`);
     console.log(`Hot reload:   ${HOT ? "on" : "off"}`);
     console.log(`User data:    ${DATA.home}`);
   });

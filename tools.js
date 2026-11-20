@@ -1,7 +1,8 @@
 // Tool implementations + OpenAI-style schemas.
-// Paths are restricted to the allowed folders: every workspace's files folder, the skills folder, uploads, plus any
-// extra folders in ALLOWED_ROOTS (separated like PATH: ";" on Windows, ":" elsewhere). Relative paths and the default
-// working folder are the session's workspace files folder (runTool's ctx.base).
+// The tools work on any path; what guards the user's files is approval (File Access, Web and System tools ask first
+// by default). Relative paths and the default working folder are the session's workspace files folder (runTool's
+// ctx.base). ROOTS (every workspace's files folder, skills, uploads) are qqstudio's own folders: the page's file route
+// (/api/file) serves only those, plus files a tool showed the user (servable / allowServe).
 const fs = require("fs/promises");
 const { AsyncLocalStorage } = require("async_hooks");
 const path = require("path");
@@ -12,12 +13,9 @@ const web = require("./web");
 const docs = require("./docs");
 const background = require("./background");
 
-const ROOTS = (process.env.ALLOWED_ROOTS || "")
-  .split(path.delimiter).map((r) => r.trim()).filter(Boolean).map((r) => path.resolve(r));
 const skills = require("./skills");
-ROOTS.push(skills.dir); // skill folders are readable (scripts, templates)
-ROOTS.push(require("./paths").uploads); // pasted images, so tools can open the files the model is told about
-const FIXED_ROOTS = ROOTS.length; // ALLOWED_ROOTS + skills + uploads stay; workspace folders come and go
+const ROOTS = [skills.dir, require("./paths").uploads]; // + every workspace's files folder (addRoot)
+const FIXED_ROOTS = ROOTS.length; // skills + uploads stay; workspace folders come and go
 const ctx = new AsyncLocalStorage(); // { base }: the calling session's workspace files folder
 const baseDir = () => ctx.getStore()?.base || ROOTS[0];
 const MAX_OUT = 20000; // chars returned to the model per tool call
@@ -39,14 +37,20 @@ function realOf(p) {
     }
   }
 }
-function resolveSafe(p) {
+// A tool's path: absolute, or relative to the session's workspace folder. No folder limit (approval is the guard).
+function resolvePath(p) {
   if (!p || typeof p !== "string") throw new Error("path is required");
-  const abs = path.resolve(baseDir(), p);
-  // Both the path as written and where it really leads must be inside an allowed folder, so a link inside one
-  // can't reach elsewhere.
-  if (!ROOTS.some((r) => inside(abs, r)) || !ROOTS.some((r) => inside(realOf(abs), realOf(r))))
-    throw new Error(`Access denied: ${abs} is outside the allowed folders (${ROOTS.join(", ")})`);
-  return abs;
+  return path.resolve(baseDir(), p);
+}
+// The page's file route (/api/file) is reachable from other devices with network access on, so it serves only
+// qqstudio's own folders and files a tool showed the user, checked on where the path really leads (links followed).
+const shown = new Set();
+function allowServe(file) { shown.add(norm(realOf(path.resolve(file)))); }
+function servable(p) {
+  if (!p || typeof p !== "string") throw new Error("path is required");
+  const abs = path.resolve(p), real = realOf(abs);
+  if (shown.has(norm(real)) || ROOTS.some((r) => inside(real, realOf(r)))) return abs;
+  throw new Error(`Not served: ${abs} isn't in qqstudio's folders`);
 }
 
 function clip(s) {
@@ -70,7 +74,7 @@ const impl = {
   },
 
   async list_dir({ path: p }) {
-    const dir = resolveSafe(p);
+    const dir = resolvePath(p);
     const entries = await fs.readdir(dir, { withFileTypes: true });
     entries.sort((a, b) => (b.isDirectory() - a.isDirectory()) || a.name.localeCompare(b.name));
     const lines = [];
@@ -87,7 +91,7 @@ const impl = {
   },
 
   async read_file({ path: p, offset = 1, limit = 400 }) {
-    const file = resolveSafe(p);
+    const file = resolvePath(p);
     let text;
     if (docs.DOC_EXT.test(file)) text = await docs.extract(file); // PDF, Word, Excel, PowerPoint, OpenDocument: their text
     else {
@@ -104,7 +108,7 @@ const impl = {
   },
 
   async search_files({ path: p, pattern }) {
-    const root = resolveSafe(p);
+    const root = resolvePath(p);
     if (!pattern) throw new Error("pattern is required");
     const rx = new RegExp(
       "^" + pattern.split("").map((c) => (c === "*" ? ".*" : c === "?" ? "." : c.replace(/[.+^${}()|[\]\\]/g, "\\$&"))).join("") + "$",
@@ -131,7 +135,7 @@ const impl = {
   // Replaces exact text in a file (the file's own line endings are kept). It fails loudly when the text isn't there
   // exactly once, so a small model can't silently garble a file the way a full rewrite can.
   async edit_file({ path: p, old_text, new_text, replace_all = false }) {
-    const file = resolveSafe(p);
+    const file = resolvePath(p);
     if (typeof old_text !== "string" || !old_text) throw new Error("old_text (the exact text to replace) is required");
     if (typeof new_text !== "string") throw new Error('new_text is required (use "" to delete old_text)');
     const raw = await fs.readFile(file, "utf8");
@@ -155,7 +159,7 @@ const impl = {
 
   // Finds text (or a regular expression) inside files: path:line: text.
   async search_text({ path: p, pattern, regex = false, case_sensitive = false, glob, max_results = 100 }) {
-    const root = resolveSafe(p);
+    const root = resolvePath(p);
     if (!pattern) throw new Error("pattern is required");
     let rx;
     try { rx = new RegExp(regex ? pattern : pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), case_sensitive ? "" : "i"); }
@@ -190,7 +194,7 @@ const impl = {
   },
 
   async write_file({ path: p, content }) {
-    const file = resolveSafe(p);
+    const file = resolvePath(p);
     if (typeof content !== "string") throw new Error("content (string) is required");
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content, "utf8");
@@ -198,8 +202,8 @@ const impl = {
   },
 
   async delete_file({ path: p }) {
-    const target = resolveSafe(p);
-    if (ROOTS.some((r) => norm(r) === norm(target))) throw new Error("Refusing to delete an allowed root folder itself.");
+    const target = resolvePath(p);
+    if (ROOTS.some((r) => norm(r) === norm(target))) throw new Error("Refusing to delete one of qqstudio's own folders (a workspace's files folder, skills or uploads).");
     const st = await fs.stat(target); // throws if missing
     if (process.platform === "win32") {
       // Send to Recycle Bin (undoable). Path passed via env var, so no quoting/injection issues.
@@ -218,7 +222,7 @@ const impl = {
   },
 
   async move_file({ from, to }) {
-    const src = resolveSafe(from), dst = resolveSafe(to);
+    const src = resolvePath(from), dst = resolvePath(to);
     await fs.stat(src);
     let finalDst = dst;
     try { if ((await fs.stat(dst)).isDirectory()) finalDst = path.join(dst, path.basename(src)); } catch {}
@@ -237,19 +241,20 @@ const impl = {
     if (/^https?:\/\//i.test(source)) {
       return { text: `The image is now displayed to the user (${source}). Reply with a short sentence about it; do not repeat the URL.`, images: [{ src: source, full: source, caption, big: true }] };
     }
-    const file = resolveSafe(source);
+    const file = resolvePath(source);
     if (!IMAGE_EXT.test(file)) throw new Error("Not an image file (supported: png, jpg, jpeg, gif, webp, bmp, svg, ico)");
+    allowServe(file); // the page shows it through /api/file
     const st = await fs.stat(file);
     // &v=<modified time>: a file re-saved under the same name gets a new link, so neither the page nor the run's image cache shows the old one
     const src = "/api/file?path=" + encodeURIComponent(file) + "&v=" + Math.round(st.mtimeMs);
     return { text: `The image ${file} is now displayed to the user. Reply with a short sentence about it.`, images: [{ src, full: src, caption: caption || path.basename(file), big: true }] };
   },
   fetch_url: (a) => web.fetch_url(a),
-  download_file: (a) => web.download_file(a, resolveSafe),
+  download_file: (a) => web.download_file(a, resolvePath),
 
   run_command({ command, cwd }) {
     if (!command) throw new Error("command is required");
-    const dir = cwd ? resolveSafe(cwd) : baseDir();
+    const dir = cwd ? resolvePath(cwd) : baseDir();
     const report = (code, stdout, stderr) => clip(`exit code: ${code}\n--- stdout ---\n${stdout || "(none)"}\n--- stderr ---\n${stderr || "(none)"}`);
     if (process.platform === "win32") return new Promise((resolve) => {
       exec(command, { cwd: dir, timeout: 60000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
@@ -284,7 +289,7 @@ const impl = {
     const file = path.join(dir, `script-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${k.ext}`);
     await fs.writeFile(file, k.ext === "ps1" ? "\ufeff" + code : code, "utf8"); // BOM: Windows PowerShell reads the file as UTF-8
     const ms = Math.min(Math.max(Number(timeout) || 120, 1), 600) * 1000;
-    const workDir = cwd ? resolveSafe(cwd) : baseDir();
+    const workDir = cwd ? resolvePath(cwd) : baseDir();
     const env = { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
     try {
       for (const [cmd, args] of k.run(file)) {
@@ -300,7 +305,7 @@ const impl = {
 
   async run_background({ command, cwd }) {
     if (!command) throw new Error("command is required");
-    const p = background.start(command, cwd ? resolveSafe(cwd) : baseDir());
+    const p = background.start(command, cwd ? resolvePath(cwd) : baseDir());
     await new Promise((r) => setTimeout(r, 1500)); // early output (or an immediate failure) comes back with the start
     return `Started ${p.id} in the background.\n` + background.check(p.id) + `\n\nCheck it later with check_background {"id": "${p.id}"}; stop it with stop_background.`;
   },
@@ -561,4 +566,4 @@ function isEnabled(name) {
 // Workspace files folders are added (and removed) while the server runs.
 const addRoot = (dir) => { const r = path.resolve(dir); if (!ROOTS.some((x) => norm(x) === norm(r))) ROOTS.push(r); };
 const removeRoot = (dir) => { const i = ROOTS.findIndex((x) => norm(x) === norm(path.resolve(dir))); if (i >= FIXED_ROOTS) ROOTS.splice(i, 1); };
-module.exports = { ROOTS, addRoot, removeRoot, resolveSafe, IMAGE_EXT, runTool, toolList, toolSettings, saveToolSettings, isEnabled };
+module.exports = { ROOTS, addRoot, removeRoot, resolvePath, servable, allowServe, IMAGE_EXT, runTool, toolList, toolSettings, saveToolSettings, isEnabled };
