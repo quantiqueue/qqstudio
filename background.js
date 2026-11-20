@@ -1,6 +1,7 @@
 // Long-running commands (builds, dev servers, big downloads): start one in the background, check its output later,
 // stop it. Output is kept in memory (the last 200 KB per process); everything is stopped when the harness exits.
-const { spawn, execFile } = require("child_process");
+const { spawn } = require("child_process");
+const procTree = require("./procs");
 
 const KEEP = 200 * 1024;
 const procs = new Map(); // id -> { id, command, cwd, child, out, read, started, exit }
@@ -8,7 +9,8 @@ let seq = 0;
 
 function start(command, cwd) {
   const id = "bg" + ++seq;
-  const child = spawn(command, { cwd, shell: true, windowsHide: true, env: process.env });
+  // Its own process group on Linux/macOS, so stopping it stops the program the shell started, not just the shell.
+  const child = spawn(command, { cwd, shell: true, windowsHide: true, env: process.env, ...procTree.group });
   const p = { id, command, cwd, child, out: "", dropped: 0, read: 0, started: Date.now(), exit: null };
   const add = (d) => {
     p.out += d.toString("utf8");
@@ -40,9 +42,7 @@ function stop(id) {
   if (!p) return Promise.resolve(`ERROR: no background command "${id}".`);
   if (p.exit) return Promise.resolve(`${id} had already ${p.exit === "failed to start" ? "failed to start" : "finished (" + p.exit + ")"}.`);
   return new Promise((resolve) => {
-    const done = () => resolve(`Stopped ${id} (${p.command}).`);
-    if (process.platform === "win32") execFile("taskkill", ["/pid", String(p.child.pid), "/t", "/f"], { windowsHide: true }, done); // the whole tree (shell + program)
-    else { try { p.child.kill("SIGTERM"); } catch {} setTimeout(done, 300); }
+    procTree.killTree(p.child.pid).then(() => resolve(`Stopped ${id} (${p.command}).`)); // the whole tree (shell + program)
   });
 }
 
@@ -53,9 +53,9 @@ function list() {
 
 function stopAll() {
   for (const p of procs.values()) if (!p.exit) {
-    try { if (process.platform === "win32") require("child_process").execFileSync("taskkill", ["/pid", String(p.child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }); else p.child.kill("SIGTERM"); } catch {}
+    procTree.killTreeSync(p.child.pid);
   }
 }
-process.on("exit", stopAll);
+procTree.onExit(stopAll);
 
 module.exports = { start, check, stop, list, stopAll };

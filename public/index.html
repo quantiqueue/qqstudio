@@ -1884,10 +1884,21 @@ function lastWs() {
   return [...workspaces].sort((a, b) => used(b) - used(a))[0]?.id || defaultWs;
 }
 const wsName = (id) => workspaces.find((w) => w.id === id)?.name || id;
-// The tool folders the model is told about: everything except other workspaces' files folders.
+// The tool folders the model is told about: this workspace's files folder first, then the rest except other
+// workspaces' files folders.
 function visibleRoots() {
-  const others = new Set(workspaces.filter((w) => w !== curWs()).map((w) => w.dir));
-  return toolInfo.roots.filter((r) => !others.has(r));
+  const mine = curWs()?.dir, others = new Set(workspaces.filter((w) => w !== curWs()).map((w) => w.dir));
+  const rest = toolInfo.roots.filter((r) => !others.has(r) && r !== mine);
+  return mine && toolInfo.roots.includes(mine) ? [mine, ...rest] : rest;
+}
+// Open folder: when the machine running qqstudio has no file manager, say so on the button for a moment.
+async function openFolderBtn(btn, url) {
+  let j = null;
+  try { const r = await fetch(url, { method: "POST" }); if (!r.ok) j = await r.json().catch(() => ({})); } catch (e) { j = { error: e.message }; }
+  if (!j) return;
+  const t = btn.textContent, title = btn.title;
+  btn.textContent = "Can't open here"; btn.title = `${j.error || "Couldn't open the folder"}${j.path ? ". The folder is " + j.path : ""}`;
+  setTimeout(() => { btn.textContent = t; btn.title = title; }, 4000);
 }
 async function loadWorkspaces() {
   try { const j = await (await fetch("/api/workspaces")).json(); workspaces = j.workspaces || []; defaultWs = j.default || "Default"; } catch {}
@@ -2068,8 +2079,9 @@ async function renderFilesView() {
   }
   const cnt = h.appendChild(el("span")); h.appendChild(el("span", "sp"));
   const upb = h.appendChild(el("button", null, "Upload")); upb.type = "button"; upb.title = dir ? `Upload into ${dir}` : "Upload into the files folder";
-  const op = h.appendChild(el("button", null, "Open folder")); op.type = "button"; op.title = w.dir + (dir ? "\\" + dir.split("/").join("\\") : "");
-  op.onclick = () => fetch(`/api/workspaces/${encodeURIComponent(id)}/open?${dirQuery(dir)}`, { method: "POST" });
+  const sep = toolInfo.platform === "win32" ? "\\" : "/";
+  const op = h.appendChild(el("button", null, "Open folder")); op.type = "button"; op.title = w.dir + (dir ? sep + dir.split("/").join(sep) : "");
+  op.onclick = () => openFolderBtn(op, `/api/workspaces/${encodeURIComponent(id)}/open?${dirQuery(dir)}`);
   upb.onclick = () => pickUpload(id, dir);
   const box = v.appendChild(el("div"));
   box.appendChild(el("div", "wsv-empty", "Loading…"));

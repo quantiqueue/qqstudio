@@ -404,16 +404,28 @@ async function handleSkills(req, res) {
     if (req.method === "POST" && u.pathname === "/api/skills/open") {
       const b = JSON.parse((await readBody(req)) || "{}");
       const target = (b.name && skills.list().find((x) => x.name === b.name)?.dir) || skills.dir;
-      openFolder(target);
-      return sendJson(res, 200, { ok: true });
+      const err = await openFolder(target);
+      return sendJson(res, err ? 500 : 200, err ? { error: err, path: target } : { ok: true });
     }
     sendJson(res, 404, { error: "Not found" });
   } catch (e) { sendJson(res, 400, { error: e.message }); }
 }
+// Opens a folder in the file manager of the machine qqstudio runs on. Resolves with null, or an error message (no file
+// manager here, e.g. a Linux server without a desktop). Spawn errors arrive as an 'error' event; without a listener
+// they would end the process.
 function openFolder(dir) {
   const { spawn } = require("child_process");
   const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
-  try { spawn(cmd, [dir], { detached: true, stdio: "ignore" }).unref(); } catch {}
+  return new Promise((resolve) => {
+    let child, done = false;
+    const end = (err) => { if (!done) { done = true; resolve(err); } };
+    try { child = spawn(cmd, [dir], { detached: true, stdio: "ignore", windowsHide: true }); } catch (e) { return end(`Couldn't open a file manager (${e.message})`); }
+    child.on("error", (e) => end(e.code === "ENOENT" ? `No file manager to open here (${cmd} is missing)` : `Couldn't open a file manager (${e.message})`));
+    // explorer.exe exits with 1 even when it worked, so only xdg-open/open's exit code counts.
+    child.on("exit", (code) => end(code && process.platform !== "win32" ? `Couldn't open a file manager (${cmd} exited with ${code})` : null));
+    child.unref();
+    setTimeout(() => end(null), 3000); // still running (some file managers stay attached): it opened
+  });
 }
 
 // ---- Engines ----
@@ -544,7 +556,10 @@ async function handleWorkspaces(req, res) {
       return sendJson(res, 200, { ...r, text: M.text(id) });
     }
     if (sub === "memory" && req.method === "GET") { const M = require("./memory"); return sendJson(res, 200, { on: ws.memoryOn(id), text: M.text(id), stats: M.stats(id), ...(u.searchParams.has("log") ? { log: M.readLog(id) } : {}) }); } // workspace memory (memory.js); ?log adds memory.log
-    if (sub === "open" && req.method === "POST") { openFolder(fs.existsSync(subDir) ? subDir : ws.filesDir(id)); return sendJson(res, 200, { ok: true }); }
+    if (sub === "open" && req.method === "POST") {
+      const target = fs.existsSync(subDir) ? subDir : ws.filesDir(id), err = await openFolder(target);
+      return sendJson(res, err ? 500 : 200, err ? { error: err, path: target } : { ok: true });
+    }
     if (sub !== "files") return sendJson(res, 404, { error: "Not found" });
     if (!rest) {
       if (req.method === "GET") return sendJson(res, 200, { dir: ws.filesDir(id), files: await ws.files(id) });
@@ -1015,7 +1030,7 @@ async function handleTool(req, res) {
     if (f) try { mode = JSON.parse(fs.readFileSync(f, "utf8")).mode || "manual"; } catch {}
     if (mode !== "auto") return sendJson(res, 200, { result: `ERROR: "${body.name}" needs the user's approval.`, images: [] });
   }
-  const out = await runTool(body.name, body.args);
+  const out = await runTool(body.name, body.args, { base: ws.filesDir((body.chatId && ws.workspaceOf(body.chatId)) || ws.DEFAULT) });
   console.log(`[tool] ${body.name} ${JSON.stringify(body.args).slice(0, 200)} (${Date.now() - t0}ms)`);
   sendJson(res, 200, { result: out.text, images: out.images || [] });
 }
@@ -1043,7 +1058,7 @@ const server = http.createServer((req, res) => {
     if (HOT && req.method === "GET" && req.url === "/__reload") return handleReloadStream(req, res);
     if (req.method === "GET" && req.url === "/api/models") return handleModels(res);
     if (req.method === "GET" && req.url === "/api/tools")
-      return sendJson(res, 200, { enabled: toolSettings().enabled, tools: toolList(), roots: ROOTS, platform: process.platform, cwd: ROOTS[0], ...lazyInfo() });
+      return sendJson(res, 200, { enabled: toolSettings().enabled, tools: toolList(), roots: ROOTS, platform: process.platform, cwd: ws.filesDir(ws.DEFAULT), ...lazyInfo() });
     if (req.method === "GET" && req.url === "/api/tools/settings") return sendJson(res, 200, { ...toolSettings(), ...lazyInfo() });
     if (req.method === "PUT" && req.url === "/api/tools/settings")
       return readBody(req).then((b) => sendJson(res, 200, { ...saveToolSettings(JSON.parse(b)), ...lazyInfo() })).catch((e) => sendJson(res, 400, { error: e.message }));

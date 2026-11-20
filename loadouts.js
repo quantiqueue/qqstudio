@@ -51,6 +51,10 @@ const STRATA_FIELDS = [
   { key: "tune", label: "Tuning", type: "select", options: ["quick", "thorough"], group: "Speculative decoding", flag: "tune",
     help: "Measure the fastest settings for this PC before serving: quick takes about 20 minutes, thorough up to 2 hours. Done once; the result is reused." },
 ];
+// On a Mac, Strata runs on Metal with unified memory: it sets its own context-memory format and has no cards to pick or
+// graphics memory to leave free, so those fields aren't offered (or passed) there.
+const STRATA_MAC_OFF = new Set(["kv", "gpu", "vram-reserve"]);
+if (process.platform === "darwin") STRATA_FIELDS.splice(0, STRATA_FIELDS.length, ...STRATA_FIELDS.filter((f) => !STRATA_MAC_OFF.has(f.key)));
 // Model files Strata can run: exactly the files its installer lists (Hugging Face repo, path, byte size, per catalog size),
 // from its catalog (strata_catalog.py). Until that list has been read, a loose name match stands in.
 const STRATA_MODEL = /flash[-_ ]?next/i;
@@ -328,10 +332,11 @@ function strataArgs(l, models) {
   const a = ["--model-path", path.dirname(m.model)];
   const load = l.load || {};
   if (load["ctx-size"]) a.push("--context", String(load["ctx-size"]));
-  if (load.kv) a.push("--kv", load.kv);
+  const mac = process.platform === "darwin";
+  if (load.kv && !mac) a.push("--kv", load.kv);
   if (load.parallel) a.push("--parallel", String(load.parallel));
-  if (load.gpu) a.push("--gpu", String(load.gpu).replace(/\s+/g, ""));
-  if (load["vram-reserve"]) a.push("--set", `vram-reserve-mib=${Math.max(0, Math.round(Number(load["vram-reserve"])))}`); // an engine option: Strata's --set
+  if (load.gpu && !mac) a.push("--gpu", String(load.gpu).replace(/\s+/g, ""));
+  if (load["vram-reserve"] && !mac) a.push("--set", `vram-reserve-mib=${Math.max(0, Math.round(Number(load["vram-reserve"])))}`); // an engine option: Strata's --set
   a.push("--vision", l.vision === false ? "off" : load.reader || "on");
   if (load.drafting) a.push("--drafting", load.drafting);
   if (load.tune) a.push("--tune", load.tune);

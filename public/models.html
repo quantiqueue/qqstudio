@@ -312,6 +312,7 @@
         <span class="spacer"></span>
         <button id="engDl" class="load" disabled>Download</button>
       </div>
+      <div class="muted" id="engNote" style="font-size:12px; margin-top:4px"></div>
       <div class="row2" id="strataRow" style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px">
         <span>Download Strata</span>
         <span class="muted" id="strataInfo">checking…</span>
@@ -841,10 +842,23 @@ async function skLoad(data) {
     const sub = main.appendChild(el("div", "sk-sub", `${s.files.length} extra file(s) · ${s.dir}`));
     if (s.hasScripts && !runOn) sub.appendChild(el("span", "sk-warn", " · has scripts, but Run commands is off in Tools"));
     const open = row.appendChild(el("button", null, "📂")); open.title = "Open folder";
-    open.onclick = () => fetch("/api/skills/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: s.name }) });
+    open.onclick = () => skOpenFolder(open, { name: s.name });
   }
 }
-$("skOpen").onclick = () => fetch("/api/skills/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+// Open folder: when the machine running qqstudio has no file manager, say so on the button for a moment.
+async function skOpenFolder(btn, body) {
+  let j = null;
+  try {
+    const r = await fetch("/api/skills/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) j = await r.json().catch(() => ({}));
+  } catch (e) { j = { error: e.message }; }
+  if (!j) return;
+  const t = btn.textContent, title = btn.title;
+  btn.textContent = btn.textContent.length > 2 ? "Can't open here" : "⚠";
+  btn.title = `${j.error || "Couldn't open the folder"}${j.path ? ". The folder is " + j.path : ""}`;
+  setTimeout(() => { btn.textContent = t; btn.title = title; }, 4000);
+}
+$("skOpen").onclick = () => skOpenFolder($("skOpen"), {});
 $("skExample").onclick = async () => { await fetch("/api/skills/example", { method: "POST" }); skLoad(); };
 $("skRefresh").onclick = () => skLoad();
 skLoad();
@@ -1148,7 +1162,7 @@ loLoad();
 let engData = null, engArmed = null;
 const engSize = (n) => !n ? "" : n >= 1e9 ? (n / 1e9).toFixed(2) + " GB" : (n / 1e6).toFixed(0) + " MB";
 const engPost = (u, body) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
-const backendLabel = (b) => (b || "").replace(/^cuda-?/, "CUDA ").replace(/^rocm-?/, "ROCm ").replace(/^vulkan$/, "Vulkan").replace(/^cpu$/, "CPU").replace(/^sycl$/, "SYCL").trim();
+const backendLabel = (b) => (b || "").replace(/^cuda-?/, "CUDA ").replace(/^rocm-?/, "ROCm ").replace(/^vulkan$/, "Vulkan").replace(/^cpu$/, "CPU").replace(/^sycl(-|$)/, "SYCL ").replace(/^metal$/, "Metal").replace(/^openvino-?/, "OpenVINO ").trim();
 async function srvRefresh() {
   try { engData = await (await fetch("/api/engines")).json(); } catch { engData = null; }
   if (!engData) { $("engList").innerHTML = '<div class="srv err"><span class="err-text">harness unreachable</span></div>'; return; }
@@ -1263,9 +1277,16 @@ async function engReleases() {
     if (!r.ok) throw new Error(j.error || r.statusText);
     const sel = $("engBackend"); sel.innerHTML = "";
     for (const b of j.backends) {
-      const o = sel.appendChild(el("option", null, `${b.label}  (${engSize(b.asset.size + (b.runtime?.size || 0))}${b.runtime ? ", incl. CUDA runtime" : ""})`));
+      const o = sel.appendChild(el("option", null, `${b.label}  (${engSize(b.asset.size + (b.runtime?.size || 0))}${b.runtime ? ", incl. CUDA runtime" : ""})${b.backend === j.suggested ? " · suggested" : ""}`));
       o.value = b.backend;
     }
+    if (j.suggested) sel.value = j.suggested;
+    const note = () => {
+      const b = j.backends.find((x) => x.backend === sel.value);
+      $("engNote").textContent = [b?.note, b && b.backend === j.suggested && j.suggestedFor ? `Suggested for your ${j.suggestedFor}.` : ""].filter(Boolean).join(" ");
+    };
+    sel.onchange = note; note();
+    if (j.platform && j.platform !== "win32") $("engExe").placeholder = j.platform === "darwin" ? "/opt/homebrew/bin/llama-server" : "/path/to/llama-server";
     $("engBuild").textContent = "build " + j.build + (j.stale ? " (cached)" : "");
     $("engBuild").title = j.stale ? j.note : "Latest llama.cpp release, " + new Date(j.published).toLocaleDateString();
     $("engDl").disabled = false; $("engDl").dataset.build = j.build;
@@ -1294,7 +1315,7 @@ $("engDl").onclick = async () => {
 };
 $("engAdd").onclick = async () => {
   const exe = $("engExe").value.trim();
-  if (!exe) return engError("Enter the full path to llama-server.exe (or llama.exe)");
+  if (!exe) return engError("Enter the full path to llama-server (or llama)");
   const r = await engPost("/api/engines", { exe, name: $("engName").value.trim() });
   if (!r.ok) return engError((await r.json().catch(() => ({}))).error || r.statusText);
   engError(""); $("engExe").value = ""; $("engName").value = "";

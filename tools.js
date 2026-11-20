@@ -1,32 +1,51 @@
 // Tool implementations + OpenAI-style schemas.
-// Paths are restricted to ALLOWED_ROOTS (semicolon-separated). Default: C:\claude-tools
+// Paths are restricted to the allowed folders: every workspace's files folder, the skills folder, uploads, plus any
+// extra folders in ALLOWED_ROOTS (separated like PATH: ";" on Windows, ":" elsewhere). Relative paths and the default
+// working folder are the session's workspace files folder (runTool's ctx.base).
 const fs = require("fs/promises");
+const { AsyncLocalStorage } = require("async_hooks");
 const path = require("path");
-const { exec, execFile } = require("child_process");
+const { exec, execFile, spawn } = require("child_process");
+const procTree = require("./procs");
 const os = require("os");
 const web = require("./web");
 const docs = require("./docs");
 const background = require("./background");
 
-const ROOTS = (process.env.ALLOWED_ROOTS || "C:\\claude-tools")
-  .split(";").map((r) => r.trim()).filter(Boolean).map((r) => path.resolve(r));
+const ROOTS = (process.env.ALLOWED_ROOTS || "")
+  .split(path.delimiter).map((r) => r.trim()).filter(Boolean).map((r) => path.resolve(r));
 const skills = require("./skills");
 ROOTS.push(skills.dir); // skill folders are readable (scripts, templates)
 ROOTS.push(require("./paths").uploads); // pasted images, so tools can open the files the model is told about
+const FIXED_ROOTS = ROOTS.length; // ALLOWED_ROOTS + skills + uploads stay; workspace folders come and go
+const ctx = new AsyncLocalStorage(); // { base }: the calling session's workspace files folder
+const baseDir = () => ctx.getStore()?.base || ROOTS[0];
 const MAX_OUT = 20000; // chars returned to the model per tool call
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|svg|ico)$/i;
 const SKIP_DIRS = new Set(["node_modules", ".git", "__pycache__", ".venv"]);
 
 const norm = (p) => (process.platform === "win32" ? p.toLowerCase() : p);
 
+const inside = (a, r) => { a = norm(a); r = norm(r); return a === r || a.startsWith(r.endsWith(path.sep) ? r : r + path.sep); };
+// The real location of p (links and junctions followed); a path that doesn't exist yet keeps its missing tail.
+function realOf(p) {
+  let cur = p; const tail = [];
+  for (;;) {
+    try { return path.join(fsSync.realpathSync.native(cur), ...tail); }
+    catch (e) {
+      const up = path.dirname(cur);
+      if (up === cur || (e.code !== "ENOENT" && e.code !== "ENOTDIR")) return p;
+      tail.unshift(path.basename(cur)); cur = up;
+    }
+  }
+}
 function resolveSafe(p) {
   if (!p || typeof p !== "string") throw new Error("path is required");
-  const abs = path.resolve(ROOTS[0], p);
-  const ok = ROOTS.some((r) => {
-    const a = norm(abs), b = norm(r);
-    return a === b || a.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
-  });
-  if (!ok) throw new Error(`Access denied: ${abs} is outside the allowed folders (${ROOTS.join(", ")})`);
+  const abs = path.resolve(baseDir(), p);
+  // Both the path as written and where it really leads must be inside an allowed folder, so a link inside one
+  // can't reach elsewhere.
+  if (!ROOTS.some((r) => inside(abs, r)) || !ROOTS.some((r) => inside(realOf(abs), realOf(r))))
+    throw new Error(`Access denied: ${abs} is outside the allowed folders (${ROOTS.join(", ")})`);
   return abs;
 }
 
@@ -230,12 +249,21 @@ const impl = {
 
   run_command({ command, cwd }) {
     if (!command) throw new Error("command is required");
-    const dir = cwd ? resolveSafe(cwd) : ROOTS[0];
+    const dir = cwd ? resolveSafe(cwd) : baseDir();
+    const report = (code, stdout, stderr) => clip(`exit code: ${code}\n--- stdout ---\n${stdout || "(none)"}\n--- stderr ---\n${stderr || "(none)"}`);
+    if (process.platform === "win32") return new Promise((resolve) => {
+      exec(command, { cwd: dir, timeout: 60000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) =>
+        resolve(report(err ? (err.killed ? "killed (timeout 60s)" : err.code) : 0, stdout, stderr)));
+    });
+    // Linux/macOS: the shell runs in its own process group, so the timeout stops what it started too.
     return new Promise((resolve) => {
-      exec(command, { cwd: dir, timeout: 60000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-        const code = err ? (err.killed ? "killed (timeout 60s)" : err.code) : 0;
-        resolve(clip(`exit code: ${code}\n--- stdout ---\n${stdout || "(none)"}\n--- stderr ---\n${stderr || "(none)"}`));
-      });
+      const child = spawn(command, { cwd: dir, shell: true, ...procTree.group });
+      let out = "", err = "", timedOut = false;
+      const add = (which) => (d) => { if (out.length + err.length < 10 * 1024 * 1024) { if (which) err += d; else out += d; } };
+      child.stdout.on("data", add(0)); child.stderr.on("data", add(1));
+      const timer = setTimeout(() => { timedOut = true; procTree.killTree(child.pid); }, 60000);
+      child.on("error", (e) => { clearTimeout(timer); resolve(report(e.code || 1, out, err || e.message)); });
+      child.on("close", (code, sig) => { clearTimeout(timer); resolve(report(timedOut ? "killed (timeout 60s)" : code ?? sig, out, err)); });
     });
   },
 
@@ -245,7 +273,7 @@ const impl = {
     const win = process.platform === "win32", lang = String(language).toLowerCase();
     const kinds = {
       python: { ext: "py", run: (f) => (win ? [["py", ["-3", f]], ["python", [f]]] : [["python3", [f]], ["python", [f]]]) },
-      powershell: { ext: "ps1", run: (f) => [[win ? "powershell.exe" : "pwsh", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", f]]] },
+      ...(win || procTree.onPath("pwsh") ? { powershell: { ext: "ps1", run: (f) => [[win ? "powershell.exe" : "pwsh", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", f]]] } } : {}),
       node: { ext: "js", run: (f) => [[process.execPath, [f]]] },
       ...(win ? { cmd: { ext: "bat", run: (f) => [["cmd.exe", ["/d", "/c", f]]] } } : { bash: { ext: "sh", run: (f) => [["bash", [f]]] } }),
     };
@@ -256,7 +284,7 @@ const impl = {
     const file = path.join(dir, `script-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${k.ext}`);
     await fs.writeFile(file, k.ext === "ps1" ? "\ufeff" + code : code, "utf8"); // BOM: Windows PowerShell reads the file as UTF-8
     const ms = Math.min(Math.max(Number(timeout) || 120, 1), 600) * 1000;
-    const workDir = cwd ? resolveSafe(cwd) : ROOTS[0];
+    const workDir = cwd ? resolveSafe(cwd) : baseDir();
     const env = { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
     try {
       for (const [cmd, args] of k.run(file)) {
@@ -272,7 +300,7 @@ const impl = {
 
   async run_background({ command, cwd }) {
     if (!command) throw new Error("command is required");
-    const p = background.start(command, cwd ? resolveSafe(cwd) : ROOTS[0]);
+    const p = background.start(command, cwd ? resolveSafe(cwd) : baseDir());
     await new Promise((r) => setTimeout(r, 1500)); // early output (or an immediate failure) comes back with the start
     return `Started ${p.id} in the background.\n` + background.check(p.id) + `\n\nCheck it later with check_background {"id": "${p.id}"}; stop it with stop_background.`;
   },
@@ -288,7 +316,7 @@ const schemas = [
     parameters: { type: "object", properties: { name: { type: "string", description: "Skill name" } }, required: ["name"] } },
   { name: "list_dir", approval: true,
     description: "List the files and subfolders in a folder on the user's computer.",
-    parameters: { type: "object", properties: { path: { type: "string", description: "Absolute folder path, e.g. C:\\claude-tools" } }, required: ["path"] } },
+    parameters: { type: "object", properties: { path: { type: "string", description: "Folder path: absolute, or relative to the session's workspace folder" } }, required: ["path"] } },
   { name: "read_file", approval: true,
     description: "Read a text file, or the text of a document (PDF, Word .docx, Excel .xlsx, PowerPoint .pptx, OpenDocument). Returns numbered lines. Use offset/limit for long files.",
     parameters: { type: "object", properties: {
@@ -403,7 +431,7 @@ const schemas = [
   { name: "run_script", approval: true,
     description: "Run a script given as text, saved to a temp file and run with its interpreter (no shell quoting to worry about). Use it for anything that needs code: calculations, data, images, file conversions. Returns the exit code, stdout and stderr. The user must approve.",
     parameters: { type: "object", properties: {
-      language: { type: "string", enum: process.platform === "win32" ? ["python", "powershell", "node", "cmd"] : ["python", "powershell", "node", "bash"], description: "Default python" },
+      language: { type: "string", enum: process.platform === "win32" ? ["python", "powershell", "node", "cmd"] : ["python", ...(procTree.onPath("pwsh") ? ["powershell"] : []), "node", "bash"], description: "Default python" },
       code: { type: "string", description: "The whole script" },
       cwd: { type: "string", description: "Working folder (optional)" },
       timeout: { type: "integer", description: "Seconds before it is stopped (default 120, max 600)" } }, required: ["code"] } },
@@ -430,11 +458,12 @@ const schemas = [
 // Returns { text, images? }. Tools may return a string or { text, images }.
 const mcp = require("./mcp");
 
-async function runTool(name, args) {
+// ctx.base: the session's workspace files folder (relative paths and the default working folder).
+async function runTool(name, args, { base } = {}) {
   const fn = impl[name] || (mcp.has(name) ? (a) => mcp.callTool(name, a) : null);
   if (!fn) return { text: `ERROR: unknown tool "${name}". Available: ${Object.keys(impl).join(", ")}` };
   try {
-    const out = await fn(args || {});
+    const out = await ctx.run({ base: base || null }, () => fn(args || {}));
     return out && typeof out === "object" && "text" in out ? out : { text: String(out) };
   } catch (e) { return { text: `ERROR: ${e.message}` }; }
 }
@@ -531,5 +560,5 @@ function isEnabled(name) {
 
 // Workspace files folders are added (and removed) while the server runs.
 const addRoot = (dir) => { const r = path.resolve(dir); if (!ROOTS.some((x) => norm(x) === norm(r))) ROOTS.push(r); };
-const removeRoot = (dir) => { const i = ROOTS.findIndex((x) => norm(x) === norm(path.resolve(dir))); if (i > 0) ROOTS.splice(i, 1); };
+const removeRoot = (dir) => { const i = ROOTS.findIndex((x) => norm(x) === norm(path.resolve(dir))); if (i >= FIXED_ROOTS) ROOTS.splice(i, 1); };
 module.exports = { ROOTS, addRoot, removeRoot, resolveSafe, IMAGE_EXT, runTool, toolList, toolSettings, saveToolSettings, isEnabled };

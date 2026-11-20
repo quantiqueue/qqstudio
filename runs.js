@@ -1041,7 +1041,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     }
     const fixed = workspacePaths(run, name, callArgs);
     callArgs = fixed.args;
-    const out = await runTool(name, callArgs);
+    const out = await runTool(name, callArgs, { base: filesDirOf(run.id) });
     console.log(`[tool] ${name} ${JSON.stringify(args).slice(0, 200)} (${Date.now() - t0}ms)`);
     let text = String(out.text), images = out.images || [];
     if (fixed.moved.length) text += `\n(File names were taken as being in the workspace folder: ${fixed.moved.join(", ")}.)`;

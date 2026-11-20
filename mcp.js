@@ -7,7 +7,8 @@
 // qqstudio's own key per server: "relativePaths": "workspace" | "as-given" (see pathsMode).
 // Tools are exposed to the model as "<server>__<tool>".
 const fs = require("fs");
-const { spawn, execFile } = require("child_process");
+const { spawn } = require("child_process");
+const procTree = require("./procs");
 const P = require("./paths");
 
 const PROTOCOL = "2025-06-18";
@@ -16,7 +17,7 @@ const conns = new Map(); // server name -> Conn
 
 const EXAMPLE = {
   mcpServers: {
-    filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "C:\\claude-tools"] },
+    filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", require("os").homedir()] },
     "remote-example": { url: "https://example.com/mcp", headers: { Authorization: "Bearer YOUR_TOKEN" }, disabled: true },
   },
 };
@@ -65,7 +66,8 @@ class Conn {
 
   spawnProc() {
     let cmd = this.cfg.command, args = (this.cfg.args || []).map(String);
-    const opts = { env: { ...process.env, ...(this.cfg.env || {}) }, cwd: this.cfg.cwd || P.home, stdio: ["pipe", "pipe", "pipe"], windowsHide: true };
+    // Own process group on Linux/macOS: launchers like npx/uvx start the real server as a child, and stopping must reach it.
+    const opts = { env: { ...process.env, ...(this.cfg.env || {}) }, cwd: this.cfg.cwd || P.home, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...procTree.group };
     if (process.platform === "win32" && !/\.exe$/i.test(cmd)) { opts.shell = true; cmd = quoteWin(cmd); args = args.map(quoteWin); } // npx.cmd etc.
     const p = (this.proc = spawn(cmd, args, opts));
     let buf = "";
@@ -183,10 +185,7 @@ class Conn {
     this.failAll(new Error("server stopped"));
     const p = this.proc;
     this.proc = null;
-    if (p && p.exitCode === null) {
-      if (process.platform === "win32") execFile("taskkill", ["/PID", String(p.pid), "/T", "/F"], { windowsHide: true }, () => {});
-      else try { p.kill(); } catch {}
-    }
+    if (p && p.exitCode === null) procTree.killTree(p.pid);
     if (this.transport === "http" && this.sessionId) {
       fetch(this.cfg.url, { method: "DELETE", headers: { "Mcp-Session-Id": this.sessionId, ...(this.cfg.headers || {}) } }).catch(() => {});
       this.sessionId = null;
@@ -195,6 +194,7 @@ class Conn {
   stop() { this.kill(); this.status = "stopped"; this.tools = []; }
 }
 
+procTree.onExit(() => { for (const c of conns.values()) if (c.proc && c.proc.exitCode === null) procTree.killTreeSync(c.proc.pid); });
 async function reloadAll() {
   for (const c of conns.values()) c.stop();
   conns.clear();
