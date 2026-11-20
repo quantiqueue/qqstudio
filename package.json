@@ -1,6 +1,6 @@
 {
   "name": "qqstudio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local AI studio: runs models with llama.cpp or Strata, with an agent (tools, MCP, skills, sub-agents) and workspaces with memory",
   "keywords": [
     "ai",
@@ -24,8 +24,20 @@
   "license": "MIT",
   "author": "quantiqueue",
   "main": "server.js",
+  "bin": {
+    "qqstudio": "bin/qqstudio.js"
+  },
+  "files": [
+    "bin/",
+    "install/",
+    "public/",
+    "*.js",
+    "!dev.js",
+    "strata_catalog.py",
+    "tray.ps1"
+  ],
   "scripts": {
-    "start": "node server.js",
+    "start": "node bin/qqstudio.js",
     "dev": "node dev.js"
   },
   "engines": {
