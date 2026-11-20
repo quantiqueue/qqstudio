@@ -30,20 +30,6 @@ No admin rights and nothing to install first: it uses your Node.js if it's 18 or
 - **Uninstall:** `qqstudio --uninstall`. It asks before deleting engines and models, and separately before deleting your settings and sessions.
 - **From a terminal:** `qqstudio` (runs there, Ctrl+C stops it), `qqstudio --open` (opens your browser), `qqstudio --help`.
 
-### Run from a clone
-
-You need [Node.js](https://nodejs.org) 18 or newer and [Git](https://git-scm.com).
-
-```sh
-git clone https://github.com/quantiqueue/qqstudio.git
-cd qqstudio
-npm start
-```
-
-Then open <http://localhost:8003>. To update, run `git pull` in the same folder and start it again.
-
-On Windows you can also double-click `start.bat` (it restarts qqstudio when its files change, which is handy while developing).
-
 ### First steps
 
 1. **Settings → Engines:** download a llama.cpp build (the suggested one fits your graphics card) or Strata. You can also point at a `llama-server` you already have.
@@ -95,7 +81,7 @@ Or set these as environment variables before starting:
 
 ## Platforms
 
-qqstudio is developed and used on Windows. Linux and macOS are supported in the code (engine downloads, processes and folders for each system) but haven't been run on real hardware yet. Reports are welcome.
+qqstudio is developed and used on Windows. Linux and macOS are supported in the code (engine downloads, processes and folders for each system). Reports are welcome.
 
 ## Troubleshooting
 
