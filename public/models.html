@@ -189,12 +189,28 @@
   .srv .muted { color:var(--muted); font-size:12px; }
   .lo-card { display:flex; align-items:center; gap:10px; padding:10px 14px; border-top:1px solid var(--line); background:var(--panel); }
   .lo-card:first-child { border-top:none; }
+  /* buttons on the right, "Delete" under them at the card's bottom right */
+  .lo-card .lo-side { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex:none; align-self:flex-end; }
+  .lo-card .lo-act { display:flex; gap:10px; align-items:center; }
+  /* "Delete" as a quiet text link (loadouts, models), like Remove/Delete on engine cards; a second click confirms */
+  .rm-link { flex:none; padding:0; border:none; background:none; font-size:12px; color:var(--muted); cursor:pointer; white-space:nowrap; }
+  .rm-link:hover:not(:disabled) { color:var(--red); text-decoration:underline; }
+  .rm-link.armed { color:var(--red); font-weight:600; }
+  .rm-link:disabled { opacity:.45; cursor:default; }
+  .row .rm-link { align-self:flex-end; }
   .lo-card .info { flex:1; min-width:0; }
   .lo-card .nm { font-weight:600; font-size:14px; }
   .lo-card .sub { color:var(--muted); font-size:12px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .lo-card .eng-tag { font-size:11px; border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--muted); margin-left:6px; font-weight:400; }
   .lo-card button.armed { background:#3a1a1d; border-color:#6b2a30; color:#f0a3aa; }
   .lo-card .lo-st { font-size:12px; color:var(--muted); margin-left:6px; font-weight:400; }
+  /* the pencil after the engine tag opens the editor */
+  .lo-card .lo-edit { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; margin-left:4px; padding:0; border:none; border-radius:6px; background:none; color:var(--muted); cursor:pointer; vertical-align:middle; }
+  .lo-card .lo-edit:hover { color:var(--text); background:var(--glass-hover, rgba(255,255,255,.07)); }
+  .lo-card .lo-edit svg { width:13px; height:13px; }
+  /* "Load Engine" / "Eject Engine" and "Show logs" as text links on the card's last line */
+  .lo-card .lo-links { display:flex; gap:14px; align-items:baseline; }
+  .lo-card .lo-links .lo-logs { margin-top:4px; }
   .lo-card.loaded .lo-st { color:var(--green); } .lo-card.loading .lo-st { color:var(--amber); } .lo-card.failed .lo-st { color:var(--red); }
   .opt-line { display:flex; align-items:flex-start; gap:10px; cursor:pointer; color:var(--text); font-size:14px; width:max-content; max-width:100%; }
   .opt-line input { margin-top:2px; }
@@ -621,7 +637,8 @@ function render() {
 
     if (lf) {
       const armed = delArmed === m.id;
-      const del = row.appendChild(el("button", "eject del" + (armed ? " armed" : ""), armed ? `Delete ${fmtBytes(lf.size)}?` : "🗑"));
+      const del = row.appendChild(el("button", "rm-link" + (armed ? " armed" : ""), armed ? `Delete ${fmtBytes(lf.size)} from disk?` : "Delete"));
+      del.type = "button";
       del.title = armed ? "Click again to permanently delete the model files" : `Delete from disk (${lf.files.length} file${lf.files.length > 1 ? "s" : ""}, ${fmtBytes(lf.size)})`;
       del.disabled = busy.has(m.id);
       del.onclick = () => {
@@ -1014,32 +1031,39 @@ function loRender() {
     const info = row.appendChild(el("div", "info"));
     const nm = info.appendChild(el("div", "nm", l.name));
     nm.appendChild(el("span", "eng-tag", eng ? eng.name : "missing engine"));
+    const ed = nm.appendChild(el("button", "lo-edit")); ed.type = "button"; ed.title = ed.ariaLabel = "Edit this loadout";
+    ed.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.2 2.3a1.6 1.6 0 0 1 2.3 2.3L5.4 12.7 2.5 13.5l.8-2.9z"/><path d="M10 3.5l2.5 2.5"/></svg>';
+    ed.onclick = () => loEditOpen(l.id);
     if (st) nm.appendChild(el("span", "lo-st", st === "loaded" ? "loaded" : st === "loading" ? "loading…" : "failed"));
     info.appendChild(el("div", "sub", loSummary(l))).title = loSummary(l);
     if (st === "failed" && run.error) info.appendChild(el("div", "err-text", run.error));
     if (st === "loading" && run.progress?.text) info.appendChild(el("div", "sub lo-prog", run.progress.text + (run.progress.pct != null ? ` (${Math.floor(run.progress.pct)}%)` : "")));
-    const open = loLogsOpen.has(l.id);
-    const lk = info.appendChild(el("button", "lo-logs", open ? "Hide logs" : "Show logs")); lk.type = "button";
+    const open = loLogsOpen.has(l.id), links = info.appendChild(el("div", "lo-links"));
+    const on = st === "loaded" || st === "loading";
+    const ld = links.appendChild(el("button", "lo-logs", on ? "Eject Engine" : "Load Engine")); ld.type = "button";
+    ld.title = on ? "Unload to free memory" : run.loadout && run.state !== "stopped" && run.state !== "failed" ? `Unloads ${loList.find((x) => x.id === run.loadout)?.name || run.loadout} and loads this one` : "Load now, so the first reply doesn't wait";
+    ld.onclick = () => loAct(l.id, on ? "unload" : "load");
+    const lk = links.appendChild(el("button", "lo-logs", open ? "Hide logs" : "Show logs")); lk.type = "button";
     lk.title = "This loadout's server log (llama-server or Strata output; written each time it loads)";
     lk.onclick = () => { open ? loLogsOpen.delete(l.id) : loLogsOpen.add(l.id); loRender(); if (!open) loRefreshLogs(); };
-    const b = (t, fn, cls) => { const x = row.appendChild(el("button", cls || null, t)); x.onclick = fn; return x; };
-    if (st === "loaded" || st === "loading") b("⏏ Eject", () => loAct(l.id, "unload"), "eject").title = "Unload to free memory";
-    else b("▶ Load", () => loAct(l.id, "load"), "load").title = run.loadout && run.state !== "stopped" && run.state !== "failed" ? `Unloads ${loList.find((x) => x.id === run.loadout)?.name || run.loadout} and loads this one` : "Load now, so the first reply doesn't wait";
-    b("Edit", () => loEditOpen(l.id));
-    b("Duplicate", () => loEditOpen("new", { ...l, name: l.name + " copy" }));
+    const side = row.appendChild(el("div", "lo-side")); // Delete at the bottom right (Duplicate: loDuplicate, no button for now)
     const armed = loArmed === l.id;
-    const del = b(armed ? "Delete?" : "🗑", async () => {
+    const del = side.appendChild(el("button", "rm-link" + (armed ? " armed" : ""), armed ? "Delete loadout?" : "Delete"));
+    del.type = "button";
+    del.onclick = async () => {
       if (!armed) { loArmed = l.id; loRender(); setTimeout(() => { if (loArmed === l.id) { loArmed = null; loRender(); } }, 4000); return; }
       loArmed = null;
       const r = await fetch("/api/loadouts/" + encodeURIComponent(l.id), { method: "DELETE" });
       if (!r.ok) $("status").textContent = (await r.json().catch(() => ({}))).error || r.statusText;
       if (loEditing === l.id) loEditClose();
       loLoad();
-    }, "eject" + (armed ? " armed" : ""));
+    };
     del.title = "Delete this loadout (the model file stays)";
     if (open) box.appendChild(el("div", "lo-logwrap")).appendChild(loLogPanel(l.id));
   }
 }
+// Duplicate a loadout: the editor opens on a copy (kept for later; there's no button for it right now).
+function loDuplicate(l) { loEditOpen("new", { ...l, name: l.name + " copy" }); }
 // Loadout logs: open ones are refreshed with the 2-second status poll; each keeps following the end unless scrolled up.
 function loLogPanel(id) {
   const p = el("pre", "lo-log"), st = loLogs.get(id);
