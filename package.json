@@ -1,0 +1,34 @@
+{
+  "name": "qqstudio",
+  "version": "0.1.0",
+  "description": "Local AI studio: runs models with llama.cpp or Strata, with an agent (tools, MCP, skills, sub-agents) and workspaces with memory",
+  "keywords": [
+    "ai",
+    "llm",
+    "local-ai",
+    "llama.cpp",
+    "strata",
+    "agent",
+    "mcp",
+    "chat",
+    "gguf"
+  ],
+  "homepage": "https://github.com/quantiqueue/qqstudio#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quantiqueue/qqstudio.git"
+  },
+  "bugs": {
+    "url": "https://github.com/quantiqueue/qqstudio/issues"
+  },
+  "license": "MIT",
+  "author": "quantiqueue",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node dev.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
