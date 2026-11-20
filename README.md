@@ -1,6 +1,4 @@
-<p align="center"><img src="public/icon-192.png" alt="qqstudio" width="96" height="96"></p>
-
-<h1 align="center">qqstudio</h1>
+<p align="center"><img src="docs/qqstudio-2.png" alt="qqstudio" width="400"></p>
 
 <p align="center"><img src="docs/screenshot.png" alt="A qqstudio session: the agent answers with a TL;DR of qqstudio" width="900"><br>
 <sub>A local AI studio: it runs your models with llama.cpp or Strata, and puts an agent around them, with tools, MCP servers, skills, sub-agents and workspaces that remember.</sub></p>
