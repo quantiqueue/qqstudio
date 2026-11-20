@@ -260,6 +260,7 @@
   .eng .flags input { flex:1; font:12px ui-monospace,Consolas,monospace; padding:3px 8px; }
   .eng { margin-bottom:10px; }
   .row2[hidden] { display:none; }
+  #strataRow.installed > span:first-child, #strataRow.installed #strataInfo { opacity:.5; } /* installed: greyed, like installed builds in the picker */
   .eng .row2 > button, .eng .tag-active { white-space:nowrap; flex:none; }
   .eng .upd { display:flex; gap:10px; align-items:center; margin-top:8px; font-size:12px; color:var(--muted); }
   .eng .upd.new { color:var(--accent); } .eng .upd.bad { color:var(--red); }
@@ -1275,7 +1276,7 @@ async function srvRefresh() {
       else { const foot = card.appendChild(el("div", "eng-foot")); foot.appendChild(last); foot.appendChild(del); }
     }
   }
-  $("strataRow").hidden = engData.engines.some((e) => e.type === "strata"); // installed: updates live on its card
+  renderStrataRow(); // installed: the row stays, greyed, and updates live on its card
   $("engAuto").checked = engData.autostart;
   const jb = $("engJobs"); jb.innerHTML = "";
   const dlJobs = engData.jobs.filter((x) => !x.id.startsWith("upd-")); // updates show on their engine's card
@@ -1345,13 +1346,13 @@ function engUpdLine(card, e, job, updating) {
     if (c.control.status === "available" && c.control.offered) parts.push(`Terminal ${c.control.offered}`);
     if (["available", "install"].includes(c.engine.status) && c.engine.offered) parts.push(`engine ${c.engine.offered}`);
     const size = (c.engine.local ? 0 : c.engine.bytes) + (c.control.status === "available" ? c.control.bytes : 0);
-    text = `New version: ${parts.join(" · ") || "available"}${size ? ` (${engSize(size)})` : ""}` + (e.inUse ? " · updating will eject the loaded Strata loadout" : "") + ` · checked ${engAgo(c.at)}`;
-  } else if (c) text = (job && job.state === "done" ? "Updated · " : "") + `Up to date · checked ${engAgo(c.at)}` + (c.engine.status && !["current", "available", "install"].includes(c.engine.status) && c.engine.note ? ` · ${c.engine.note}` : "");
+    text = `New version: ${parts.join(" · ") || "available"}${size ? ` (${engSize(size)})` : ""}` + ` · checked ${engAgo(c.at)}`; // same wording as a llama.cpp build's line; ejecting is said on Update now's tooltip
+  } else if (c) text = (job && job.state === "done" ? `Updated to ${e.engineVersion || e.build} · ` : "") + `Up to date · checked ${engAgo(c.at)}` + (c.engine.status && !["current", "available", "install"].includes(c.engine.status) && c.engine.note ? ` · ${c.engine.note}` : "");
   else if (job && job.state === "done") text = "Updated";
   else text = "Not checked for updates yet";
   row.appendChild(el("span", null, text));
   if (c && c.available && !checking && !engChecking.get(e.id))
-    updNow(row, e, "Download and install the new version through Strata's own updater" + (e.inUse ? ". Updating ejects the loaded Strata loadout." : ""));
+    updNow(row, e, "Download the new version and install it with Strata's own updater. The engine keeps its loadouts." + (e.inUse ? " The loaded loadout is ejected for the update." : ""));
   refreshIcon(row, e, checking, "asks Strata's update feed");
   card.appendChild(row);
 }
@@ -1374,7 +1375,7 @@ function llamaUpdLine(card, e, job, updating) {
   else if (job && job.state === "error" && !(at && at > (job.endedAt || 0))) { row.classList.add("bad"); text = "Update failed: " + job.error; }
   else if (e.update) {
     row.classList.add("new");
-    text = `New build: ${e.update.build} (${engSize(e.update.size)})` + (e.inUse ? " · updating ejects the loaded loadout for the switch" : "") + ago;
+    text = `New build: ${e.update.build} (${engSize(e.update.size)})` + ago; // ejecting is said on Update now's tooltip
     now = `Download ${e.update.build} and swap it in. The engine keeps its loadouts.` + (e.inUse ? " The loaded loadout is ejected for the swap (after a reply using it finishes)." : "");
   } else if (at) text = (job && job.state === "done" ? `Updated to ${job.build} · ` : "") + "Up to date" + ago;
   else if (job && job.state === "done") text = `Updated to ${job.build}`;
@@ -1472,20 +1473,36 @@ $("engBackendMenu").addEventListener("keydown", (e) => { // arrows move between 
   rows[k === "Home" ? 0 : k === "End" ? n - 1 : k === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n].focus();
 });
 document.addEventListener("click", () => { if (!$("engBackendMenu").hidden) toggleEngMenu(false); });
+// "Download Strata" under Add an engine. Once Strata is installed the row stays, greyed, with "Installed · …" and no
+// Download (like installed builds in the llama.cpp picker); its updates live on its card.
+let strataRel = null; // { text, title, ok } from Strata's releases
+function renderStrataRow() {
+  const st = engData?.engines.find((e) => e.type === "strata"), row = $("strataRow"), info = $("strataInfo"), dl = $("strataDl");
+  row.classList.toggle("installed", !!st);
+  if (st) {
+    info.textContent = ["Installed", st.build && `Terminal ${st.build}`, st.engineVersion && `engine ${st.engineVersion}`].filter(Boolean).join(" · ") + " · updates on its card";
+    info.title = "Strata is installed: check for and install updates on its card above.";
+    dl.hidden = true;
+  } else {
+    info.textContent = strataRel ? strataRel.text : "checking…";
+    info.title = strataRel ? strataRel.title : "";
+    dl.hidden = false; dl.disabled = !strataRel?.ok;
+  }
+}
 async function strataInfo() {
   try {
     const r = await fetch("/api/engines/strata/release"); const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.statusText);
-    $("strataInfo").textContent = `${j.release} · Terminal ${j.control} (${engSize(j.asset.size)}), then the engine for this PC` + (j.stale ? " (cached)" : "");
-    $("strataInfo").title = "Strata's own Python and tools, then its GPU engine from Strata's signed update feed. Kept separate from any Strata app you installed yourself.";
-    $("strataDl").disabled = false;
-  } catch (e) { $("strataInfo").textContent = "Could not reach Strata's releases: " + e.message; }
+    strataRel = { ok: true, text: `${j.release} · Terminal ${j.control} (${engSize(j.asset.size)}), then the engine for this PC` + (j.stale ? " (cached)" : ""),
+      title: "Strata's own Python and tools, then its GPU engine from Strata's signed update feed. Kept separate from any Strata app you installed yourself." };
+  } catch (e) { strataRel = { ok: false, text: "Could not reach Strata's releases: " + e.message, title: "" }; }
+  renderStrataRow();
 }
 $("strataDl").onclick = async () => {
   $("strataDl").disabled = true;
   const r = await engPost("/api/engines/strata/download");
   if (!r.ok) engError((await r.json().catch(() => ({}))).error || r.statusText); else engError("");
-  $("strataDl").disabled = false;
+  renderStrataRow();
   srvRefresh();
 };
 $("engDl").onclick = async () => {
