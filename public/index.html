@@ -382,6 +382,7 @@
   .compose #send.primary:disabled, .compose #send.empty { opacity:.35; cursor:default; }
   .compose #send.stop { background:var(--text); color:var(--bg); }
   .compose #send.stop:hover { background:#fff; }
+  .compose #send.stop.stopping, .compose #send.stop.stopping:hover { background:var(--text); opacity:.35; cursor:default; } /* clicked: dimmed until the reply has stopped */
   .attachments { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   .attachments[hidden] { display:none; }
   .attachments .att { position:relative; width:56px; height:56px; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#0b0d11; }
@@ -2468,6 +2469,7 @@ async function endRun(id, reload) {
   footEnd(null); // ended without a "done" (e.g. the connection closed)
   foldClose();
   pendingQuestion = null;
+  if (stopping === id) stopping = null;
   live = null; pendingApproval = null; running = false;
   setBusy(false);
   loadList();
@@ -2702,9 +2704,17 @@ async function retry(msg) {
   await startRun(c);
 }
 
+// Stop can take a few seconds (the step in flight has to end, Strata finishes a stopped reply): the button stays
+// dimmed from the click until the run has ended (endRun), so it doesn't look unresponsive. A failed request undims it.
+let stopping = null; // the session whose Stop was clicked
 function stop() {
+  if (!chat.id || stopping === chat.id) return;
   if (pendingApproval) pendingApproval(false);
-  if (chat.id) fetch(`/api/runs/${encodeURIComponent(chat.id)}/stop`, { method: "POST" }).catch(() => {});
+  const id = stopping = chat.id;
+  updateSendState();
+  fetch(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST" })
+    .then((r) => { if (!r.ok) throw new Error(r.statusText); })
+    .catch(() => { if (stopping === id) { stopping = null; updateSendState(); } });
 }
 // Stops this chat's run on the server and waits until it has finished saving.
 async function stopAndWait(id = chat.id) {
@@ -2880,6 +2890,9 @@ function updateSendState() {
   sendBtn.title = stopMode ? "Stop" : running ? "Send now: the model sees it after its current step" : "Send (Enter)";
   sendBtn.setAttribute("aria-label", stopMode ? "Stop" : "Send");
   sendBtn.classList.toggle("stop", stopMode); sendBtn.classList.toggle("primary", !stopMode);
+  const dim = stopMode && stopping === chat.id;
+  sendBtn.classList.toggle("stopping", dim);
+  if (dim) { sendBtn.title = "Stopping…"; sendBtn.setAttribute("aria-label", "Stopping"); }
   sendBtn.classList.toggle("empty", !running && !hasDraft());
 }
 input.addEventListener("input", autosize);
