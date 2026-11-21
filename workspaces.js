@@ -22,6 +22,7 @@ const metaFile = (id) => path.join(ROOT, id, "workspace.json");
 const exists = (id) => !!wsDir(id) && fs.existsSync(metaFile(id));
 
 function ensure(id, name) {
+  wsIds = null;
   for (const d of [sessionsDir(id), filesDir(id)]) fs.mkdirSync(d, { recursive: true });
   if (!fs.existsSync(metaFile(id))) DATA.writeJson(metaFile(id), { name: name || id, description: "", created: Date.now() });
 }
@@ -44,15 +45,23 @@ function init() {
     if (n) console.log(`[workspaces] moved ${n} session(s) from chats\\ into ${DEFAULT}`);
   }
   for (const w of ids()) for (const f of fs.readdirSync(sessionsDir(w))) if (f.endsWith(".json")) index.set(f.slice(0, -5), w);
+  resyncSessions().catch(() => {}); // the sessions list is ready before the first page asks
 }
 
+// The workspace ids: read again after 30 s, or at once after create/remove (folders made by hand show within 30 s).
+let wsIds = null, wsIdsAt = 0;
 function ids() {
-  return fs.readdirSync(ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && exists(d.name)).map((d) => d.name);
+  if (!wsIds || Date.now() - wsIdsAt > 30000) {
+    wsIds = fs.readdirSync(ROOT, { withFileTypes: true }).filter((d) => d.isDirectory() && exists(d.name)).map((d) => d.name);
+    wsIdsAt = Date.now();
+  }
+  return [...wsIds];
 }
 function info(id) {
   const m = DATA.readJson(metaFile(id), {});
   let sessions = 0;
-  try { sessions = fs.readdirSync(sessionsDir(id)).filter((f) => f.endsWith(".json")).length; } catch {}
+  if (sessSynced) for (const e of sessIndex.values()) { if (e.ws === id) sessions++; } // from the sessions index: no folder read
+  else try { sessions = fs.readdirSync(sessionsDir(id)).filter((f) => f.endsWith(".json")).length; } catch {}
   return { id, name: m.name || id, description: m.description || "", created: m.created || 0, isDefault: id === DEFAULT, sessions, dir: filesDir(id),
     memory: m.memory === true, memoryStats: m.memory === true ? memory.stats(id) : null };
 }
@@ -96,6 +105,8 @@ async function remove(id) {
   if (!exists(id)) throw Object.assign(new Error("No such workspace"), { status: 404 });
   const gone = [...index].filter(([, w]) => w === id).map(([s]) => s);
   for (const s of gone) index.delete(s);
+  for (const [f, e] of sessIndex) if (e.ws === id) sessIndex.delete(f);
+  wsIds = null;
   for (let i = 0; ; i++) { // Windows: files may be briefly locked (an image being served, Explorer open)
     try { await fs.promises.rm(path.join(ROOT, id), { recursive: true, force: true }); break; }
     catch (e) { if (i >= 20 || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(e.code)) throw e; await new Promise((r) => setTimeout(r, 200)); }
@@ -116,31 +127,43 @@ function placeSession(sid, ws) {
 }
 const forgetSession = (sid) => index.delete(sid);
 // The sessions list (the sidebar polls it every few seconds) comes from an in-memory index of each session file's
-// summary, kept current by server.js (noteSession on every write and delete), so a poll lists the folders instead of
-// reading every file. Reading every file took longer than the page's 8 s timeout while Strata was generating (each small
-// read took 100-1,600 ms on the user's PC) and the sidebar went empty. Files not in the index yet (startup, a session
-// written by another program) are read once. Changes made to a session file by another program show after a restart.
-const sessIndex = new Map(); // session file path -> { ws, chat: { id, title, updated, model, parent, unread } }
-const brief = (w, c) => ({ ws: w, chat: { id: c.id, title: c.title, updated: c.updated, model: c.model, parent: c.parent, unread: c.unread } });
+// summary, kept current by server.js (noteSession on every write and delete). Reading every file took longer than the
+// page's 8 s timeout while Strata was generating (each small read took 100-1,600 ms on the user's PC), and listing the
+// folders on each poll still took 0.2-1.4 s, so a poll is answered from memory. The folders are compared with it in
+// the background (at startup, then at most every 30 s, never holding up a request): files not in the index yet (a
+// session written by another program) are read once, and files gone from disk leave it. Changes made to a session file
+// by another program show after a restart.
+const sessIndex = new Map(); // session file path -> { ws, at, chat: { id, title, updated, model, parent, unread } }
+let sessSynced = false, sessSyncAt = 0, sessSync = null;
+const brief = (w, c) => ({ ws: w, at: Date.now(), chat: { id: c.id, title: c.title, updated: c.updated, model: c.model, parent: c.parent, unread: c.unread } });
 function noteSession(file, chat) {
   if (!chat) { sessIndex.delete(file); return; }
   sessIndex.set(file, brief(path.basename(path.dirname(path.dirname(file))), chat));
 }
-async function listSessions() {
-  const out = [], seen = new Set();
-  for (const w of ids()) {
-    const dir = sessionsDir(w);
-    for (const f of await fs.promises.readdir(dir).catch(() => [])) {
-      if (!f.endsWith(".json")) continue;
-      const p = path.join(dir, f);
-      seen.add(p);
-      let e = sessIndex.get(p);
-      if (!e) { try { e = brief(w, JSON.parse(await fs.promises.readFile(p, "utf8"))); sessIndex.set(p, e); } catch { continue; } }
-      out.push(e);
+function resyncSessions() {
+  if (sessSync) return sessSync;
+  const started = Date.now();
+  sessSync = (async () => {
+    const seen = new Set();
+    for (const w of ids()) {
+      const dir = sessionsDir(w);
+      for (const f of await fs.promises.readdir(dir).catch(() => [])) {
+        if (!f.endsWith(".json")) continue;
+        const p = path.join(dir, f);
+        seen.add(p);
+        if (!sessIndex.has(p)) try { const e = brief(w, JSON.parse(await fs.promises.readFile(p, "utf8"))); if (!sessIndex.has(p)) sessIndex.set(p, e); } catch {}
+      }
     }
-  }
-  for (const k of sessIndex.keys()) if (!seen.has(k)) sessIndex.delete(k);
-  return out;
+    for (const [k, e] of sessIndex) if (!seen.has(k) && e.at < started) sessIndex.delete(k); // (one saved during the scan stays)
+    sessSynced = true; sessSyncAt = Date.now();
+  })().finally(() => { sessSync = null; });
+  return sessSync;
+}
+async function listSessions() {
+  if (!sessSynced) await resyncSessions();
+  else if (Date.now() - sessSyncAt > 30000) resyncSessions().catch(() => {});
+  const live = new Set(ids());
+  return [...sessIndex.values()].filter((e) => live.has(e.ws));
 }
 
 async function allSessions() {
@@ -161,21 +184,30 @@ function filePath(id, rel) {
   const r = path.relative(base, p);
   return r && !r.startsWith("..") && !path.isAbsolute(r) ? p : null;
 }
-async function files(id) {
-  const base = filesDir(id), out = [];
+// A workspace's files (the overview and the files view). Kept until the folder changes (dircache.js); the server and
+// the tools say so too (invalidateFiles). A scan stats the files 16 at a time: one at a time took over 8 s for 449
+// files while Strata generated, and the page gave up.
+async function scanFiles(base) {
+  const found = [];
   async function walk(dir, depth) {
     for (const d of await fs.promises.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (found.length >= 2000) return;
       const p = path.join(dir, d.name);
       if (d.isDirectory()) { if (depth < 4) await walk(p, depth + 1); continue; }
-      if (!d.isFile() || d.name.endsWith(".part")) continue;
-      const st = await fs.promises.stat(p).catch(() => null);
-      if (st) out.push({ path: path.relative(base, p).split(path.sep).join("/"), size: st.size, modified: st.mtimeMs });
-      if (out.length >= 2000) return;
+      if (d.isFile() && !d.name.endsWith(".part")) found.push(p);
     }
   }
   await walk(base, 0);
+  const out = [];
+  for (let i = 0; i < found.length; i += 16) {
+    const sts = await Promise.all(found.slice(i, i + 16).map((p) => fs.promises.stat(p).catch(() => null)));
+    sts.forEach((st, j) => { if (st) out.push({ path: path.relative(base, found[i + j]).split(path.sep).join("/"), size: st.size, modified: st.mtimeMs }); });
+  }
   return out.sort((a, b) => b.modified - a.modified);
 }
+const fileScans = require("./dircache").dirCache(scanFiles);
+async function files(id) { return (await fileScans.get(filesDir(id))).map((f) => ({ ...f })); }
+const invalidateFiles = (id) => fileScans.invalidate(id == null ? undefined : filesDir(id));
 // A free name in the files folder: "x.png", then "x (2).png", ...
 function freeName(id, name, dir = filesDir(id)) {
   const clean = path.basename(String(name || "file")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 150) || "file";
@@ -185,5 +217,5 @@ function freeName(id, name, dir = filesDir(id)) {
   return cand;
 }
 
-module.exports = { DEFAULT, ROOT, init, list, info, exists, memoryOn, create, update, remove, filesDir, filePath, files, freeName,
+module.exports = { DEFAULT, ROOT, init, list, info, exists, memoryOn, create, update, remove, filesDir, filePath, files, invalidateFiles, freeName,
   workspaceOf, sessionFile, placeSession, forgetSession, allSessions, listSessions, noteSession };

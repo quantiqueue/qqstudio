@@ -545,6 +545,33 @@
   const f = window.fetch.bind(window);
   window.fetch = (u, o = {}) => o.signal ? f(u, o) : f(u, { ...o, signal: AbortSignal.timeout(!o.method || o.method === "GET" ? 8000 : 60000) });
 })();
+// The page opens with what it showed last time (kept per device in localStorage), then swaps in fresh data: the first
+// read of each of these answers at once from the copy, the real request runs meanwhile, and its loader runs again with
+// it. While Strata generates, these reads took 0.2-0.8 s each and queued behind each other. Only reads are cached;
+// mcp.json's text (it can hold API keys) isn't stored. Same as Settings (models.html).
+(() => {
+  const net = window.fetch;
+  const strip = { "/api/mcp": (j) => { delete j.raw; return j; } };
+  const rerun = { "/api/chats": () => loadList(), "/api/workspaces": () => loadWorkspaces().then(() => { renderList(); if (wsView) renderWsView(); }),
+    "/api/models": () => loadModels(), "/api/tools": () => loadTools(), "/api/skills": () => loadTools(), "/api/mcp": () => loadTools() };
+  const first = new Set(Object.keys(rerun)), fresh = new Map(); // fresh: url -> the background request, for the loader's next read
+  const key = (u) => "qq.page:" + u;
+  const keep = (u, r) => { if (r.ok) r.clone().json().then((j) => { try { localStorage.setItem(key(u), JSON.stringify(strip[u] ? strip[u](j) : j)); } catch {} }).catch(() => {}); return r; };
+  window.fetch = (u, o = {}) => {
+    if (typeof u !== "string" || !(u in rerun) || (o.method && o.method !== "GET")) return net(u, o);
+    if (fresh.has(u)) { const p = fresh.get(u); fresh.delete(u); return p; }
+    const req = net(u, o).then((r) => keep(u, r));
+    let copy = null;
+    if (first.delete(u)) try { copy = localStorage.getItem(key(u)); } catch {}
+    if (copy == null) return req;
+    fresh.set(u, req);
+    // Only if no loader picked the answer up yet (one loader reads three of these); a loader still running its first
+    // call may need a second go.
+    const again = () => setTimeout(async () => { if (!fresh.has(u)) return; await rerun[u](); if (fresh.has(u)) await rerun[u](); });
+    req.then(again, again);
+    return Promise.resolve(new Response(copy, { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+})();
 
 const $ = (id) => document.getElementById(id);
 let workspaces = [], defaultWs = "Default", wsView = null; // wsView: id of the workspace shown in the main area, or null for a session
@@ -611,8 +638,11 @@ function footTokens(n, tool = "") {
   foot.prep = tool || "";
   if (!foot.prep) { foot.anchor = { n, at: now, carried: false }; foot.shown = 0; } // text, thinking or a finished step: real counts
   if (n >= foot.tokens) foot.tokens = n;
-  foot.draw();
+  footDrawSoon();
 }
+// Tokens arrive faster than frames: the footer's text is written at most once per frame.
+let footRaf = 0;
+function footDrawSoon() { if (!footRaf) footRaf = requestAnimationFrame(() => { footRaf = 0; foot?.draw(); }); }
 // The reply's count to show: real, or "≈" (approx) while a tool call is being prepared and no text has arrived for 1.2 s
 // (or an estimate is being carried on). Speed: the engine's own figure for the latest finished step ("… @ 43.0 tok/s",
 // this reply or an earlier one), else this reply's average so far (not the bursts between chunks).
@@ -629,7 +659,7 @@ function footGuess() {
   foot.shown = n;
   return { n, approx: n > real };
 }
-function footStop() { if (foot) { clearInterval(foot.timer); foot = null; } }
+function footStop() { cancelAnimationFrame(footRaf); footRaf = 0; if (foot) { clearInterval(foot.timer); foot = null; } }
 const footDone = (stat) => { const e = el("div", "runfoot", `Generated ${fmtTok(stat.tokens)}${fmtSub(stat.sub)} in ${fmtDur(stat.ms)}`); if (stat.sub) e.title = "The time is the whole reply's, sub-agents included"; return e; };
 // The reply ended: the live footer becomes "Generated … in …" (the server's totals when given).
 // ---------- ask_user: the model's questions, answered by clicking options (or typing a message) ----------
@@ -1473,7 +1503,7 @@ function assistantBox() {
   let mdRaf = 0, mdText = "";
   let thinkNode = null, thinkWant = "", thinkRaf = 0; // the thinking text: written per frame, only while its section is open
   let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false, thinkTimer = null, phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
-  let actEl = null, actN = 0, actTool = "", actT0 = 0, actTimer = null; // "Generating N tokens for Ns" while tokens stream
+  let actEl = null, actN = 0, actTool = "", actT0 = 0, actTimer = null, actRaf = 0; // "Generating N tokens for Ns" while tokens stream
   const fmtSecs = (s) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
   const drawAct = () => {
     if (!actEl) return;
@@ -1506,7 +1536,7 @@ function assistantBox() {
   };
   return {
     // Status line shown until the reply text starts streaming.
-    phase(text, pct = null) {
+    phase(text, pct = null, ago = 0) { // ago: how long this phase has run already (a page attaching mid-step)
       if (thinkEl && thinkT1 === null) {
         if (text === "Thinking") return; // the thinking line already says so
         thinkT1 = performance.now(); drawThink(); // thinking ended (e.g. "Preparing tool call")
@@ -1519,7 +1549,7 @@ function assistantBox() {
         box.insertBefore(phaseEl, box.firstChild);
         phaseTimer = setInterval(drawPhase, 500);
       }
-      if (text !== phaseText) { phaseText = text; phaseT0 = performance.now(); }
+      if (text !== phaseText) { phaseText = text; phaseT0 = performance.now() - (ago || 0); }
       phasePct = pct;
       drawPhase();
     },
@@ -1533,13 +1563,18 @@ function assistantBox() {
         actEl = box.appendChild(el("div", "activity"));
         actEl.appendChild(el("span", "spin")); actEl.appendChild(el("span"));
         actTimer = setInterval(drawAct, 500);
+        drawAct();
       }
-      drawAct();
+      if (!actRaf) actRaf = requestAnimationFrame(() => { actRaf = 0; drawAct(); }); // at most once per frame, like the footer
     },
-    clearActivity() { clearInterval(actTimer); actTimer = null; actEl?.remove(); actEl = null; },
+    clearActivity() { clearInterval(actTimer); actTimer = null; cancelAnimationFrame(actRaf); actRaf = 0; actEl?.remove(); actEl = null; },
+    // The page stops watching this step (another session, or a reattach redraws it): stop its timers.
+    halt() { clearInterval(thinkTimer); clearInterval(actTimer); clearInterval(phaseTimer); thinkTimer = actTimer = phaseTimer = null;
+      cancelAnimationFrame(actRaf); cancelAnimationFrame(thinkRaf); cancelAnimationFrame(mdRaf); actRaf = thinkRaf = mdRaf = 0; },
     clearPhase() { clearInterval(phaseTimer); phaseTimer = null; phaseEl?.remove(); phaseEl = null; phaseText = ""; },
-    thinking(text) {
-      if (thinkT0 === null) thinkT0 = performance.now();
+    // ago/ms: when thinking started and, if it ended, how long it took (a page attaching mid-step keeps the timer).
+    thinking(text, ago = null, ms = null) {
+      if (thinkT0 === null) { thinkT0 = performance.now() - (ago || 0); if (ago != null && ms != null) thinkT1 = thinkT0 + ms; }
       if (!thinkEl) {
         this.clearPhase();
         const det = el("details", "thoughts"); // collapsed by default; sits above the reply box, not inside it
@@ -1600,6 +1635,10 @@ function shownCall(tc) {
 }
 // Tools whose only job is to display something: when they succeed, show just the result (no tool line).
 const QUIET_TOOLS = new Set(["show_image"]);
+// A tool's own name: models sometimes put the group or server in front ("Images__show_image" through call_tool), and
+// the server accepts it, so the page must too (the image stayed in the fold although the model was told it was shown).
+const baseTool = (n) => { n = String(n || ""); const i = n.lastIndexOf("__"); return i >= 0 ? n.slice(i + 2) : n; };
+const isQuiet = (n) => QUIET_TOOLS.has(baseTool(n)), isDisplay = (n) => DISPLAY_TOOLS.has(baseTool(n));
 
 // Compact tool line: "▸ name  summary · status"; arguments and result fold out. Images go in the conversation below it.
 function argSummary(argsText) {
@@ -1632,7 +1671,7 @@ function toolCard(name, argsText) {
       det.appendChild(el("pre", null, text.length > 6000 ? text.slice(0, 6000) + "\n…" : text));
       if (images && images.length) {
         const media = el("div", "media");
-        if (DISPLAY_TOOLS.has(name)) add(media); else card.after(media); // next to its card, inside the fold
+        if (isDisplay(name)) add(media); else card.after(media); // next to its card, inside the fold
         media.appendChild(renderImages(images, images.some((i) => i.big)));
       }
     },
@@ -1810,7 +1849,7 @@ function renderChat(live = false) {
         t.badge(r._status || "done");
         foldTime(foldOf(t.node), null, r._at);
         if (r._status !== "denied" && r._status !== "cancelled") t.result(r.content, r._images);
-        if (QUIET_TOOLS.has(sc.name) && (r._status || "done") === "done" && r._images?.length) t.hide();
+        if (isQuiet(sc.name) && (r._status || "done") === "done" && r._images?.length) t.hide();
       }
       if (m._run) add(footDone(m._run));
     }
@@ -2053,6 +2092,7 @@ async function renderWsView() {
   if (w.memory) memoryCard(cards.appendChild(el("div")), w, sessions.length);
   const files = await wsFileList(id);
   if (wsView !== id || wsSub) return;
+  if (!files) { fbox.innerHTML = ""; fbox.appendChild(filesBusy()); return; }
   fcnt.textContent = `· ${files.length}`;
   fbox.innerHTML = "";
   // One card: the four newest files and the count; it opens the files view. Dropping files anywhere here still uploads.
@@ -2115,7 +2155,32 @@ function previewGrid(id, files, small = false) {
 }
 const fileIcon = (p) => (/\.(json|md|txt|csv|lua|js|py|html)$/i.test(p) ? "📄" : "📦");
 const wsFileUrl = (id, f) => `/api/workspaces/${encodeURIComponent(id)}/files/${f.path.split("/").map(encodeURIComponent).join("/")}`;
-async function wsFileList(id) { try { return (await (await fetch(`/api/workspaces/${encodeURIComponent(id)}/files`)).json()).files || []; } catch { return []; } }
+// A workspace's file list: at once from the last copy (this page's, else this device's localStorage), refreshed in
+// the background and redrawn if it changed. Without a copy, a failed or timed-out read is "not yet" (null; the view
+// says so and tries again), not "no files": it used to show an empty Files card while Strata generated.
+const fileCopies = new Map();
+const fileKey = (id) => "qq.files:" + id;
+function fileCopy(id) {
+  if (!fileCopies.has(id)) try { const v = JSON.parse(localStorage.getItem(fileKey(id)) || "null"); if (v) fileCopies.set(id, v); } catch {}
+  return fileCopies.get(id) || null;
+}
+function dropFileCopy(id) { fileCopies.delete(id); try { localStorage.removeItem(fileKey(id)); } catch {} } // after our own upload or delete
+async function fetchFiles(id) {
+  const r = await fetch(`/api/workspaces/${encodeURIComponent(id)}/files`);
+  if (!r.ok) throw new Error(r.statusText);
+  const files = (await r.json()).files || [], was = JSON.stringify(fileCopies.get(id) || null), now = JSON.stringify(files);
+  fileCopies.set(id, files);
+  try { localStorage.setItem(fileKey(id), now); } catch {} // (too big for the device's storage: this page's copy still helps)
+  return { files, changed: was !== now };
+}
+let filesRetry = 0;
+async function wsFileList(id) {
+  const copy = fileCopy(id);
+  if (copy) { fetchFiles(id).then(({ changed }) => { if (changed && wsView === id) renderWsView(); }, () => {}); return copy; }
+  try { return (await fetchFiles(id)).files; }
+  catch { clearTimeout(filesRetry); filesRetry = setTimeout(() => { if (wsView === id) renderWsView(); }, 3000); return null; }
+}
+const filesBusy = () => el("div", "wsv-empty", "The files aren't readable yet (the server is busy). Trying again…");
 function pickUpload(id, dir = "") { const i = el("input"); i.type = "file"; i.multiple = true; i.onchange = () => uploadWsFiles(id, [...i.files], dir); i.click(); }
 const dirQuery = (dir) => (dir ? "dir=" + encodeURIComponent(dir) : "");
 // The files view: one folder's files, with its folders first as cards (a preview, the count); "Files › a › b" leads back up.
@@ -2151,6 +2216,7 @@ async function renderFilesView() {
   box.appendChild(el("div", "wsv-empty", "Loading…"));
   const all = await wsFileList(id);
   if (wsView !== id || wsSub !== "files" || wsDir !== dir) return;
+  if (!all) { box.innerHTML = ""; box.appendChild(filesBusy()); return; }
   const pre = dir ? dir + "/" : "", inside = all.filter((f) => f.path.startsWith(pre));
   const folders = new Map(), files = [];
   for (const f of inside) {
@@ -2186,7 +2252,7 @@ async function renderFilesView() {
       e.preventDefault(); e.stopPropagation();
       if (!del.classList.contains("armed")) { del.classList.add("armed"); del.textContent = "Delete?"; setTimeout(() => { del.classList.remove("armed"); del.textContent = "🗑"; }, 3000); return; }
       await fetch(url, { method: "DELETE" }).catch(() => {});
-      renderWsView();
+      dropFileCopy(wsView); renderWsView();
     };
   }
 }
@@ -2199,6 +2265,7 @@ async function uploadWsFiles(id, list, dir = "") {
     } catch (e) { status.textContent = `Upload failed: ${e.message}`; return; }
   }
   status.textContent = "";
+  dropFileCopy(id);
   if (wsView === id) renderWsView();
 }
 $("wsView").addEventListener("dragover", (e) => { if (wsView && [...e.dataTransfer.types].includes("Files")) { e.preventDefault(); $("wsView").classList.add("drop"); } });
@@ -2356,9 +2423,24 @@ function setBusy(busy) {
 
 // Leaving the page: close the run's event stream so it doesn't hold a connection (the run keeps going on the server).
 addEventListener("pagehide", () => { if (es) { es.close(); es = null; } });
+// A tab hidden for 30 s stops watching the run (no tokens to parse while nobody looks) and reattaches when shown: the
+// snapshot restores the step, its timers and the scroll position. Shorter switches (another app on the iPad) keep the
+// stream, since a reattach redraws the session and closes any open fold.
+const HIDDEN_DETACH_MS = 30000;
+let hideTimer = 0, hiddenRun = null, keepScroll = null;
+document.addEventListener("visibilitychange", () => {
+  clearTimeout(hideTimer);
+  if (document.hidden) {
+    hideTimer = setTimeout(() => { if (document.hidden && es && running && chat.id) { hiddenRun = chat.id; es.close(); es = null; } }, HIDDEN_DETACH_MS);
+    return;
+  }
+  const id = hiddenRun; hiddenRun = null;
+  if (id && chat.id === id && !es) { keepScroll = { stick, top: log.scrollTop }; attach(id); } // a finished run answers 204: endRun shows what was saved
+});
 // Stop watching (the run itself keeps going on the server).
 function detach() {
   if (es) { es.close(); es = null; }
+  live?.box?.halt();
   live = null; pendingApproval = null; running = false;
   setBusy(false);
 }
@@ -2424,15 +2506,17 @@ function liveTool(tc, status) {
 function onRunEvent(ev, id) {
   switch (ev.type) {
     case "snapshot": {
+      live?.box?.halt(); // a reattach: the old step's box is about to be replaced
       chat.messages = ev.messages || [];
       renderChat(true);
       live = {};
       if (ev.cur) {
         const b = liveStep();
         live.content = ev.cur.content || ""; live.reasoning = ev.cur.reasoning || "";
-        if (live.reasoning) b.thinking(live.reasoning);
+        if (ev.cur.age != null) foldTime(foldOf(b.node), Date.now() - ev.cur.age); // the fold's "Reasoning… · 14s" counts from the step's start
+        if (live.reasoning) b.thinking(live.reasoning, ev.cur.thinkAge, ev.cur.thinkMs);
         if (live.content) b.content(live.content);
-        else if (ev.cur.phase && !ev.cur.gen?.tool) b.phase(ev.cur.phase, ev.cur.pct);
+        else if (ev.cur.phase && !ev.cur.gen?.tool) b.phase(ev.cur.phase, ev.cur.pct, ev.cur.phaseAge);
         if (ev.cur.gen) b.activity(ev.cur.gen.n, ev.cur.gen.tool || "", ev.cur.gen.ms);
       }
       if (ev.tool) liveTool(ev.tool.tc, ev.tool.status);
@@ -2444,6 +2528,7 @@ function onRunEvent(ev, id) {
       if (ev.waiting && foot) { foot.waiting = ev.waiting; foot.draw(); }
       pendingEls.clear();
       for (const p of ev.pending || []) pendingBubble(p);
+      if (keepScroll) { if (!keepScroll.stick) { stick = false; log.scrollTop = ownTop = keepScroll.top; updJump(); } keepScroll = null; }
       break;
     }
     case "step": liveStep().phase("Sending request"); foldLive(foldOf(live.box.node), true); break;
@@ -2491,7 +2576,7 @@ function onRunEvent(ev, id) {
       const st = m._status || "done";
       t.badge(st);
       if (st !== "denied" && st !== "cancelled") t.result(m.content, m._images);
-      if (QUIET_TOOLS.has(shownCall(tcById(m.tool_call_id)).name) && st === "done" && m._images?.length) t.hide();
+      if (isQuiet(shownCall(tcById(m.tool_call_id)).name) && st === "done" && m._images?.length) t.hide();
       follow();
       break;
     }
@@ -2840,7 +2925,10 @@ new ResizeObserver(() => {
 $("brandLink").onclick = (e) => { e.preventDefault(); openWorkspace(lastWs()); };
 
 (async () => {
-  await Promise.all([loadModels(), loadTools(), loadList(), loadWorkspaces()]);
+  // The sidebar and the first view need only the workspaces and sessions; loadouts and tools fill in when they arrive
+  // (loadModels keeps the session's loadout, loadTools redraws the toolbar).
+  loadModels(); loadTools();
+  await Promise.all([loadList(), loadWorkspaces()]);
   renderList();
   await route();
 })();

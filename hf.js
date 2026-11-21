@@ -95,7 +95,7 @@ async function runJob(job) {
     try { start = fs.statSync(part).size; } catch {}
     const url = `${HF}/${job.repo}/resolve/main/${job.path.split("/").map(encodeURIComponent).join("/")}`;
     const r = await fetch(url, { headers: hfHeaders(start ? { Range: `bytes=${start}-` } : {}), redirect: "follow", signal: job.ac.signal });
-    if (r.status === 416 && start) { fs.renameSync(part, job.dest); job.done = job.total = start; job.status = "done"; return; }
+    if (r.status === 416 && start) { fs.renameSync(part, job.dest); require("./presets").invalidate(); job.done = job.total = start; job.status = "done"; return; }
     if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (gated repo: accept the license on huggingface.co and set HF_TOKEN)" : ""}`);
     if (start && r.status !== 206) start = 0; // server ignored Range: start over
     job.total = start + Number(r.headers.get("content-length") || 0) || job.total;
@@ -109,6 +109,7 @@ async function runJob(job) {
     });
     await pipeline(src, fs.createWriteStream(part, { flags: start ? "a" : "w" }));
     fs.renameSync(part, job.dest);
+    require("./presets").invalidate(); // the models list shows it now (no watcher off Windows and macOS)
     job.status = "done";
     console.log(`[hf] downloaded ${job.dest}`);
   } catch (e) {

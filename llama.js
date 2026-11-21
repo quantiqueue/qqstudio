@@ -102,6 +102,22 @@ function isLlama(p, exe) {
 // "ready" | "loading" (503) | "busy" (no answer in time: Strata answers one request at a time, so /health waits while it
 // generates, also for a reply that was stopped, which it finishes anyway) | "unreachable" (nothing listening: refused) |
 // "http <n>". Only "unreachable" means the server is gone.
+// Status checks (pages poll them) go through this. Strata's /health blocks while it generates, so every poll waited the
+// full 1.5 s timeout during a reply, and pages asking at once each waited again. Now one check at a time is shared, a
+// healthy answer is reused for 2 s, and while qqstudio's own requests stream from the running loadout (inUse) the last
+// healthy answer stands without asking: that stream shows it's up, and it ends with an error if the engine goes away.
+let inUse = () => false, lastHealth = null, healthJob = null;
+const setInUse = (fn) => { inUse = fn; };
+function statusHealth() {
+  const key = `${cur.loadout}|${cur.startedAt}|${cur.pid}`;
+  const ok = lastHealth && lastHealth.key === key && (lastHealth.h === "ready" || lastHealth.h === "busy");
+  if (ok && !cur.launching && (inUse() || Date.now() - lastHealth.at < 2000)) return Promise.resolve(lastHealth.h);
+  if (!healthJob || healthJob.key !== key) { // (a check from before a launch or stop doesn't answer for the new process)
+    const job = health().then((h) => { lastHealth = { key, h, at: Date.now() }; return h; }).finally(() => { if (healthJob === job) healthJob = null; });
+    job.key = key; healthJob = job;
+  }
+  return healthJob;
+}
 async function health() {
   try {
     const r = await fetch(url() + "/health", { signal: AbortSignal.timeout(1500) });
@@ -188,7 +204,7 @@ function stop() { return (busy = busy.then(stopNow)); }
 async function status() {
   if (cur.strata) return strataStatus();
   if (cur.pid && !alive(cur.pid)) { cur.pid = null; writeRun(); if (cur.state === "running") { cur.state = "error"; cur.error = cur.error || "llama-server exited (see the log)"; } }
-  const h = cur.pid ? await health() : "unreachable";
+  const h = cur.pid ? await statusHealth() : "unreachable";
   const state = cur.pid ? (h === "ready" ? "loaded" : "loading") : cur.state === "error" ? "failed" : "stopped";
   return { state, loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: cur.pid, sig: cur.sig, error: cur.error, startedAt: cur.startedAt, url: url(), health: h };
 }
@@ -791,7 +807,7 @@ async function stopStrata() {
 }
 const STRATA_GONE = "Strata stopped serving (see the log)";
 async function strataStatus() {
-  const h = await health();
+  const h = await statusHealth();
   const answers = h === "ready" || h === "busy";
   // Marked gone by an older check (e.g. a slow /health before "busy" existed) but answering: it never stopped.
   if (cur.state === "error" && cur.error === STRATA_GONE && answers && !cur.launching) { cur.state = "running"; cur.error = null; writeRun(); }
@@ -1103,7 +1119,7 @@ async function init() {
   return false;
 }
 
-module.exports = {
+module.exports = { setInUse,
   init, launch, stop, status, current, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip, untar, extract, parseAsset, backendsOf, pickBackend, gpus,
   strataRelease, downloadStrata, updateStrata, updateLlama, checkLlama, checkStrata, strataCatalog, strataCatalogCached,
   byId, all: () => data.engines, defaultEngine, subcmd,

@@ -31,7 +31,10 @@ function parseFrontmatter(text) {
   return { meta, body: m[2] };
 }
 
-function cfg() { return { disabled: [], ...P.readJson(P.skillsCfg, {}) }; }
+// skills.json changes only through setEnabled: read once. The folders are scanned when they change (dircache.js): every
+// list() read each SKILL.md with blocking reads, and the pages and each reply ask for the list.
+let cfgCache = null;
+function cfg() { if (!cfgCache) cfgCache = { disabled: [], ...P.readJson(P.skillsCfg, {}) }; return { ...cfgCache, disabled: [...cfgCache.disabled] }; }
 
 function walk(dir, base = dir, out = [], depth = 0) {
   if (depth > 3 || out.length >= 60) return out;
@@ -46,8 +49,12 @@ function walk(dir, base = dir, out = [], depth = 0) {
   return out;
 }
 
+const scans = require("./dircache").dirCache(scan);
 function list() {
   const disabled = new Set(cfg().disabled);
+  return scans.get(P.skills).map((s) => ({ ...s, files: [...s.files], enabled: !disabled.has(s.name) }));
+}
+function scan() {
   const out = [];
   let dirs = [];
   try { dirs = fs.readdirSync(P.skills, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch {}
@@ -61,7 +68,7 @@ function list() {
     const files = walk(dir);
     out.push({
       name, folder: d.name, description: (meta.description || "").trim(), dir, file: path.join(dir, file),
-      files, hasScripts: files.some((f) => SCRIPT_EXT.test(f)), enabled: !disabled.has(name),
+      files, hasScripts: files.some((f) => SCRIPT_EXT.test(f)),
     });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -80,12 +87,14 @@ function setEnabled(name, enabled) {
   enabled ? set.delete(name) : set.add(name);
   c.disabled = [...set];
   P.writeJson(P.skillsCfg, c);
+  cfgCache = c;
 }
 
 function createExample() {
   const dir = path.join(P.skills, "folder-report");
   if (fs.existsSync(dir)) return dir;
   fs.mkdirSync(dir, { recursive: true });
+  scans.invalidate();
   fs.writeFileSync(path.join(dir, "SKILL.md"), `---
 name: folder-report
 description: Produce a short report about a folder - what it contains, file types, largest files and what the project appears to be. Use when the user asks to summarize, audit or describe a folder.
@@ -106,6 +115,7 @@ description: Produce a short report about a folder - what it contains, file type
 
 Keep it under 250 words. Don't modify anything.
 `);
+  scans.invalidate();
   return dir;
 }
 
