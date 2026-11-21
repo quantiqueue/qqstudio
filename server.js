@@ -100,6 +100,7 @@ const visionOf = (model) => { const v = loadouts.visionOf(model); return v === n
 const inflight = new Map(); // loadout id -> requests streaming now
 let switching = Promise.resolve();
 const busyCount = () => [...inflight.values()].reduce((a, b) => a + b, 0);
+llama.setInUse(() => { const c = llama.current(); return !!c.loadout && (inflight.get(c.loadout) || 0) > 0; }); // status checks skip /health meanwhile
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 // After loadouts or model files change: reload the running loadout if it would now start differently (or stop it if
 // it's gone). If a reply is using it, nothing happens now and restartNeeded says so; the next request reloads it.
@@ -258,6 +259,7 @@ async function handleUploads(req, res) {
       await fs.promises.mkdir(ws.filesDir(wsId), { recursive: true });
       const name = ws.freeName(wsId, base);
       await fs.promises.writeFile(path.join(ws.filesDir(wsId), name), buf);
+      ws.invalidateFiles(wsId);
       return sendJson(res, 200, { src: `/api/workspaces/${encodeURIComponent(wsId)}/files/${encodeURIComponent(name)}`, bytes: buf.length });
     }
     await fs.promises.mkdir(UPLOADS, { recursive: true });
@@ -367,7 +369,9 @@ function updateChat(file, fn) {
   tail.then(() => { if (chatQueues.get(file) === tail) chatQueues.delete(file); });
   return next;
 }
-const runs = createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
+// A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
+const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
@@ -575,6 +579,7 @@ async function handleWorkspaces(req, res) {
       return sendJson(res, err ? 500 : 200, err ? { error: err, path: target } : { ok: true });
     }
     if (sub !== "files") return sendJson(res, 404, { error: "Not found" });
+    if (req.method !== "GET") res.on("finish", () => ws.invalidateFiles(id)); // uploads and deletes: the list shows them now
     if (!rest) {
       if (req.method === "GET") return sendJson(res, 200, { dir: ws.filesDir(id), files: await ws.files(id) });
       if (req.method === "POST") { // raw body; ?name=<file name>
@@ -833,6 +838,7 @@ async function handleLocalModels(req, res) {
   }
   const deleted = [];
   try {
+    presets.invalidate(); // even if a file can't be deleted, the list is read again
     for (const f of files) {
       for (let tries = 0; ; tries++) { // a just-unloaded model can stay locked for a moment
         try { await fs.promises.rm(f, { force: true }); break; }
@@ -1044,7 +1050,7 @@ async function handleTool(req, res) {
     if (f) try { mode = JSON.parse(fs.readFileSync(f, "utf8")).mode || "manual"; } catch {}
     if (mode !== "auto") return sendJson(res, 200, { result: `ERROR: "${body.name}" needs the user's approval.`, images: [] });
   }
-  const out = await runTool(body.name, body.args, { base: ws.filesDir((body.chatId && ws.workspaceOf(body.chatId)) || ws.DEFAULT) });
+  const out = await runToolSeen(body.name, body.args, { base: ws.filesDir((body.chatId && ws.workspaceOf(body.chatId)) || ws.DEFAULT) });
   console.log(`[tool] ${body.name} ${JSON.stringify(body.args).slice(0, 200)} (${Date.now() - t0}ms)`);
   sendJson(res, 200, { result: out.text, images: out.images || [] });
 }

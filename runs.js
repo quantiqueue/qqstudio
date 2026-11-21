@@ -421,7 +421,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     let text = transcript(older);
     const room = Math.floor(run.nCtx * 0.6 * 3); // the summary request itself must fit: drop the oldest part if needed
     if (text.length > room) text = "…[the oldest part was too long and is left out]\n\n" + text.slice(text.length - room);
-    run.cur = { model: run.model, content: "", reasoning: "", phase: "Compacting session", pct: null };
+    run.cur = { model: run.model, content: "", reasoning: "", phase: "Compacting session", pct: null, t0: Date.now(), phaseAt: Date.now() };
     emit(run, { type: "step", model: run.model });
     emit(run, { type: "phase", text: "Compacting session", pct: null });
     const t0 = Date.now();
@@ -467,14 +467,15 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   async function step(run) {
     const { model } = run;
     yieldMemory(); // a memory update after another reply gives way
-    const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null }; // gen: {n, t0, tool} generated tokens this step
     const t0 = Date.now();
+    const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null, t0, phaseAt: t0 }; // gen: {n, t0, tool} generated tokens this step; t0/phaseAt/think0/think1: for a page that attaches mid-step
     let think0 = null, think1 = null, timings = null, failed = false, retry = false, gotChunk = false, lastSave = Date.now();
     let looped = false, runaway = null, finish = null, ended = false, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
     const calls = [];
     emit(run, { type: "step", model });
     const phase = (text, pct = null) => {
       if (cur.phase === text && cur.pct === pct) return;
+      if (cur.phase !== text) cur.phaseAt = Date.now();
       cur.phase = text; cur.pct = pct;
       emit(run, { type: "phase", text, pct });
     };
@@ -551,11 +552,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
             g.n = g.total - g.base;
           }
           if (d.reasoning_content) {
-            if (think0 === null) think0 = Date.now();
+            if (think0 === null) cur.think0 = think0 = Date.now();
             cur.reasoning += d.reasoning_content; ev.r = d.reasoning_content;
             if (!cur.content) phase("Thinking");
           }
-          if ((d.content || d.tool_calls) && think0 !== null && think1 === null) think1 = Date.now(); // a tool call also ends thinking
+          if ((d.content || d.tool_calls) && think0 !== null && think1 === null) cur.think1 = think1 = Date.now(); // a tool call also ends thinking
           if (d.content) {
             cur.content += d.content; ev.c = d.content; cur.phase = null;
           }
@@ -1327,7 +1328,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const run = runs.get(id);
     if (!run) { res.writeHead(204); return res.end(); } // 204 tells EventSource not to reconnect
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-    const cur = run.cur && { ...run.cur, gen: run.cur.gen && { n: run.cur.gen.n, ms: Date.now() - run.cur.gen.t0, tool: run.cur.gen.tool } };
+    // Times go out as ages (ms ago), so the page's clock doesn't matter: a page that comes back keeps the running timers.
+    const c = run.cur, now = Date.now();
+    const cur = c && { model: c.model, content: c.content, reasoning: c.reasoning, phase: c.phase, pct: c.pct,
+      gen: c.gen && { n: c.gen.n, ms: now - c.gen.t0, tool: c.gen.tool },
+      age: c.t0 ? now - c.t0 : null, phaseAge: c.phaseAt ? now - c.phaseAt : null,
+      thinkAge: c.think0 ? now - c.think0 : null, thinkMs: c.think0 && c.think1 ? c.think1 - c.think0 : null };
     const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0), sub: subTokens(run) };
     const question = run.question && { id: run.question.id, tc: run.question.tc, questions: run.question.questions };
     const agents = [...run.subs.values()].filter((s) => s.status === "running" || s.status === "pending").map(agentInfo);

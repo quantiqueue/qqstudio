@@ -39,8 +39,14 @@ function scan(root, depth = 0, out = []) {
   return out;
 }
 
+// The walk (a readdir per folder, a stat per model) ran on every models request and every Settings poll: kept until
+// the folder changes (dircache.js). invalidate() is for qqstudio's own changes (downloads, deletes).
+const scans = require("./dircache").dirCache(listNow);
+const invalidate = () => scans.invalidate();
 function list(folder) {
-  const root = path.resolve(folder);
+  return scans.get(path.resolve(folder)).map((m) => ({ ...m })); // callers may change their copies
+}
+function listNow(root) {
   const found = scan(root);
   const names = new Map();
   for (const m of found) {
@@ -105,4 +111,4 @@ function info(folder) {
   return { file: PRESET_FILE, exists: mtime !== null, mtime, models: folder ? list(folder) : [] };
 }
 
-module.exports = { generate, info, list, visionOff, setVision, parseIni };
+module.exports = { invalidate, generate, info, list, visionOff, setVision, parseIni };

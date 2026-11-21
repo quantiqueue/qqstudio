@@ -564,6 +564,35 @@
   const f = window.fetch.bind(window);
   window.fetch = (u, o = {}) => o.signal ? f(u, o) : f(u, { ...o, signal: AbortSignal.timeout(!o.method || o.method === "GET" ? 8000 : 60000) });
 })();
+// Settings opens with what it showed last time (kept per device in localStorage), then swaps in fresh data when it
+// arrives: the first read of each of these answers at once from the copy, the real request runs meanwhile, and its
+// loader runs again with it. Only reads are cached; every change goes to the server. The server's access key and
+// mcp.json's text (it can hold API keys in "env") are never stored.
+(() => {
+  const net = window.fetch;
+  const strip = { "/api/mcp": (j) => { delete j.raw; return j; } };
+  // Each URL's loader (called when the fresh answer is in; later loaders are looked up then). /api/models/local is
+  // read by refresh() itself, right after /api/router/models.
+  const rerun = { "/api/router/models": () => refresh(), "/api/models/local": null, "/api/tools/settings": () => loadToolCfg(),
+    "/api/skills": () => skLoad(), "/api/mcp": () => mcpLoad(document.activeElement !== $("mcpJson")), "/api/loadouts": () => loLoad(),
+    "/api/engines": () => srvRefresh(), "/api/hf/downloads": () => pollDownloads() };
+  const first = new Set(Object.keys(rerun)), fresh = new Map(); // fresh: url -> the background request, for the loader's next read
+  const key = (u) => "qq.settings:" + u;
+  const keep = (u, r) => { if (r.ok) r.clone().json().then((j) => { try { localStorage.setItem(key(u), JSON.stringify(strip[u] ? strip[u](j) : j)); } catch {} }).catch(() => {}); return r; };
+  window.fetch = (u, o = {}) => {
+    if (typeof u !== "string" || !(u in rerun) || (o.method && o.method !== "GET")) return net(u, o);
+    if (fresh.has(u)) { const p = fresh.get(u); fresh.delete(u); return p; }
+    const req = net(u, o).then((r) => keep(u, r));
+    let copy = null;
+    if (first.delete(u)) try { copy = localStorage.getItem(key(u)); } catch {}
+    if (copy == null) return req;
+    fresh.set(u, req);
+    // (a loader still running its first call shares that call, so it may need a second go to pick the answer up)
+    const again = () => { const f = rerun[u]; if (f) setTimeout(async () => { await f(); if (fresh.has(u)) await f(); }); };
+    req.then(again, again);
+    return Promise.resolve(new Response(copy, { status: 200, headers: { "Content-Type": "application/json" } }));
+  };
+})();
 
 // Runs fn at most once at a time; calls while it's running share the running call.
 const single = (fn) => { let p = null; return (...a) => p || (p = Promise.resolve().then(() => fn(...a)).finally(() => { p = null; })); };
@@ -935,7 +964,7 @@ let mcpData = null, mcpOpenLogs = new Set();
 async function mcpLoad(withRaw) {
   try { mcpData = await (await fetch("/api/mcp")).json(); } catch { return; }
   $("mcpPath").textContent = mcpData.path;
-  if (withRaw) $("mcpJson").value = mcpData.raw;
+  if (withRaw && mcpData.raw != null) $("mcpJson").value = mcpData.raw; // (the page's saved copy has no raw text)
   mcpRender();
 }
 function mcpRender() {
