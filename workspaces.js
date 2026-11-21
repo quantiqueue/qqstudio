@@ -115,6 +115,34 @@ function placeSession(sid, ws) {
   return sessionFile(sid);
 }
 const forgetSession = (sid) => index.delete(sid);
+// The sessions list (the sidebar polls it every few seconds) comes from an in-memory index of each session file's
+// summary, kept current by server.js (noteSession on every write and delete), so a poll lists the folders instead of
+// reading every file. Reading every file took longer than the page's 8 s timeout while Strata was generating (each small
+// read took 100-1,600 ms on the user's PC) and the sidebar went empty. Files not in the index yet (startup, a session
+// written by another program) are read once. Changes made to a session file by another program show after a restart.
+const sessIndex = new Map(); // session file path -> { ws, chat: { id, title, updated, model, parent, unread } }
+const brief = (w, c) => ({ ws: w, chat: { id: c.id, title: c.title, updated: c.updated, model: c.model, parent: c.parent, unread: c.unread } });
+function noteSession(file, chat) {
+  if (!chat) { sessIndex.delete(file); return; }
+  sessIndex.set(file, brief(path.basename(path.dirname(path.dirname(file))), chat));
+}
+async function listSessions() {
+  const out = [], seen = new Set();
+  for (const w of ids()) {
+    const dir = sessionsDir(w);
+    for (const f of await fs.promises.readdir(dir).catch(() => [])) {
+      if (!f.endsWith(".json")) continue;
+      const p = path.join(dir, f);
+      seen.add(p);
+      let e = sessIndex.get(p);
+      if (!e) { try { e = brief(w, JSON.parse(await fs.promises.readFile(p, "utf8"))); sessIndex.set(p, e); } catch { continue; } }
+      out.push(e);
+    }
+  }
+  for (const k of sessIndex.keys()) if (!seen.has(k)) sessIndex.delete(k);
+  return out;
+}
+
 async function allSessions() {
   const out = [];
   for (const w of ids()) {
@@ -158,4 +186,4 @@ function freeName(id, name, dir = filesDir(id)) {
 }
 
 module.exports = { DEFAULT, ROOT, init, list, info, exists, memoryOn, create, update, remove, filesDir, filePath, files, freeName,
-  workspaceOf, sessionFile, placeSession, forgetSession, allSessions };
+  workspaceOf, sessionFile, placeSession, forgetSession, allSessions, listSessions, noteSession };

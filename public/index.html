@@ -308,6 +308,7 @@
   .phase .bar { width:120px; height:4px; background:var(--bg); border-radius:2px; overflow:hidden; }
   .phase .bar > div { height:100%; background:var(--accent); width:0; transition:width .3s; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  .spin { will-change:transform; } /* own layer: keeps turning while the page is busy (iPad Safari stuttered) */
   details summary { cursor:pointer; color:var(--muted); font-size:13px; }
   .tool { border:1px solid var(--line); border-radius:10px; padding:6px 12px; font-size:13px; background:#12151b; }
   .tool > details > summary { list-style:none; display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text); font-size:13px; }
@@ -560,7 +561,7 @@ const MAX_STEPS = 25;
 let chat = blankChat();
 let chatList = [];
 let renaming = false;
-let running = false, pendingApproval = null, listTimer = null;
+let running = false, pendingApproval = null, listTimer = null, lastListSig = "";
 let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
 // The effort and thinking new sessions start at (Settings > Sessions); var, as sessions are created before the config loads.
@@ -585,15 +586,49 @@ function footStart(ms = 0, tokens = 0) {
   const e = el("div", "runfoot");
   e.appendChild(el("span", "dot")); e.appendChild(el("span"));
   log.appendChild(e);
-  foot = { el: e, t0: performance.now() - ms, tokens, subs: new Map() }; // subs: sub-agent id -> tokens
-  const draw = () => { if (foot) foot.el.lastChild.textContent = `${fmtTok(foot.tokens)}${fmtSub(footSub())} in ${fmtDur(performance.now() - foot.t0)}` + (foot.waiting === "approval" ? " · waiting for your approval" : foot.waiting ? " · waiting for sub-agents" : ""); };
+  foot = { el: e, t0: performance.now() - ms, tokens, subs: new Map(), firstAt: 0, firstTok: tokens, lastAt: 0, lastTok: tokens, prep: "", anchor: null, shown: 0 }; // subs: sub-agent id -> tokens
+  const draw = () => { if (!foot) return; const g = footGuess(); foot.el.lastChild.textContent = `${g.approx ? "≈ " : ""}${fmtTok(g.n)}${fmtSub(footSub())} in ${fmtDur(performance.now() - foot.t0)}` + (foot.waiting === "approval" ? " · waiting for your approval" : foot.waiting ? " · waiting for sub-agents" : ""); };
   foot.draw = draw; draw();
   foot.timer = setInterval(draw, 500);
   follow();
 }
 const footSub = () => (foot ? [...foot.subs.values()].reduce((a, b) => a + b, 0) : 0);
 function footAgent(info) { if (foot && info.id && info.tokens != null) { foot.subs.set(info.id, info.tokens); foot.draw(); } }
-function footTokens(n) { if (foot && n >= foot.tokens) { foot.tokens = n; foot.draw(); } }
+// Strata holds back a tool call's text when it goes through call_tool (an object argument) or names a tool that wasn't
+// declared, then sends it whole: no tokens arrive for up to a minute while it writes (e.g. an essay into write_file).
+// Meanwhile the counts keep rising at the model's speed, marked "≈"; the real count replaces it on arrival.
+// tool: the tool being prepared (a tool-call delta), "" for text/thinking or a finished step.
+// While a tool call is being prepared the estimate never goes back: a piece of real text that arrives (Strata releases
+// held text in pieces) moves the starting point to the higher of the two, and counting goes on from there.
+function footTokens(n, tool = "") {
+  if (!foot) return;
+  const now = performance.now();
+  if (n > foot.lastTok && !foot.firstAt) { foot.firstAt = now; foot.firstTok = foot.lastTok; } // first token of this reply
+  if (n !== foot.lastTok || !foot.lastAt) {
+    foot.lastAt = now; foot.lastTok = n;
+    foot.anchor = tool && foot.shown > n ? { n: foot.shown, at: now, carried: true } : { n, at: now, carried: false };
+  }
+  foot.prep = tool || "";
+  if (!foot.prep) { foot.anchor = { n, at: now, carried: false }; foot.shown = 0; } // text, thinking or a finished step: real counts
+  if (n >= foot.tokens) foot.tokens = n;
+  foot.draw();
+}
+// The reply's count to show: real, or "≈" (approx) while a tool call is being prepared and no text has arrived for 1.2 s
+// (or an estimate is being carried on). Speed: the engine's own figure for the latest finished step ("… @ 43.0 tok/s",
+// this reply or an earlier one), else this reply's average so far (not the bursts between chunks).
+function footGuess() {
+  if (!foot) return { n: 0, approx: false };
+  const now = performance.now(), a = foot.anchor, real = foot.tokens;
+  if (!foot.prep || !a || (!a.carried && now - foot.lastAt < 1200)) return { n: real, approx: false };
+  let rate = 0;
+  for (let i = chat.messages.length - 1; i >= 0 && !rate; i--) { const m = /@ ([\d.]+) tok\/s/.exec(chat.messages[i]._meta || ""); if (m) rate = +m[1]; }
+  const span = (foot.lastAt - foot.firstAt) / 1000;
+  if (!rate && foot.firstAt && span >= 1.5) rate = (foot.lastTok - foot.firstTok) / span;
+  const since = Math.max(0, now - a.at - (a.carried ? 0 : 1200)) / 1000;
+  const n = Math.max(real, foot.shown, Math.round(a.n + rate * since));
+  foot.shown = n;
+  return { n, approx: n > real };
+}
 function footStop() { if (foot) { clearInterval(foot.timer); foot = null; } }
 const footDone = (stat) => { const e = el("div", "runfoot", `Generated ${fmtTok(stat.tokens)}${fmtSub(stat.sub)} in ${fmtDur(stat.ms)}`); if (stat.sub) e.title = "The time is the whole reply's, sub-agents included"; return e; };
 // The reply ended: the live footer becomes "Generated … in …" (the server's totals when given).
@@ -697,27 +732,43 @@ function footEnd(stat) {
 // ---------- scroll: follow new output only while the user is at the bottom ----------
 // Scrolling up (wheel, touch, scrollbar, keys) stops following; getting back to the bottom, or the ↓ button, resumes it.
 // Only a *decrease* in scrollTop counts as the user leaving, so content growing under a programmatic scroll can't unstick it.
-let stick = true, lastTop = 0;
+// Scrolling *down* to near the end locks again (within RESTICK px): a wheel's smooth scroll stops short while text keeps
+// arriving, and the true end sits under the floating composer, so "exactly at the bottom" was rarely reached.
+// downAt: when the *user* last scrolled down (never the page's own scrolls to the bottom, which happen every frame while
+// text streams: counting those pulled a small wheel-up straight back down).
+let stick = true, lastTop = 0, downAt = 0, ownTop = -1;
 const jumpBtn = document.getElementById("jump");
-const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+const nearBottom = (px = 40) => log.scrollHeight - log.scrollTop - log.clientHeight < px;
+const RESTICK = () => Math.max(120, log.clientHeight * 0.2);
 function updJump() { jumpBtn.hidden = stick || nearBottom(); }
+// At most one scroll per frame: called for every streamed token, and each scroll measures the page (a full layout).
+let followRaf = 0;
 function follow() {
-  if (!stick) { updJump(); return; }
-  log.scrollTop = log.scrollHeight;
-  requestAnimationFrame(() => { if (stick) log.scrollTop = log.scrollHeight; updJump(); }); // markdown renders on the next frame
+  if (followRaf) return;
+  followRaf = requestAnimationFrame(() => { // after this frame's markdown render (scheduled earlier)
+    followRaf = 0;
+    if (!stick && performance.now() - downAt < 1500 && nearBottom(RESTICK())) stick = true; // text arrived just after scrolling down
+    if (stick) { log.scrollTop = log.scrollHeight; ownTop = log.scrollTop; }
+    updJump();
+  });
 }
 function toBottom() { stick = true; follow(); }
 log.addEventListener("scroll", () => {
-  const t = log.scrollTop;
-  if (t < lastTop - 1) stick = false; else if (nearBottom()) stick = true;
+  const t = log.scrollTop, own = Math.abs(t - ownTop) < 2; // the page's own scroll to the bottom
+  if (t < lastTop - 1) { stick = false; downAt = 0; }
+  else if (nearBottom() || (!own && t > lastTop + 1 && nearBottom(RESTICK()))) stick = true;
+  if (!own && t > lastTop + 1) downAt = performance.now();
   lastTop = t; updJump();
 }, { passive: true });
 log.addEventListener("wheel", (e) => { // reacts before a streaming delta can scroll back down
-  if (e.deltaY >= 0 || log.scrollTop <= 0) return;
+  if (e.deltaY > 0) { downAt = performance.now(); return; }
+  if (e.deltaY === 0 || log.scrollTop <= 0) return;
   for (let n = e.target; n && n !== log; n = n.parentElement) if (n.scrollTop > 0 && n.scrollHeight > n.clientHeight) return; // an inner box scrolls instead
-  stick = false; updJump();
+  stick = false; downAt = 0; updJump();
 }, { passive: true });
-jumpBtn.addEventListener("click", () => { stick = true; log.scrollTo({ top: log.scrollHeight, behavior: "smooth" }); jumpBtn.hidden = true; });
+// While a reply streams, jump at once: Safari keeps a smooth scroll animating behind the growing text, its next position
+// reads as "scrolled up", and following stopped again.
+jumpBtn.addEventListener("click", () => { stick = true; log.scrollTo({ top: log.scrollHeight, behavior: running ? "auto" : "smooth" }); jumpBtn.hidden = true; });
 function setHash(id) { window.history.replaceState(null, "", id ? "#" + id : location.pathname); }
 function stripUi(m) { return Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_"))); }
 function prettyArgs(s) { try { return JSON.stringify(JSON.parse(s || "{}"), null, 2); } catch { return s; } }
@@ -1420,13 +1471,15 @@ function assistantBox() {
   const box = toFold(el("div", "msg assistant"));
   const contentEl = box.appendChild(el("div", "md"));
   let mdRaf = 0, mdText = "";
+  let thinkNode = null, thinkWant = "", thinkRaf = 0; // the thinking text: written per frame, only while its section is open
   let thinkEl = null, thinkSum = null, thinkT0 = null, thinkT1 = null, thinkSecsFixed, budgetHit = false, thinkTimer = null, phaseEl = null, phaseText = "", phaseT0 = 0, phaseTimer = null, phasePct = null;
   let actEl = null, actN = 0, actTool = "", actT0 = 0, actTimer = null; // "Generating N tokens for Ns" while tokens stream
   const fmtSecs = (s) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
   const drawAct = () => {
     if (!actEl) return;
     const secs = Math.floor((performance.now() - actT0) / 1000);
-    actEl.lastChild.textContent = `Generating ${actN.toLocaleString()} token${actN === 1 ? "" : "s"} for ${fmtSecs(secs)}` + (actTool ? ` · ${actTool}` : "");
+    const extra = foot && foot.prep && foot.shown > foot.tokens ? foot.shown - foot.tokens : 0, n = actN + extra; // the footer's "≈" (see footTokens)
+    actEl.lastChild.textContent = `Generating ${extra ? "≈ " : ""}${n.toLocaleString()} token${n === 1 ? "" : "s"} for ${fmtSecs(secs)}` + (actTool ? ` · ${actTool}` : "");
   };
   const drawPhase = () => {
     if (!phaseEl) return;
@@ -1437,6 +1490,12 @@ function assistantBox() {
     if (phasePct != null) bar.firstChild.style.width = phasePct + "%";
   };
   // While the model thinks, the collapsed "Thinking… Ns" line (with spinner) is the status line; no separate phase line.
+  const flushThink = () => {
+    thinkRaf = 0;
+    if (!thinkNode || thinkNode.data === thinkWant) return;
+    if (thinkWant.startsWith(thinkNode.data)) thinkNode.appendData(thinkWant.slice(thinkNode.data.length));
+    else thinkNode.data = thinkWant;
+  };
   const drawThink = () => {
     if (!thinkSum) return;
     if (thinkT1 !== null) { clearInterval(thinkTimer); thinkTimer = null; const t = +((thinkT1 - thinkT0) / 1000).toFixed(1); thinkSum.textContent = `Thought for ${t < 60 ? t + "s" : Math.round(t / 60) + " min"}`; return; }
@@ -1486,10 +1545,16 @@ function assistantBox() {
         const det = el("details", "thoughts"); // collapsed by default; sits above the reply box, not inside it
         thinkSum = det.appendChild(el("summary", "think-sum"));
         thinkEl = det.appendChild(el("div", "think"));
+        thinkNode = thinkEl.appendChild(document.createTextNode(""));
+        det.addEventListener("toggle", () => { if (det.open) flushThink(); });
         box.before(det);
         drawThink(); thinkTimer = setInterval(drawThink, 500);
       }
-      thinkEl.textContent = text;
+      // Rewriting the whole text on every token, then measuring the page to scroll, made the iPad drop frames during long
+      // thinking (stuttering spinners, a ↓ that couldn't catch up). Now: once per frame, only the new characters, and not at
+      // all while the section is folded (the default); opening it fills it in.
+      thinkWant = text;
+      if (thinkEl.parentElement.open && !thinkRaf) thinkRaf = requestAnimationFrame(flushThink);
     },
     content(text) { if (text && thinkT0 !== null && thinkT1 === null) { thinkT1 = performance.now(); drawThink(); } mdText = text;
       if (!mdRaf) mdRaf = requestAnimationFrame(() => { mdRaf = 0; contentEl.innerHTML = mdRender(mdText); });
@@ -1502,7 +1567,9 @@ function assistantBox() {
     finish(text, meta) {
       this.clearPhase(); this.clearActivity();
       clearInterval(thinkTimer); thinkTimer = null;
+      if (thinkRaf) { cancelAnimationFrame(thinkRaf); thinkRaf = 0; }
       if (thinkEl) {
+        flushThink(); // a finished step holds its whole thinking text
         const secs = thinkSecsFixed !== undefined ? thinkSecsFixed : this.thinkSecs(); // saved chats without timing -> "Thought"
         thinkSum.textContent = (secs != null ? `Thought for ${secs < 60 ? secs + "s" : Math.round(secs / 60) + " min"}` : "Thought") + (budgetHit ? " · budget reached" : "");
       }
@@ -1777,11 +1844,13 @@ function stopLine(text) {
 
 // ---------- chat persistence ----------
 async function loadList() {
-  try { chatList = (await (await fetch("/api/chats")).json()).chats || []; } catch { chatList = []; }
+  try { chatList = (await (await fetch("/api/chats")).json()).chats || []; } catch {} // a slow or failed poll keeps the last list (it isn't "no sessions")
   const me = chat.id && chatList.find((c) => c.id === chat.id); // a title set by the server (automatic titles)
   if (me && me.title && me.title !== chat.title && !renaming) { chat.title = me.title; renderCrumbs(); }
-  if (!renaming) renderList();
-  if (wsView && !renaming) renderWsView();
+  // Redraw only when something the sidebar shows changed: a running session saves every 1.5 s, and rebuilding the whole
+  // sidebar on each 3 s poll restarted its spinners (jitter) and cost a layout pass while the reply streams.
+  const sig = JSON.stringify([chat.id, [...chatList].sort((a, b) => (b.updated || 0) - (a.updated || 0)).map((c) => [c.id, c.title, c.workspace, !!c.running, !!c.settling, c.waiting || 0, !!c.unread])]);
+  if (!renaming && sig !== lastListSig) { lastListSig = sig; renderList(); if (wsView) renderWsView(); }
   clearTimeout(listTimer); // keep the sidebar's "reply in progress" dots current
   if (chatList.some((c) => c.running || c.settling)) listTimer = setTimeout(loadList, 3000); // settling: a title may still come
 }
@@ -2384,7 +2453,7 @@ function onRunEvent(ev, id) {
       if (ev.r) { live.reasoning += ev.r; b.thinking(live.reasoning); }
       if (ev.c) { live.content += ev.c; b.content(live.content); b.clearPhase(); promote(b.node); } // text is always shown
       if (ev.n) b.activity(ev.n, ev.tool || "");
-      if (ev.tot != null) footTokens(ev.tot);
+      if (ev.tot != null) footTokens(ev.tot, ev.r || ev.c ? "" : ev.tool || "");
       follow();
       break;
     }
@@ -2401,7 +2470,7 @@ function onRunEvent(ev, id) {
       break;
     }
     case "failed": { const b = live?.box || liveStep(); b.error(ev.text); promote(b.node); if (live) live.box = null; break; }
-    case "tool": liveTool(ev.tc, ev.status); break;
+    case "tool": if (foot) foot.prep = ""; liveTool(ev.tc, ev.status); break;
     case "question": liveQuestion(ev); break;
     case "todo": chat.todo = ev.items; renderTodo(); break;
     case "agent": agentChip(ev); loadList(); break;
