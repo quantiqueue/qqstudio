@@ -99,11 +99,14 @@ function isLlama(p, exe) {
       resolve(/llama/i.test(name) || name.toLowerCase().replace(/\.exe$/, "") === want);
     }));
 }
+// "ready" | "loading" (503) | "busy" (no answer in time: Strata answers one request at a time, so /health waits while it
+// generates, also for a reply that was stopped, which it finishes anyway) | "unreachable" (nothing listening: refused) |
+// "http <n>". Only "unreachable" means the server is gone.
 async function health() {
   try {
     const r = await fetch(url() + "/health", { signal: AbortSignal.timeout(1500) });
     return r.ok ? "ready" : r.status === 503 ? "loading" : `http ${r.status}`;
-  } catch { return "unreachable"; }
+  } catch (e) { return e && (e.name === "TimeoutError" || e.name === "AbortError") ? "busy" : "unreachable"; }
 }
 async function kill(p) {
   if (process.platform === "win32") await new Promise((r) => execFile("taskkill", ["/PID", String(p), "/T", "/F"], { windowsHide: true }, () => r()));
@@ -756,7 +759,7 @@ function launchStrata(e, spec) {
     if (code !== 0 || said) {
       me.state = "error";
       me.error = said ? said.slice(3).trim() : `strata launch ended with code ${code}: ${lines.slice(-1)[0] || "see the log"}`;
-    } else if ((await health()) !== "ready") { // e.g. "Strata couldn't find an engine for this computer": exit 0, nothing started
+    } else if (!["ready", "busy"].includes(await health())) { // e.g. "Strata couldn't find an engine for this computer": exit 0, nothing started
       const warn = [...lines].reverse().find((l) => l.startsWith("[!]"));
       me.state = "error"; me.error = `Strata didn't start: ${(warn || lines.slice(-1)[0] || "see the log").replace(/^\[!\]\s*/, "")}`;
     }
@@ -786,14 +789,18 @@ async function stopStrata() {
   cur = { loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: null, sig: cur.sig, state: "stopped", error: null, startedAt: null, child: null };
   writeRun();
 }
+const STRATA_GONE = "Strata stopped serving (see the log)";
 async function strataStatus() {
   const h = await health();
+  const answers = h === "ready" || h === "busy";
+  // Marked gone by an older check (e.g. a slow /health before "busy" existed) but answering: it never stopped.
+  if (cur.state === "error" && cur.error === STRATA_GONE && answers && !cur.launching) { cur.state = "running"; cur.error = null; writeRun(); }
   let state;
   if (cur.state === "error") state = "failed";
   else if (cur.state !== "running") state = "stopped";
-  else if (h === "ready" && !cur.launching) state = "loaded";
+  else if (answers && !cur.launching) state = "loaded";
   else if (cur.launching || h === "loading") state = "loading";
-  else { state = "failed"; cur.state = "error"; cur.error = cur.error || "Strata stopped serving (see the log)"; writeRun(); }
+  else { state = "failed"; cur.state = "error"; cur.error = cur.error || STRATA_GONE; writeRun(); }
   return { state, loadout: cur.loadout, name: cur.name, engine: cur.engine, pid: null, strata: true, sig: cur.sig, error: cur.error, startedAt: cur.startedAt, url: url(), health: h,
     progress: state === "loading" ? cur.progress || null : null };
 }

@@ -11,6 +11,15 @@ const memory = require("./memory");
 // conversation sent doesn't change at every new image (that would make llama-server read it again from there).
 const MAX_IMAGES = 8, IMAGE_STEP = 4;
 const SAVE_EVERY_MS = 1500;
+// Tokens in one streamed chunk. llama-server sends one token per chunk; Strata can send many at once (drafting accepts
+// several, and since 0.2.17 it holds a call_tool / undeclared tool call's text and releases it in large pieces), so a
+// chunk with more than a few characters counts by its length (about 4 characters a token). The step's exact count from
+// the engine replaces the running count when the step ends.
+function chunkTokens(d) {
+  let n = (d.reasoning_content || "").length + (d.content || "").length;
+  for (const tc of d.tool_calls || []) n += (tc.function?.name || "").length + (tc.function?.arguments || "").length;
+  return n > 12 ? Math.round(n / 4) : 1;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Text the model keeps repeating (a common failure of small models): the same sentence many times, or the same chunk
 // over and over without sentence breaks. Checked on the tail only, every few hundred characters.
@@ -536,7 +545,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const ev = { type: "delta" };
           if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
-            g.total = timings?.predicted_n > g.total ? timings.predicted_n : g.total + 1;
+            g.total = timings?.predicted_n > g.total ? timings.predicted_n : g.total + chunkTokens(d);
             if (d.reasoning_content && !d.content && !d.tool_calls) g.thinking = true;
             else if (g.thinking) { g.thinking = false; g.base = g.total - 1; g.t0 = Date.now(); } // count and time the reply from where thinking ended
             g.n = g.total - g.base;
@@ -625,7 +634,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     }
     // Reply only: time from its first token (after thinking) and its own token count. Thinking has its own "Thought for" line.
     const g = cur.gen, replied = g && !g.thinking;
-    if (g && timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.n = g.total - g.base; }
+    // The engine's own count for the step when it gives one (exact, also when the running count was too high or low)
+    const exact = timings?.predicted_n || usage?.completion || 0;
+    if (g && exact > 0) { g.total = exact; g.n = Math.max(0, g.total - g.base); }
     run.genDone += g ? g.total : 0; // the whole reply's count (all steps, thinking included) for the footer
     const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
     const meta = `${model} · ${secs}s` +

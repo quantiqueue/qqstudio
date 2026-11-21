@@ -359,6 +359,7 @@ function updateChat(file, fn) {
     try { cur = JSON.parse(await fs.promises.readFile(file, "utf8")); } catch {}
     const out = await fn(cur);
     if (out) await writeChat(file, out);
+    else if (!fs.existsSync(file)) ws.noteSession(file, null); // deleted
     return out;
   });
   const tail = next.catch(() => {});
@@ -383,6 +384,7 @@ async function writeChat(file, obj) {
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`; // unique: runs and the page can save at once
   await fs.promises.writeFile(tmp, JSON.stringify(obj, null, 1), "utf8");
   await fs.promises.rename(tmp, file); // atomic replace
+  ws.noteSession(file, obj); // the sessions list's index
 }
 
 // ---- Skills ----
@@ -727,7 +729,7 @@ async function handleChats(req, res) {
     if (!id) {
       if (req.method !== "GET") return sendJson(res, 405, { error: "Method not allowed" });
       const list = [];
-      for (const { ws: w, chat: c } of await ws.allSessions())
+      for (const { ws: w, chat: c } of await ws.listSessions())
         if (!c.parent) list.push({ id: c.id, title: c.title, updated: c.updated, model: c.model, workspace: w, running: runs.has(c.id), settling: runs.settling(c.id), waiting: runs.waiting(c.id), unread: !!c.unread }); // sub-agent sessions open from their chip
       list.sort((a, b) => (b.updated || 0) - (a.updated || 0));
       return sendJson(res, 200, { chats: list });
@@ -769,7 +771,7 @@ async function handleChats(req, res) {
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "DELETE") {
-      for (const { chat: s } of await ws.allSessions()) if (s.parent === id) { // its sub-agents' sessions go with it
+      for (const { chat: s } of await ws.listSessions()) if (s.parent === id) { // its sub-agents' sessions go with it
         runs.deleted(s.id);
         const f = chatFile(s.id);
         if (f) await updateChat(f, async () => { await fs.promises.unlink(f).catch(() => {}); return null; });
