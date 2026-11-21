@@ -1,6 +1,6 @@
 {
   "name": "qqstudio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local AI studio: runs models with llama.cpp or Strata, with an agent (tools, MCP, skills, sub-agents) and workspaces with memory",
   "keywords": [
     "ai",
