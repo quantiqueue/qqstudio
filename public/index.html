@@ -1614,7 +1614,10 @@ function assistantBox() {
     setThinkSecs(secs) { thinkSecsFixed = secs; },
     setBudgetHit(v) { budgetHit = v; },
     thinkSecs() { return thinkT0 === null ? null : +(((thinkT1 ?? performance.now()) - thinkT0) / 1000).toFixed(1); },
-    error(text) { this.clearActivity(); cancelAnimationFrame(mdRaf); mdRaf = 0; box.classList.add("error"); contentEl.classList.remove("md"); contentEl.style.whiteSpace = "pre-wrap"; contentEl.textContent = text; },
+    error(text) { // the step ended: no "Sending request…" or "Thinking…" timer left counting under the error
+      this.clearPhase(); this.clearActivity(); if (thinkRaf) { cancelAnimationFrame(thinkRaf); thinkRaf = 0; }
+      if (thinkEl && thinkT1 === null) { thinkT1 = performance.now(); drawThink(); }
+      cancelAnimationFrame(mdRaf); mdRaf = 0; box.classList.add("error"); contentEl.classList.remove("md"); contentEl.style.whiteSpace = "pre-wrap"; contentEl.textContent = text; },
     finish(text, meta) {
       this.clearPhase(); this.clearActivity();
       clearInterval(thinkTimer); thinkTimer = null;
@@ -2938,17 +2941,20 @@ function updateCtx() {
     if (live) { exact = live.prompt + live.completion; after = []; }
     else if (anchor >= 0) { const u = chat.messages[anchor]._usage; exact = u.prompt + u.completion; after = chat.messages.slice(anchor + 1); }
     conv = estTokens(JSON.stringify(after.map(stripUi))) + imgTok(after) + estTokens(input.value);
-    if (model && ctxSize[model] === undefined) {
-      ctxSize[model] = null;
-      try { ctxSize[model] = (await (await fetch("/api/ctx?model=" + encodeURIComponent(model))).json()).n_ctx; } catch {}
+    // The context size: asked again every 5 s until the engine gives its own figure (the loadout's setting stands in while
+    // it isn't loaded), then every minute (a saved loadout can reload with another size).
+    const cs = ctxSize[model], now = Date.now();
+    if (model && (!cs || now - cs.at > (cs.exact ? 60000 : 5000))) {
+      ctxSize[model] = { n: cs?.n ?? null, exact: !!cs?.exact, at: now };
+      try { const j = await (await fetch("/api/ctx?model=" + encodeURIComponent(model))).json(); ctxSize[model] = { n: j.n_ctx || null, exact: !!j.exact, at: now }; } catch {}
     }
-    const total = exact ? exact + conv : sys + conv, max = ctxSize[model];
+    const total = exact ? exact + conv : sys + conv, max = ctxSize[model]?.n, maxExact = !!ctxSize[model]?.exact;
     const m = $("ctxMeter");
     m.textContent = `${exact && conv < 50 ? "" : "≈"}${fmtK(total)}${max ? " / " + fmtK(max) : ""} tok`;
     m.className = "ctx" + (max && total > max * 0.9 ? " bad" : max && total > max * 0.75 ? " warn" : "");
     m.title = (exact ? `Context use\nLast request (from llama-server): ${exact} tokens\nSince then (estimate): ≈${fmtK(conv)}`
       : `Estimated context use\nInstructions + ${specs.length} tool definitions: ≈${fmtK(sys)}\nConversation: ≈${fmtK(conv)}`) +
-      (max ? `\nModel context size: ${fmtK(max)}` : "\n(Context size shows once the model is loaded)") +
+      (max ? `\nModel context size: ${fmtK(max)}${maxExact ? "" : " (the loadout's setting; exact once it's loaded)"}` : "\n(Context size shows once the model is loaded)") +
       (lastUsage && lastUsage.model === model ? `\nLast request (exact): ${lastUsage.prompt} prompt + ${lastUsage.completion} reply tokens` : "");
     const ro = document.getElementById("roCtx"); // the same meter on a sub-agent's read-only session
     if (ro) { ro.textContent = m.textContent; ro.className = m.className; ro.title = m.title; }

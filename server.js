@@ -647,14 +647,19 @@ function strataCatalogNow() {
 // Strata answers /props in llama-server's shape too (the context it actually fitted, its batch slots); its loadout's
 // settings stand in only while it can't answer.
 const strataSetting = (model, key) => { const l = loadouts.get(model); return l && loadouts.isStrata(l.engine) ? Number(l.load?.[key]) || null : undefined; };
+const ctxPick = (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx;
 async function nCtx(model) {
-  const n = await modelProps(model, (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx);
+  const n = await modelProps(model, ctxPick);
   return n || strataSetting(model, "ctx-size") || null;
 }
 // Parallel slots of the loaded model (llama-server --parallel); each keeps its own prompt cache.
 async function nSlots(model) { return (await modelProps(model, (j) => j.total_slots)) || strataSetting(model, "parallel") || null; }
+// For the page's context meter: the running engine's own figure (exact), or, while the loadout isn't loaded, the context
+// size in its settings (any engine; blank means the model's trained context, unknown until it loads).
 async function handleCtx(req, res) {
-  sendJson(res, 200, { n_ctx: await nCtx(new URL(req.url, "http://x").searchParams.get("model") || "") });
+  const model = new URL(req.url, "http://x").searchParams.get("model") || "";
+  const live = await modelProps(model, ctxPick), l = loadouts.get(model);
+  sendJson(res, 200, { n_ctx: live || (l && Number(l.load?.["ctx-size"])) || null, exact: !!live });
 }
 
 // ---- MCP servers ----

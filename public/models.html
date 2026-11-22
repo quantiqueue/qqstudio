@@ -1239,7 +1239,7 @@ function loEditOpen(id, base) {
     visR.row.style.display = m?.mmproj ? "" : "none";
     const ci = inputs["ctx-size"];
     if (ci) { // the model's own maximum; blank means llama.cpp uses all of it
-      ci.inp.placeholder = strata ? "blank = Strata fits it to this PC" : m?.maxCtx ? `blank = ${Number(m.maxCtx).toLocaleString()} (all)` : "blank = model's full context";
+      ci.inp.placeholder = strata ? "blank = Strata fits it to this PC" : m?.maxCtx ? `blank = up to ${Number(m.maxCtx).toLocaleString()}` : "blank = model's full context";
       ci.r.help.textContent = ci.f.help + (m?.maxCtx ? ` This model's maximum: ${Number(m.maxCtx).toLocaleString()}.` : "");
     }
     const c = collect(), n = Object.keys(c.load).filter((k) => k !== "ctx-size").length + Object.keys(c.sampling).length + (c.other ? 1 : 0);

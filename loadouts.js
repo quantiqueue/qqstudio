@@ -13,11 +13,12 @@ const FILE = P.loadouts;
 
 // Load settings: key = llama.cpp's long flag name (passed as --<key>).
 const FIELDS = [
-  { key: "ctx-size", help: "How many tokens the model can hold at once: the conversation, tools and reply together. More uses more memory. Blank uses the model's full trained context.", label: "Context size", type: "number", group: "Memory & speed", hint: "tokens", aliases: ["c"] },
+  { key: "ctx-size", help: "How many tokens the model can hold at once: the conversation, tools and reply together. More uses more memory. Blank: the model's full trained context if it fits on the GPU. If it doesn't, Fit to memory cuts the context first, down to Fit minimum context (4,096 unless set), before moving any of the model to RAM. A size set here is kept; the model moves to RAM instead.", label: "Context size", type: "number", group: "Memory & speed", hint: "tokens", aliases: ["c"] },
   { key: "n-gpu-layers", help: "How many of the model's layers run on the GPU. auto lets llama.cpp decide; all puts them all there.", label: "GPU layers", type: "text", group: "Memory & speed", hint: "number, auto or all", aliases: ["ngl", "gpu-layers"] },
   { key: "n-cpu-moe", help: "For mixture-of-experts models: keeps the experts of the first N layers in system RAM, to fit a model that's too big for the GPU.", label: "MoE layers on CPU", type: "number", group: "Memory & speed", hint: "keeps the experts of the first N layers in RAM", aliases: ["ncmoe"] },
-  { key: "fit", help: "Lets llama.cpp shrink settings such as context and GPU layers so the model fits in free memory.", label: "Fit to memory", type: "select", options: ["on", "off"], group: "Memory & speed", hint: "let llama.cpp size the model to the free memory" },
+  { key: "fit", help: "Lets llama.cpp shrink what you left blank so the model fits in free memory: the context first, then it moves parts of the model to RAM. On unless set to off.", label: "Fit to memory", type: "select", options: ["on", "off"], group: "Memory & speed", hint: "let llama.cpp size the model to the free memory" },
   { key: "fit-target", help: "How much memory to leave free on each GPU when fitting, in MiB.", label: "Fit headroom", type: "number", group: "Memory & speed", hint: "MiB to leave free" },
+  { key: "fit-ctx", help: "The smallest context Fit to memory may cut a blank Context size to, in tokens. A model too big for the GPU gets exactly this, since the context is cut before any of the model moves to RAM. Blank: 4,096.", label: "Fit minimum context", type: "number", group: "Memory & speed", hint: "tokens", aliases: ["fitc"] },
   { key: "device", help: "Which GPUs to use, e.g. CUDA0, or CUDA0,CUDA1 to split across two. Blank uses all.", label: "Devices", type: "text", group: "Memory & speed", hint: "e.g. CUDA0, or CUDA0,CUDA1", aliases: ["dev"] },
   { key: "flash-attn", help: "A faster way to compute attention that uses less memory. auto turns it on where supported.", label: "Flash attention", type: "select", options: ["auto", "on", "off"], group: "Memory & speed", aliases: ["fa"] },
   { key: "cache-type-k", help: "Precision of the context memory (keys). q8_0 roughly halves its size with little quality loss.", label: "KV cache type (K)", type: "select", options: ["f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"], group: "Memory & speed", aliases: ["ctk"] },
@@ -282,7 +283,7 @@ function newId(name) {
 function create(input) {
   const m = localModels().find((x) => x.name === input.model);
   const max = m ? trainedContext(m.model) : null;
-  // Blank would mean the model's full context for llama.cpp; Strata fits the context to the PC itself, so it starts blank.
+  // Blank would mean the model's full context for llama.cpp (or as little as --fit-ctx when it doesn't fit); Strata fits the context to the PC itself, so it starts blank.
   const defaults = isStrata(input.engine) ? {} : { "ctx-size": String(max ? Math.min(max, DEFAULT_CTX) : DEFAULT_CTX) };
   const l = clean({ name: input.name || input.model, engine: input.engine || llama.defaultEngine()?.id || "", vision: m ? !!m.mmproj : false, sampling: {}, other: "", ...input,
     load: input.load && Object.keys(input.load).length ? input.load : defaults });
