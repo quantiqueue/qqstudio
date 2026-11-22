@@ -550,7 +550,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const ev = { type: "delta" };
           if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
-            g.total = timings?.predicted_n > g.total ? timings.predicted_n : g.total + chunkTokens(d);
+            if (timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.exactRun = true; } else g.total += chunkTokens(d); // exactRun: the engine counts as it goes
             if (d.reasoning_content && !d.content && !d.tool_calls) g.thinking = true;
             else if (g.thinking) { g.thinking = false; g.base = g.total - 1; g.t0 = Date.now(); } // count and time the reply from where thinking ended
             g.n = g.total - g.base;
@@ -650,7 +650,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const g = cur.gen, replied = g && !g.thinking;
     // The engine's own count for the step when it gives one (exact, also when the running count was too high or low)
     const exact = timings?.predicted_n || usage?.completion || 0;
-    if (g && exact > 0) { g.total = exact; g.n = Math.max(0, g.total - g.base); }
+    if (g && exact > 0) {
+      // After thinking, the thinking part of the running count is an estimate (a long chunk counts by its length), so the exact
+      // total minus it can be far off: a step with 2,600 thinking tokens showed "0 tok" for its reply. Unless the engine counted
+      // as it went, the reply keeps its own running count; the step's total is still the exact one.
+      const est = g.n;
+      g.total = exact;
+      g.n = g.base > 0 && !g.exactRun ? est : Math.max(0, g.total - g.base);
+    }
     run.genDone += g ? g.total : 0; // the whole reply's count (all steps, thinking included) for the footer
     const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
     const meta = `${model} · ${secs}s` +
@@ -1158,7 +1165,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
 
   async function applyPending(run, leftover = false) {
     if (!run.pending.length) return false;
-    const all = run.pending.splice(0), items = all.filter((i) => !i.report);
+    const all = run.pending.splice(0), items = all.filter((i) => !i.report).sort((a, b) => (a.seq || 0) - (b.seq || 0));
     for (const r of all.filter((i) => i.report)) { // a sub-agent's report: its own message, shown as a report card
       const m = { role: "user", content: r.text, _agentReport: r.report };
       run.messages.push(m);
@@ -1179,7 +1186,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const images = (Array.isArray(b.images) ? b.images : []).filter((i) => i && typeof i.src === "string").map((i) => ({ src: i.src, full: i.full || i.src }));
     if (!text && !images.length) throw Object.assign(new Error("Empty message"), { status: 400 });
     const mode = MODES.includes(b.mode) ? b.mode : "steer";
-    const item = { id: String(b.id || Date.now().toString(36)), text, images, mode };
+    const item = { id: String(b.id || Date.now().toString(36)), text, images, mode, seq: ++run.msgSeq }; // seq: they join in the order they were sent, whatever mode each was changed to since
     (mode === "queue" ? run.queue : run.pending).push(item);
     emit(run, { type: "steer_pending", ...item });
     if (mode === "interrupt") interruptNow(run);
@@ -1376,7 +1383,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       t0: Date.now(), genDone: 0, // for "N tokens in 1m 2s" under the reply
       messages: (chat.messages || []).filter((m) => !m._partial),
       startLen: (chat.messages || []).filter((m) => !m._partial).length,
-      clients: new Set(), pending: [], queue: [], interrupt: false, stepping: false, cur: null, tool: null, approval: null, abort: null, stopped: false, deleted: false,
+      clients: new Set(), pending: [], queue: [], msgSeq: 0, interrupt: false, stepping: false, cur: null, tool: null, approval: null, abort: null, stopped: false, deleted: false,
       loopWarn: null, loopIgnored: false, loopStop: false, // the repeating warning: up, ignored for this reply, stopped
       body, parentRun: opts.parentRun || null, subs: new Map(), agentSeq: 0, wake: null, // sub-agents
     };

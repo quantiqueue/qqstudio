@@ -240,11 +240,9 @@
   details.compacted > summary:hover .lbl { color:var(--text); }
   details.compacted .csum { margin-top:10px; padding:10px 14px; border:1px dashed var(--line); border-radius:10px; color:#b8bdca; font-size:13px; }
   .uwrap.pending .msg.user { opacity:.7; border:1px dashed #3b4356; }
-  .uwrap.pending .acts { display:none; }
-  .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
-  .uwrap .ptag .pwhy { margin-right:auto; }
-  .uwrap .ptag a { color:var(--muted); cursor:pointer; text-decoration:none; }
-  .uwrap .ptag a:hover { color:var(--text); text-decoration:underline; }
+  .uwrap.pending > .acts { opacity:1; } /* the mode buttons stay visible; Cancel inside the box shows on hover, like Copy */
+  .uwrap .pmeta { margin-top:6px; }
+  .uwrap.pending .msg.user .acts { margin-top:0; }
   /* Sub-agents: a chip per sub-agent in the main session, report cards, and the read-only sub-agent session. */
   .agent-chip { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:10px; background:#12151b; padding:4px 6px 4px 4px; font-size:13px; }
   .agent-chip.approval { border-color:#e3b04b; }
@@ -604,14 +602,18 @@ let running = false, pendingApproval = null, listTimer = null, lastListSig = "";
 let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
 // The effort and thinking new sessions start at (Settings > Sessions); var, as sessions are created before the config loads.
+var addingPending = false; // a pending message is added below the reply: it doesn't end the fold that is still working
 var newEffort = "medium", newBudget = "unlimited", midTurn = "steer"; // midTurn: what a message sent during a reply does (Settings > Sessions)
 function blankChat(workspace) { return { id: null, workspace: workspace || defaultWs, title: "New session", mode: "manual", effort: newEffort || "medium", thinkBudget: newBudget || "unlimited", skills: {}, mcp: {}, cats: {}, messages: [] }; }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function el(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
 function add(node) {
   log.querySelector(".welcome")?.remove();
-  log.insertBefore(node, foot && foot.el.isConnected ? foot.el : null); // the live reply footer stays at the bottom
-  if (fold && fold.live && node !== fold.el) foldLive(fold, false); // shown outside the fold: its work is done
+  log.insertBefore(node, foot && foot.el.isConnected ? foot.el : log.querySelector(":scope > .uwrap.pending")); // the live reply footer stays at the bottom, and messages still pending stay below everything new
+  if (fold && node !== fold.el && !addingPending) { // shown outside the fold: its work is done (a pending message isn't: the reply goes on)
+    if (fold.live) foldLive(fold, false);
+    else if (fold.ms == null && fold.start == null && fold.body.children.length) { fold.ms = performance.now() - fold.t0; foldDraw(fold); } // a fold that never went live (a step's tool calls after its text, then your message): time it from when it began
+  }
   follow(); return node;
 }
 // ---------- reply footer: tokens generated and time since the reply started (all steps; keeps counting while it waits
@@ -624,7 +626,7 @@ function footStart(ms = 0, tokens = 0) {
   footStop();
   const e = el("div", "runfoot");
   e.appendChild(el("span", "dot")); e.appendChild(el("span"));
-  log.appendChild(e);
+  log.insertBefore(e, log.querySelector(":scope > .uwrap.pending")); // pending messages stay below it
   foot = { el: e, t0: performance.now() - ms, tokens, subs: new Map(), firstAt: 0, firstTok: tokens, lastAt: 0, lastTok: tokens, prep: "", anchor: null, shown: 0 }; // subs: sub-agent id -> tokens
   const draw = () => { if (!foot) return; const g = footGuess(); foot.el.lastChild.textContent = `${g.approx ? "≈ " : ""}${fmtTok(g.n)}${fmtSub(footSub())} in ${fmtDur(performance.now() - foot.t0)}` + (foot.waiting === "approval" ? " · waiting for your approval" : foot.waiting ? " · waiting for sub-agents" : ""); };
   foot.draw = draw; draw();
@@ -1454,7 +1456,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("lightbo
 // work only while it is the last thing in the session; anything shown outside it (a reply, a question, an approval,
 // an image the model chose to show) ends it, and later work starts a new one.
 let fold = null; // { el, body, label, t0, start, end, ms, live, timer }
-const lastChild = () => { let n = log.lastElementChild; if (n && foot && n === foot.el) n = n.previousElementSibling; return n; };
+const lastChild = () => { let n = log.lastElementChild; while (n && ((foot && n === foot.el) || n.matches(".uwrap.pending"))) n = n.previousElementSibling; return n; };
 const fmtSecs = (ms) => (ms < 10000 ? (ms / 1000).toFixed(1) + "s" : fmtDur(ms));
 function curFold() {
   if (fold && fold.el.isConnected && lastChild() === fold.el) return fold;
@@ -2697,29 +2699,40 @@ async function send() {
 // A message sent while a reply runs is "pending": the server adds it after the current step, before the next model call.
 const pendingEls = new Map(); // steer id -> bubble
 let steerContinue = null;      // session id whose stopped reply left steers behind: start a new reply with them
-// A pending message says when the model will see it and offers the other modes and Cancel.
-const MODE_WHY = { steer: "Steer: after the current step", queue: "Queued: after the reply", interrupt: "Interrupting" };
-const MODE_NAME = { steer: "Steer", queue: "Queue", interrupt: "Interrupt" };
+// A pending message says above it when the model will see it, and has the same quiet buttons as a sent one: the other
+// modes and Cancel. It stays at the bottom, below anything the reply adds meanwhile.
+const MODE_WHY = { steer: "Steer · after the current step", queue: "Queued · after the reply", interrupt: "Interrupting…" };
+const MODE_BTN = { steer: ["➜", "Steer", "The model sees it after its current step"], interrupt: ["⚡", "Interrupt", "Cut the current step; the model sees it now"], queue: ["☰", "Queue", "Wait until the whole reply is done"] };
 function pendingBubble(p) {
   const m = { role: "user", content: p.text || "" };
   if (p.images?.length) m._images = p.images;
-  const w = userBubble(m);
+  addingPending = true;
+  let w; try { w = userBubble(m); } finally { addingPending = false; }
   w.classList.add("pending");
-  w.appendChild(el("div", "ptag"));
+  // Like a reply's last line (stats on the left, Copy on the right): the note says when the model sees it, Cancel is the
+  // same quiet button. An image-only message has no box, so the line goes above it.
+  const box = w.querySelector(".msg.user"), meta = el("div", "meta pmeta");
+  meta.appendChild(el("span", "pwhy"));
+  const ca = meta.appendChild(el("div", "acts")), x = ca.appendChild(el("button", null, "✕ Cancel")); x.type = "button"; x.title = "Don't send it";
+  x.onclick = () => pendingAction(p.id, "cancel");
+  if (box) box.appendChild(meta); else w.prepend(meta);
+  log.appendChild(w); // below the live footer and everything the reply adds meanwhile
   pendingEls.set(p.id, w);
   setPendingMode(p.id, p.mode || "steer");
   return w;
 }
 function setPendingMode(id, mode) {
-  const w = pendingEls.get(id), tag = w?.querySelector(".ptag");
-  if (!tag) return;
+  const w = pendingEls.get(id);
+  if (!w) return;
   w.dataset.mode = mode;
-  tag.replaceChildren(el("span", "pwhy", MODE_WHY[mode] || MODE_WHY.steer));
-  for (const act of ["steer", "interrupt", "queue", "cancel"]) {
+  w.querySelector(".pwhy").textContent = MODE_WHY[mode] || MODE_WHY.steer;
+  const acts = w.querySelector(":scope > .acts");
+  acts.replaceChildren();
+  for (const act of ["steer", "interrupt", "queue"]) {
     if (act === mode) continue;
-    const a = el("a", null, act === "cancel" ? "Cancel" : MODE_NAME[act]);
-    a.onclick = () => pendingAction(id, act);
-    tag.appendChild(a);
+    const [ic, label, tip] = MODE_BTN[act], b = acts.appendChild(el("button", null, `${ic} ${label}`));
+    b.type = "button"; b.title = tip;
+    b.onclick = () => pendingAction(id, act);
   }
 }
 async function pendingAction(id, act) {
