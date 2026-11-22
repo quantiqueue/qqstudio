@@ -22,7 +22,8 @@ function chunkTokens(d) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Text the model keeps repeating (a common failure of small models): the same sentence many times, or the same chunk
-// over and over without sentence breaks. Checked on the tail only, every few hundred characters.
+// over and over without sentence breaks. Checked on the tail only, every few hundred characters. Repetition can also be
+// on purpose (ASCII art, long tables), so this only raises a warning: the user picks Ignore or Stop (loopWarn below).
 function repeating(text) {
   const tail = text.slice(-4000);
   const prose = text.replace(/```[\s\S]*?(?:```|$)/g, "\n").slice(-4000); // code legitimately repeats lines
@@ -31,8 +32,9 @@ function repeating(text) {
   // real loops are dense: 6 of the last 12 sentences are the same
   for (const p of parts.slice(-12)) { const n = (counts.get(p) || 0) + 1; if (n >= 6) return true; counts.set(p, n); }
   if (tail.length >= 1500) {
-    const k = tail.slice(-120); let n = 0, i = -1;
-    while ((i = tail.indexOf(k, i + 1)) !== -1) if (++n >= 6) return true;
+    // non-overlapping: a run of identical short lines (pixel-art rows, table rows) would otherwise match at every shift
+    const k = tail.slice(-120); let n = 0, i = -k.length;
+    while ((i = tail.indexOf(k, i + k.length)) !== -1) if (++n >= 6) return true;
   }
   return false;
 }
@@ -518,10 +520,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       let buf = "";
       run.stream = r.body; // Stop cancels it too: aborting the fetch alone doesn't end a body that's already streaming on older Node 18
       for await (const chunk of r.body) {
-        if (run.stopped) break; // leaving the loop cancels the stream, which closes the connection, so llama-server stops generating
+        if (run.stopped || run.loopStop) break; // leaving the loop cancels the stream, which closes the connection, so llama-server stops generating
         buf += dec.decode(chunk, { stream: true });
         const lines = buf.split("\n"); buf = lines.pop();
         for (const line of lines) {
+          if (run.loopStop) break; // Stop on the loop warning: drop the rest of this chunk too
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (data === "[DONE]") { ended = true; continue; }
@@ -564,7 +567,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const total = cur.content.length + cur.reasoning.length;
           if (total - checkedAt >= 300) {
             checkedAt = total;
-            if (repeating(cur.content) || repeating(cur.reasoning)) { looped = true; run.abort.abort(); break; }
+            if (!run.loopIgnored && !run.loopWarn && !run.loopStop && (repeating(cur.content) || repeating(cur.reasoning))) {
+              run.loopWarn = { id: `loop_${Date.now()}` }; // generation goes on; no new warning while this one is up
+              console.log(`[run] ${run.id} repeating: warning raised`);
+              emit(run, { type: "loopwarn", on: true, id: run.loopWarn.id });
+            }
           }
           for (const tc of d.tool_calls || []) {
             const i = tc.index ?? calls.length;
@@ -597,6 +604,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         }
       }
     } catch (e) {
+      if (run.loopStop && !run.stopped) looped = true; // Stop on the loop warning cut the stream
       // The reply already finished and the server then dropped the connection without ending the stream (Strata's
       // server does this): Node's fetch reports "terminated", but nothing is missing.
       if ((ended || finish) && !run.stopped && !looped && !runaway && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET")) e = null;
@@ -615,6 +623,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         emit(run, { type: "failed", text: (cur.content ? cur.content + "\n\n" : "") + "Error: " + (e.cause?.code === "ECONNREFUSED" ? `Cannot reach llama-server at ${llama.url()}` : e.message) });
       }
     } finally {
+      if (run.loopStop && !run.stopped) looped = true; // also when the loop above ended by itself (no error thrown)
       polling = false;
       run.abort = null; run.stream = null;
       if (release) release();
@@ -758,14 +767,15 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (s.status === "pending" || !s.run) return { id: s.id, alias: s.alias, title: s.title, status: s.status, tokens: 0, ms: Date.now() - s.t0, tc: null };
     const r = s.run, live = s.status === "running", asking = live && r.tool?.status === "approval"; // (set just before the approval wait begins)
     return { id: s.id, alias: s.alias, title: s.title, status: live ? (asking ? "approval" : "running") : s.status,
-      tokens: live ? r.genDone + (r.cur?.gen?.total || 0) : s.tokens, ms: (s.end || Date.now()) - s.t0, tc: asking ? r.tool.tc : null };
+      tokens: live ? r.genDone + (r.cur?.gen?.total || 0) : s.tokens, ms: (s.end || Date.now()) - s.t0, tc: asking ? r.tool.tc : null,
+      loopWarn: live && r.loopWarn ? r.loopWarn.id : null };
   }
   const subTokens = (run) => [...run.subs.values()].reduce((n, s) => n + (agentInfo(s).tokens || 0), 0); // its sub-agents' tokens, for the footer
   const relay = (s) => { s.relayAt = Date.now(); if (runs.get(s.parent.id) === s.parent) emit(s.parent, { type: "agent", ...agentInfo(s) }); }; // s.parent: s.run is null while it's pending or starting
   function onSubEvent(run, ev) { // the main session's chip follows the sub-agent: approvals right away, progress about once a second
     const s = run.parentRun.subs.get(run.id);
     if (!s || s.status !== "running" || !s.run) return; // (events while start() hasn't returned yet)
-    if (ev.type === "tool" || ev.type === "step" || ((ev.type === "delta" || ev.type === "assistant") && Date.now() - (s.relayAt || 0) > 1000)) relay(s);
+    if (ev.type === "tool" || ev.type === "step" || ev.type === "loopwarn" || ((ev.type === "delta" || ev.type === "assistant") && Date.now() - (s.relayAt || 0) > 1000)) relay(s);
   }
   function findSub(run, key) {
     const k = String(key || "").trim().toLowerCase();
@@ -947,8 +957,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const parent = run.parentRun, s = parent.subs.get(run.id);
     if (!s) return;
     // "halted": a guard (repeated calls, repetition) or an error ended it before it finished, so it wrote no real report.
-    s.status = run.stopped ? "stopped" : run.endReason ? "halted" : "done"; s.tokens = run.genDone; s.end = Date.now();
+    s.status = run.stopped || run.loopStop ? "stopped" : run.endReason ? "halted" : "done"; s.tokens = run.genDone; s.end = Date.now();
     if (s.status === "halted") s.reason = run.endReason;
+    if (run.loopStop) s.reason = "the user stopped it because it kept repeating itself";
     await startNext(parent).catch((e) => console.error(`[run] ${parent.id} next sub-agent: ${e.message}`)); // its place goes to the next pending one
     await markTask(parent, s.title, s.status === "done" ? "done" : "pending");
     const cfg = agentsCfg(), mine = run.messages.slice(run.startLen), last = [...mine].reverse().find((m) => m.role === "assistant" && m.content);
@@ -967,7 +978,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         }
       text = `[Sub-agent ${s.alias} "${s.title}" was stopped before finishing: ${s.reason}. It wrote no final report, so check its work yourself before relying on it.]` +
         (steps.length ? `\nIts last steps:\n${steps.reduce((out, x) => { const p = out[out.length - 1]; if (p && p.x === x) p.n++; else out.push({ x, n: 1 }); return out; }, []).map((p) => p.x + (p.n > 1 ? ` (${p.n} times)` : "")).join("\n")}` : "") + (report ? `\nIts last message: ${report}` : "");
-    } else text = `[Sub-agent ${s.alias} "${s.title}" ${s.status === "stopped" ? "was stopped" : "finished"}. Its report:]\n${report || "(it wrote no report)"}`;
+    } else if (run.loopStop) text = `[Sub-agent ${s.alias} "${s.title}" was stopped by the user: it kept repeating itself and may have been stuck in a loop. It wrote no final report. That's the user's decision: don't start it again or redo its work unless the user asks.]`;
+    else text = `[Sub-agent ${s.alias} "${s.title}" ${s.status === "stopped" ? "was stopped" : "finished"}. Its report:]\n${report || "(it wrote no report)"}`;
     if (runs.get(parent.id) === parent) { // also when the main reply was stopped: it adds the report before it ends
       parent.pending.push({ id: "rep-" + s.id, report: meta, text });
       relay(s);
@@ -1142,6 +1154,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         await applyPending(run);
         await maybeCompact(run);
         if (run.stopped) break;
+        if (run.loopStop) { // Stop on the loop warning while tools ran: end before asking the model again
+          run.endReason = "it kept repeating the same text";
+          emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." });
+          break;
+        }
         const r = await step(run);
         run.cur = null;
         if (r.retry) continue; // nothing kept from the unreadable attempt; the same step again
@@ -1201,6 +1218,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       emit(run, { type: "failed", text: "Error: " + e.message });
     } finally {
       run.cur = null; run.tool = null;
+      if (run.loopWarn) { run.loopWarn = null; emit(run, { type: "loopwarn", on: false }); }
       for (const s of run.subs.values()) cancelPending(run, s, run.stopped ? "the reply was stopped" : "the reply ended");
       const stat = { tokens: run.genDone, ms: Date.now() - run.t0 }, sub = subTokens(run);
       if (sub) stat.sub = sub; // "(+N from sub-agents)"
@@ -1311,6 +1329,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       messages: (chat.messages || []).filter((m) => !m._partial),
       startLen: (chat.messages || []).filter((m) => !m._partial).length,
       clients: new Set(), pending: [], cur: null, tool: null, approval: null, abort: null, stopped: false, deleted: false,
+      loopWarn: null, loopIgnored: false, loopStop: false, // the repeating warning: up, ignored for this reply, stopped
       body, parentRun: opts.parentRun || null, subs: new Map(), agentSeq: 0, wake: null, // sub-agents
     };
     setTools(run);
@@ -1337,7 +1356,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0), sub: subTokens(run) };
     const question = run.question && { id: run.question.id, tc: run.question.tc, questions: run.question.questions };
     const agents = [...run.subs.values()].filter((s) => s.status === "running" || s.status === "pending").map(agentInfo);
-    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending.filter((p) => !p.report), stat, question, agents, waiting: run.waitWhy || !!run.wake })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending.filter((p) => !p.report), stat, question, agents, waiting: run.waitWhy || !!run.wake, loopWarn: run.loopWarn })}\n\n`);
     run.clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
     req.on("close", () => { clearInterval(ping); run.clients.delete(res); });
@@ -1346,7 +1365,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   // /api/runs routes.
   async function handle(req, res, { readBody, sendJson }) {
     const u = new URL(req.url, "http://x");
-    const m = u.pathname.match(/^\/api\/runs(?:\/([^/]+)(?:\/(events|stop|approve|steer|answer))?)?$/);
+    const m = u.pathname.match(/^\/api\/runs(?:\/([^/]+)(?:\/(events|stop|approve|steer|answer|loop))?)?$/);
     if (!m) return sendJson(res, 404, { error: "Not found" });
     const [, id, action] = m;
     try {
@@ -1367,6 +1386,18 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         run.question.resolve(a);
         return sendJson(res, 200, { ok: true });
       }
+      if (id && action === "loop" && req.method === "POST") { // the repeating warning: {id, action: "ignore" | "stop"}
+        const b = JSON.parse(await readBody(req)), run = runs.get(id);
+        if (!run || !run.loopWarn || run.loopWarn.id !== b.id) return sendJson(res, 409, { error: "No warning up" });
+        run.loopWarn = null;
+        emit(run, { type: "loopwarn", on: false });
+        if (b.action === "stop") {
+          run.loopStop = true;
+          console.log(`[run] ${run.id} repeating: stopped by the user`);
+          if (run.abort) run.abort.abort(); // the step ends as "stopped: repeating"; between steps the loop ends at the next check
+        } else { run.loopIgnored = true; console.log(`[run] ${run.id} repeating: ignored for this reply`); }
+        return sendJson(res, 200, { ok: true });
+      }
       if (id && action === "approve" && req.method === "POST") {
         const b = JSON.parse(await readBody(req)), run = runs.get(id);
         if (run && run.approval && run.approval.id === b.id) run.approval.resolve(b.approved === true);
@@ -1383,7 +1414,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     has: (id) => runs.has(id),
     settling: (id) => memJobs.has(id), // a memory update or title is being worked out after its reply
     anyActive: () => runs.size > 0,
-    waiting: (id) => { const r = runs.get(id); return r?.approval || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.approval) ? "approval" : r?.question ? "question" : false; }, // the sidebar's yellow dot
+    waiting: (id) => { const r = runs.get(id); if (r?.loopWarn || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.loopWarn)) return "loop"; return r?.approval || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.approval) ? "approval" : r?.question ? "question" : false; }, // the sidebar's yellow dot
     stop: (id) => { const p = !runs.get(id) && pendingSub(id); if (p) cancelPending(p[0], p[1], "the user cancelled it"); else stop(runs.get(id)); },
     deleted: (id) => { const r = runs.get(id); if (r) { r.deleted = true; stop(r); } },
     modeChanged: (id, mode) => {
