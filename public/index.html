@@ -34,7 +34,7 @@
   body.sb-closed #sbOpen { display:inline-flex; }
   body.sb-closed .crumbs { left:44px; }
   #sbOpen .sb-dot { position:absolute; top:3px; right:3px; width:7px; height:7px; border-radius:50%; display:none; }
-  #sbOpen.running .sb-dot, #sbOpen.waiting .sb-dot, #sbOpen.unread .sb-dot { display:block; }
+  #sbOpen.running .sb-dot, #sbOpen.waiting .sb-dot, #sbOpen.looping .sb-dot, #sbOpen.unread .sb-dot { display:block; } #sbOpen.looping .sb-dot { background:#e8743b; }
   #sbOpen.running .sb-dot { background:var(--accent); animation:pulse 1.2s ease-in-out infinite; } #sbOpen.waiting .sb-dot { background:#e3b04b; } #sbOpen.unread .sb-dot { background:#4fc98a; }
   /* Narrow screens (iPad portrait): the sidebar opens over the content and closes again when something is picked. */
   @media (max-width:899px) {
@@ -54,7 +54,7 @@
   .ws-row .cnt { flex:none; font-size:11px; font-weight:500; color:var(--muted); padding:0 8px 0 6px; font-variant-numeric:tabular-nums; }
   .ws-row:hover .cnt { display:none; }
   .ws-row .run-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; margin-right:4px; }
-  .ws-row .run-dot.running { animation:pulse 1.2s ease-in-out infinite; } .ws-row .run-dot.waiting { background:#e3b04b; } .ws-row .run-dot.unread { background:#4fc98a; }
+  .ws-row .run-dot.running { animation:pulse 1.2s ease-in-out infinite; } .ws-row .run-dot.waiting { background:#e3b04b; } .ws-row .run-dot.looping { background:#e8743b; } .ws-row .run-dot.unread { background:#4fc98a; }
   .ws-sessions { margin:2px 0 4px 10px; padding-left:6px; border-left:1px solid var(--line); }
   .ws-sessions .chat-item { padding-left:10px; font-size:13.5px; }
   .ws-sessions .empty-list { padding:4px 10px; }
@@ -153,7 +153,7 @@
   .chat-item.active { background:var(--user); color:var(--text); }
   .chat-item .run-dot { width:7px; height:7px; border-radius:50%; background:var(--accent); flex:none; margin-right:6px; }
   .chat-item .run-dot.running { animation:pulse 1.2s ease-in-out infinite; }
-  .chat-item .run-dot.waiting { background:#e3b04b; }
+  .chat-item .run-dot.waiting { background:#e3b04b; } .chat-item .run-dot.looping { background:#e8743b; }
   .chat-item .run-dot.unread { background:#4fc98a; }
   @keyframes pulse { 50% { opacity:.3; } }
   .chat-item .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -262,6 +262,13 @@
   .ro-note button { font-size:12px; padding:3px 12px; margin-left:auto; }
   .ro-note[hidden] { display:none; } /* its display:flex would otherwise override the hidden attribute */
   /* The session's task list (todo tool), above the message box. */
+  /* The repeating warning: orange-red with a ⚠, so it never reads as an approval (yellow). Generation goes on meanwhile. */
+  .loop-warn { display:flex; align-items:center; gap:10px; margin-bottom:8px; padding:8px 8px 8px 12px; border:1px solid #e8743b; border-radius:10px; background:rgba(232,116,59,.12); font-size:13px; }
+  .loop-warn[hidden] { display:none; }
+  .loop-warn .lw-i { color:#e8743b; font-size:16px; line-height:1; }
+  .loop-warn .lw-t { flex:1; min-width:0; } .loop-warn .lw-t b { color:#f0a27a; font-weight:600; margin-right:6px; }
+  .loop-warn button.stop, .agent-chip button.stop { border-color:#e8743b; color:#f0a27a; }
+  .agent-chip.loopwarn { border-color:#e8743b; } .agent-chip .dot.loop { background:#e8743b; }
   .todo-panel { margin-bottom:8px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-size:13px; }
   .todo-panel .th { display:flex; align-items:center; gap:8px; padding:6px 12px; cursor:pointer; color:var(--muted); user-select:none; }
   .todo-panel .th:hover { color:var(--text); } .todo-panel .th .car { font-size:10px; width:10px; transition:transform .15s; } .todo-panel.open .th .car { transform:rotate(90deg); }
@@ -498,6 +505,7 @@
   <div id="wsView" class="wsview" hidden></div>
   <div class="logwrap"><div id="log"></div><button type="button" id="jump" class="jump" title="Jump to latest" hidden>↓</button></div>
   <form id="form"><div class="inner">
+    <div id="loopWarn" class="loop-warn" hidden></div>
     <div id="todoPanel" class="todo-panel" hidden></div>
     <div id="roNote" class="ro-note" hidden></div>
     <div id="attachments" class="attachments" hidden></div>
@@ -1743,8 +1751,9 @@ function drawChip(c) {
   e.className = "agent-chip " + (i.status || "");
   e.innerHTML = "";
   const main = e.appendChild(el("button", "ac-main")); main.type = "button"; main.title = "Open the sub-agent's session (read-only)";
-  if (live) main.appendChild(el("span", "dot" + (i.status === "approval" ? " warn" : "")));
-  main.appendChild(el("span", "ac-t", (i.status === "approval" ? "Sub-agent needs approval: " : live ? "Running sub-agent: " : i.status === "pending" ? "Pending sub-agent: " : "Sub-agent: ") + (i.title || "Sub-agent")));
+  if (live && i.loopWarn) e.classList.add("loopwarn");
+  if (live) main.appendChild(el("span", "dot" + (i.loopWarn ? " loop" : i.status === "approval" ? " warn" : "")));
+  main.appendChild(el("span", "ac-t", (live && i.loopWarn ? "⚠ Sub-agent may be stuck in a loop: " : i.status === "approval" ? "Sub-agent needs approval: " : live ? "Running sub-agent: " : i.status === "pending" ? "Pending sub-agent: " : "Sub-agent: ") + (i.title || "Sub-agent")));
   c.sEl = main.appendChild(el("span", "ac-s", chipStats(c)));
   main.appendChild(el("span", "ac-go", "→"));
   main.onclick = () => loadChat(i.id);
@@ -1756,7 +1765,14 @@ function drawChip(c) {
     yes.onclick = () => { post("approve", { id: i.tc.id, approved: true }); agentChip({ id: i.id, status: "running", tc: null }); };
     no.onclick = () => { post("approve", { id: i.tc.id, approved: false }); agentChip({ id: i.id, status: "running", tc: null }); };
   }
-  if (live) { const st = e.appendChild(el("button", null, "Stop")); st.type = "button"; st.title = "Stop this sub-agent (its report so far comes back)"; st.onclick = () => post("stop"); }
+  if (live && i.loopWarn) { // the repeating warning, like an approval: Ignore (until its reply ends) or Stop
+    const ig = e.appendChild(el("button", null, "Ignore")), st = e.appendChild(el("button", "stop", "Stop"));
+    ig.type = st.type = "button";
+    ig.title = "It's repeating on purpose: don't warn again until this sub-agent's reply ends"; st.title = "Stop this sub-agent (its report so far comes back)";
+    const id = i.loopWarn;
+    ig.onclick = () => { post("loop", { id, action: "ignore" }); agentChip({ id: i.id, loopWarn: null }); };
+    st.onclick = () => { post("loop", { id, action: "stop" }); agentChip({ id: i.id, loopWarn: null }); };
+  } else if (live) { const st = e.appendChild(el("button", null, "Stop")); st.type = "button"; st.title = "Stop this sub-agent (its report so far comes back)"; st.onclick = () => post("stop"); }
   else if (i.status === "pending") { const st = e.appendChild(el("button", null, "Cancel")); st.type = "button"; st.title = "Cancel this sub-agent before it starts"; st.onclick = () => post("stop"); }
 }
 function reportCard(m) {
@@ -1766,6 +1782,22 @@ function reportCard(m) {
   s.appendChild(el("span", null, `Report from sub-agent: ${r.title || r.alias || ""}` + (r.tokens != null ? ` · ${r.status === "stopped" ? "stopped · " : r.status === "halted" ? "stopped early · " : ""}${fmtTok(r.tokens)} in ${fmtDur(r.ms || 0)}` : "")));
   d.appendChild(el("div", "md")).innerHTML = mdRender(String(m.content || "").replace(/^\[Sub-agent[^\n]*\]\n?/, ""));
   return d;
+}
+// The repeating warning above the message box (runs.js raises at most one per reply; it doesn't pause the reply).
+function showLoopWarn(warnId, runId) {
+  const box = $("loopWarn");
+  box.hidden = !warnId;
+  box.innerHTML = "";
+  if (!warnId) return;
+  box.appendChild(el("span", "lw-i", "⚠"));
+  const t = box.appendChild(el("span", "lw-t"));
+  t.appendChild(el("b", null, "Warning"));
+  t.appendChild(document.createTextNode("The model is repeating itself and may be stuck in a loop."));
+  const ig = box.appendChild(el("button", null, "Ignore")), st = box.appendChild(el("button", "stop", "Stop"));
+  ig.type = st.type = "button";
+  ig.title = "It's repeating on purpose: don't warn again until this reply ends"; st.title = "Stop the reply";
+  const send = (action) => { showLoopWarn(null); fetch(`/api/runs/${encodeURIComponent(runId)}/loop`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: warnId, action }) }).catch(() => {}); };
+  ig.onclick = () => send("ignore"); st.onclick = () => send("stop");
 }
 function clearChips() { agentChips.clear(); liveSubs.last = 0; clearInterval(agentTimer); agentTimer = null; }
 // A sub-agent's own session is read-only: you steer the main session instead.
@@ -1812,7 +1844,7 @@ function renderTodo() {
   }
 }
 function renderChat(live = false) {
-  todoOpen = null; renderTodo(); clearChips(); renderReadOnly();
+  todoOpen = null; renderTodo(); clearChips(); renderReadOnly(); showLoopWarn(null);
   footStop(); pendingQuestion = null; qCards.clear();
   if (fold) clearInterval(fold.timer);
   fold = null;
@@ -1914,7 +1946,7 @@ async function newChat(workspace) {
   if (active) { modelSel.value = active.id; renderModelBtn(); }
   loadModels(); // then from the server's current state
   showSessionUi();
-  todoOpen = null; renderTodo(); clearChips(); renderReadOnly(); // leave the last session's state behind (a sub-agent's read-only view, its tasks)
+  todoOpen = null; renderTodo(); clearChips(); renderReadOnly(); showLoopWarn(null); // leave the last session's state behind (a sub-agent's read-only view, its tasks)
   renderMode();
   renderThink();
   renderToolbarState();
@@ -2011,7 +2043,7 @@ let wsOpen = {};
 try { wsOpen = JSON.parse(localStorage.getItem("qq.wsOpen") || "{}"); } catch {}
 const isOpen = (id) => wsOpen[id] ?? true;
 function setOpen(id, v) { wsOpen[id] = v; try { localStorage.setItem("qq.wsOpen", JSON.stringify(wsOpen)); } catch {} }
-const dotOf = (c) => c.waiting ? ["waiting", c.waiting === "question" ? "Waiting for your answers" : "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
+const dotOf = (c) => c.waiting === "loop" ? ["looping", "May be stuck in a loop"] : c.waiting ? ["waiting", c.waiting === "question" ? "Waiting for your answers" : "Waiting for your approval"] : c.running ? ["running", "Reply in progress"] : c.unread && c.id !== chat.id ? ["unread", "New reply"] : null;
 const ago = (t) => { const s = (Date.now() - t) / 1000; return s < 60 ? "just now" : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : s < 86400 * 30 ? `${Math.floor(s / 86400)} d ago` : new Date(t).toLocaleDateString(); };
 const fmtSize = (n) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(2)} GB`;
 
@@ -2528,6 +2560,7 @@ function onRunEvent(ev, id) {
       if (ev.stat) footStart(ev.stat.ms, ev.stat.tokens);
       for (const a of ev.agents || []) agentChip(a);
       if (ev.waiting && foot) { foot.waiting = ev.waiting; foot.draw(); }
+      showLoopWarn(ev.loopWarn?.id || null, id);
       pendingEls.clear();
       for (const p of ev.pending || []) pendingBubble(p);
       if (keepScroll) { if (!keepScroll.stick) { stick = false; log.scrollTop = ownTop = keepScroll.top; updJump(); } keepScroll = null; }
@@ -2564,6 +2597,7 @@ function onRunEvent(ev, id) {
     case "agent_report": { chat.messages.push(ev.msg); add(reportCard(ev.msg)); const r = ev.msg._agentReport; agentChip({ id: r.id, title: r.title, status: r.status, tokens: r.tokens, ms: r.ms, tc: null }); follow(); break; }
     case "waiting": if (foot) { foot.waiting = ev.on ? ev.why || true : false; foot.draw(); } break;
     case "answered": answeredQuestion(ev.id, ev.answers); break;
+    case "loopwarn": showLoopWarn(ev.on ? ev.id : null, id); loadList(); break; // loadList: the sidebar's dot
     case "tool_result": {
       const m = ev.msg;
       chat.messages.push(m);
@@ -2602,6 +2636,7 @@ function onRunEvent(ev, id) {
       const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
       if (lastA && ev.ms != null) lastA._run = { tokens: ev.tokens, ms: ev.ms, ...(ev.sub ? { sub: ev.sub } : {}) };
       footEnd(ev);
+      showLoopWarn(null);
       for (const c of agentChips.values()) if (chipLive(c.info)) agentChip({ id: c.info.id, status: "stopped", tc: null }); // the reply ended: none of its sub-agents still runs
       if (es) { es.close(); es = null; } endRun(id, false); break;
     }

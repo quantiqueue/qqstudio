@@ -1,7 +1,17 @@
 <p align="center"><img src="docs/qqstudio-2.png" alt="qqstudio" width="400"></p>
 
-<p align="center"><img src="docs/screenshot.png" alt="A qqstudio session: the agent answers with a TL;DR of qqstudio" width="900"><br>
-<sub>A local AI studio: it runs your models with llama.cpp or Strata, and puts an agent around them, with tools, MCP servers, skills, sub-agents and workspaces that remember.</sub></p>
+<h3 align="center">Run models your way: engines, settings and workspaces in one place.</h3>
+
+<p align="center"><a href="#install">Install</a> · <a href="#first-steps">First steps</a> · <a href="#whats-in-it">What's in it</a> · <a href="#troubleshooting">Troubleshooting</a> · <a href="#support-qqstudio">Support</a></p>
+
+<p align="center">
+<a href="https://github.com/quantiqueue/qqstudio/releases/latest"><img src="https://img.shields.io/github/v/release/quantiqueue/qqstudio?label=release&color=e8762d" alt="Latest release"></a>
+<a href="https://github.com/quantiqueue/qqstudio/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/quantiqueue/qqstudio/ci.yml?branch=main&label=CI&logo=github" alt="CI"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-4c1" alt="License: MIT"></a>
+<a href="https://buymeacoffee.com/quantiqueue"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
+</p>
+
+<p align="center"><img src="docs/screenshot.png" alt="A qqstudio session: the agent answers with a TL;DR of qqstudio" width="900"></p>
 
 - **Local and private.** Runs on your PC, no account, no cloud, no telemetry. Sessions, settings and memory are all local.
 - **Engines with a button.** Download a llama.cpp build for your graphics card, or Strata (a faster engine for a few models), from Settings. qqstudio suggests the right build and keeps it updated.
