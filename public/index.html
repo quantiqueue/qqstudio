@@ -603,6 +603,7 @@ let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
 // The effort and thinking new sessions start at (Settings > Sessions); var, as sessions are created before the config loads.
 var addingPending = false; // a pending message is added below the reply: it doesn't end the fold that is still working
+var renderingHistory = false; // renderChat is drawing saved messages: their folds take their time from the saved steps
 var newEffort = "medium", newBudget = "unlimited", midTurn = "steer"; // midTurn: what a message sent during a reply does (Settings > Sessions)
 function blankChat(workspace) { return { id: null, workspace: workspace || defaultWs, title: "New session", mode: "manual", effort: newEffort || "medium", thinkBudget: newBudget || "unlimited", skills: {}, mcp: {}, cats: {}, messages: [] }; }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
@@ -612,7 +613,7 @@ function add(node) {
   log.insertBefore(node, foot && foot.el.isConnected ? foot.el : log.querySelector(":scope > .uwrap.pending")); // the live reply footer stays at the bottom, and messages still pending stay below everything new
   if (fold && node !== fold.el && !addingPending) { // shown outside the fold: its work is done (a pending message isn't: the reply goes on)
     if (fold.live) foldLive(fold, false);
-    else if (fold.ms == null && fold.start == null && fold.body.children.length) { fold.ms = performance.now() - fold.t0; foldDraw(fold); } // a fold that never went live (a step's tool calls after its text, then your message): time it from when it began
+    else if (!fold.hist && fold.ms == null && fold.start == null && fold.body.children.length) { fold.ms = performance.now() - fold.t0; foldDraw(fold); } // a fold that never went live (a step's tool calls after its text, then your message): time it from when it began
   }
   follow(); return node;
 }
@@ -1467,7 +1468,7 @@ function curFold() {
   const label = s.appendChild(el("span", "fl"));
   const body = d.appendChild(el("div", "fold-body"));
   add(d);
-  fold = d._fold = { el: d, body, label, t0: performance.now(), start: null, end: null, ms: null, live: false, timer: null };
+  fold = d._fold = { el: d, body, label, t0: performance.now(), start: null, end: null, ms: null, live: false, timer: null, hist: renderingHistory }; // hist: drawn from a saved session, never timed by add()
   foldDraw(fold);
   return fold;
 }
@@ -1858,6 +1859,8 @@ function renderChat(live = false) {
   cards = new Map();
   if (!chat.messages.length) return showWelcome();
   const results = new Map(chat.messages.filter((m) => m.role === "tool").map((m) => [m.tool_call_id, m]));
+  renderingHistory = true;
+  try {
   for (const m of chat.messages) {
     if (m._summary) add(summaryDivider(m));
     else if (m.role === "user" && m._agentReport) { add(reportCard(m)); const r = m._agentReport; if (agentChips.has(r.id)) agentChip({ id: r.id, status: r.status, tokens: r.tokens, ms: r.ms }); }
@@ -1893,6 +1896,7 @@ function renderChat(live = false) {
       if (m._run) add(footDone(m._run));
     }
   }
+  } finally { renderingHistory = false; }
   const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
   if (lastA?._stop && chat.messages[chat.messages.length - 1].role !== "user" && !live) add(stopLine(lastA._stop));
   toBottom();
