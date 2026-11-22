@@ -688,7 +688,7 @@ const lazyInfo = () => ({ lazyAt: lazyTools.threshold(getConfig()), serverTokens
 const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
 const EFFORTS = ["default", "off", "low", "medium", "high", "max"]; // "default" is shown as Auto (nothing sent)
 const BUDGETS = ["auto", "off", "low", "medium", "high", "unlimited"]; // low/medium/high: the caps in budgets
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000, memoryTokens: 2000 }; // memoryTokens: workspace memory cap
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000, memoryTokens: 2000, midTurn: "steer" }; // memoryTokens: workspace memory cap; midTurn: what a message sent during a reply does (steer, queue or interrupt)
 const AGENT_DEFAULTS = { maxActive: 1, reportWords: 300, instructions: "" }; // Settings > Agents // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
@@ -713,6 +713,7 @@ async function handleConfig(req, res) {
       cur.agents = a;
     }
     if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
+    if (["steer", "queue", "interrupt"].includes(patch.midTurn)) cur.midTurn = patch.midTurn;
     if ("memoryTokens" in patch) { const v = Math.round(Number(patch.memoryTokens)); if (Number.isFinite(v) && v >= 200 && v <= 20000) cur.memoryTokens = v; }
     if ("lazyToolsAt" in patch) { const v = patch.lazyToolsAt === "" || patch.lazyToolsAt == null ? 0 : Math.round(Number(patch.lazyToolsAt)); if (Number.isFinite(v) && v >= 0) cur.lazyToolsAt = v; }
     if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }

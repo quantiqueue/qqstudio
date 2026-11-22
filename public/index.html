@@ -241,7 +241,10 @@
   details.compacted .csum { margin-top:10px; padding:10px 14px; border:1px dashed var(--line); border-radius:10px; color:#b8bdca; font-size:13px; }
   .uwrap.pending .msg.user { opacity:.7; border:1px dashed #3b4356; }
   .uwrap.pending .acts { display:none; }
-  .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; }
+  .uwrap .ptag { font-size:11px; color:var(--muted); text-align:right; margin-top:4px; display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+  .uwrap .ptag .pwhy { margin-right:auto; }
+  .uwrap .ptag a { color:var(--muted); cursor:pointer; text-decoration:none; }
+  .uwrap .ptag a:hover { color:var(--text); text-decoration:underline; }
   /* Sub-agents: a chip per sub-agent in the main session, report cards, and the read-only sub-agent session. */
   .agent-chip { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:10px; background:#12151b; padding:4px 6px 4px 4px; font-size:13px; }
   .agent-chip.approval { border-color:#e3b04b; }
@@ -601,7 +604,7 @@ let running = false, pendingApproval = null, listTimer = null, lastListSig = "";
 let toolInfo = { enabled: true, tools: [], roots: [], platform: "" };
 
 // The effort and thinking new sessions start at (Settings > Sessions); var, as sessions are created before the config loads.
-var newEffort = "medium", newBudget = "unlimited";
+var newEffort = "medium", newBudget = "unlimited", midTurn = "steer"; // midTurn: what a message sent during a reply does (Settings > Sessions)
 function blankChat(workspace) { return { id: null, workspace: workspace || defaultWs, title: "New session", mode: "manual", effort: newEffort || "medium", thinkBudget: newBudget || "unlimited", skills: {}, mcp: {}, cats: {}, messages: [] }; }
 function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function el(tag, cls, text) { const d = document.createElement(tag); if (cls) d.className = cls; if (text != null) d.textContent = text; return d; }
@@ -820,6 +823,7 @@ const EFFORT_OPTS = [["default", "Auto"], ["off", "Off"], ["low", "Low"], ["medi
 const BUDGET_KEYS = ["auto", "off", "low", "medium", "high", "unlimited"];
 let thinkCfg = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
 fetch("/api/config").then((r) => r.json()).then((c) => {
+  if (["steer", "queue", "interrupt"].includes(c.midTurn)) midTurn = c.midTurn;
   if (c.thinking) { thinkCfg = c.thinking; newEffort = c.thinking.effort || "medium"; newBudget = c.thinking.budget || "unlimited"; }
   if (!chat.id && !chat.messages.length) { chat.effort = newEffort; chat.thinkBudget = newBudget; } // a new session opened before this loaded
   renderThink();
@@ -2619,6 +2623,8 @@ function onRunEvent(ev, id) {
     case "loaded": chat.loaded = ev.loaded; renderToolbarState(); renderPlus(); break;
     case "halted": add(stopLine(ev.text)); break;
     case "steer_pending": if (!pendingEls.has(ev.id)) { pendingBubble(ev); follow(); } break; // sent from another tab
+    case "pending_mode": setPendingMode(ev.id, ev.mode); break;
+    case "pending_cancel": pendingEls.get(ev.id)?.remove(); pendingEls.delete(ev.id); break; // cancelled, or cleared by Stop
     case "steer_applied": {
       chat.messages.push(ev.msg);
       for (const sid of ev.ids) { pendingEls.get(sid)?.remove(); pendingEls.delete(sid); }
@@ -2691,15 +2697,37 @@ async function send() {
 // A message sent while a reply runs is "pending": the server adds it after the current step, before the next model call.
 const pendingEls = new Map(); // steer id -> bubble
 let steerContinue = null;      // session id whose stopped reply left steers behind: start a new reply with them
+// A pending message says when the model will see it and offers the other modes and Cancel.
+const MODE_WHY = { steer: "Steer: after the current step", queue: "Queued: after the reply", interrupt: "Interrupting" };
+const MODE_NAME = { steer: "Steer", queue: "Queue", interrupt: "Interrupt" };
 function pendingBubble(p) {
   const m = { role: "user", content: p.text || "" };
   if (p.images?.length) m._images = p.images;
   const w = userBubble(m);
   w.classList.add("pending");
-  const tag = w.appendChild(el("div", "ptag", "pending"));
-  tag.title = "The model sees this after its current step";
+  w.appendChild(el("div", "ptag"));
   pendingEls.set(p.id, w);
+  setPendingMode(p.id, p.mode || "steer");
   return w;
+}
+function setPendingMode(id, mode) {
+  const w = pendingEls.get(id), tag = w?.querySelector(".ptag");
+  if (!tag) return;
+  w.dataset.mode = mode;
+  tag.replaceChildren(el("span", "pwhy", MODE_WHY[mode] || MODE_WHY.steer));
+  for (const act of ["steer", "interrupt", "queue", "cancel"]) {
+    if (act === mode) continue;
+    const a = el("a", null, act === "cancel" ? "Cancel" : MODE_NAME[act]);
+    a.onclick = () => pendingAction(id, act);
+    tag.appendChild(a);
+  }
+}
+async function pendingAction(id, act) {
+  const sid = chat.id;
+  try {
+    const r = await fetch(`/api/runs/${encodeURIComponent(sid)}/pending`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, action: act }) });
+    if (!r.ok && r.status !== 409) throw new Error((await r.json().catch(() => ({}))).error || r.statusText); // 409: it was just applied or the reply ended
+  } catch (e) { status.textContent = "Could not change it: " + e.message; }
 }
 async function steer() {
   if (attachments.some((a) => a.busy)) { status.textContent = "Waiting for the image to finish attaching…"; return; }
@@ -2709,9 +2737,9 @@ async function steer() {
   if (!text && !images.length) return;
   const id = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), sid = chat.id;
   input.value = ""; attachments = []; renderAttachments(); autosize();
-  pendingBubble({ id, text, images }); toBottom();
+  pendingBubble({ id, text, images, mode: midTurn }); toBottom();
   try {
-    const r = await fetch(`/api/runs/${sid}/steer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, text, images }) });
+    const r = await fetch(`/api/runs/${sid}/steer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, text, images, mode: midTurn }) });
     if (r.status === 409) { // the reply ended just now: send it as a normal message instead
       pendingEls.get(id)?.remove(); pendingEls.delete(id);
       for (let i = 0; i < 50 && running; i++) await new Promise((res) => setTimeout(res, 100));

@@ -448,6 +448,14 @@
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
     </div>
 
+    <h2 style="margin-top:28px; font-size:15px">Messages During a Reply</h2>
+    <div class="srv">
+      <div class="field"><label for="midTurn">Default</label><select id="midTurn">
+        <option value="steer">Steer</option><option value="queue">Queue</option><option value="interrupt">Interrupt</option>
+      </select></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">What a message does when you send it while a reply is running. <b>Steer</b>: the model sees it after its current step (a thought, a reply or a tool run) ends. <b>Queue</b>: it waits until the whole reply is done. <b>Interrupt</b>: it cuts the step in flight, keeps what was written so far, and the model reacts at once. A sent message waits above the composer, where each one can be changed to another mode or cancelled. Several steers or queued messages are joined into one message. Stop clears them all.</div>
+    </div>
+
     <h2 style="margin-top:28px; font-size:15px">Session Compaction</h2>
     <div class="srv">
       <div class="field"><label for="compactAt">Context Window Max</label><input type="text" id="compactAt" inputmode="numeric" placeholder="off" style="max-width:70px"><span class="muted">%</span></div>
@@ -819,11 +827,12 @@ const saveDefault = async (patch) => {
   $("tbMsgOut").textContent = r && r.ok ? "Saved" : "Error";
   setTimeout(() => ($("tbMsgOut").textContent = ""), 1500);
 };
+$("midTurn").onchange = () => fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ midTurn: $("midTurn").value }) });
 $("defEffort").onchange = () => saveDefault({ effort: $("defEffort").value });
 $("defBudget").onchange = () => saveDefault({ budget: $("defBudget").value });
 fetch("/api/config").then((r) => r.json()).then((c) => {
   const t = c.thinking || { budgets: {} };
-  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("memTok").value = c.memoryTokens || ""; $("maskSecrets").checked = c.maskSecrets !== false;
+  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("memTok").value = c.memoryTokens || ""; $("maskSecrets").checked = c.maskSecrets !== false; $("midTurn").value = c.midTurn || "steer";
 }).catch(() => {});
 $("tbSave").onclick = async () => {
   const thinking = { message: $("tbMsg").value };
