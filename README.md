@@ -11,7 +11,7 @@
 <a href="https://buymeacoffee.com/quantiqueue"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
 </p>
 
-<p align="center"><img src="docs/screenshot.png" alt="A qqstudio session: the agent answers with a TL;DR of qqstudio" width="900"></p>
+<p align="center"><img src="docs/landing-prompt-1.gif" alt="A qqstudio session: the agent answers with a TL;DR of qqstudio" width="900"></p>
 
 - **Local and private.** Runs on your PC, no account, no cloud, no telemetry. Sessions, settings and memory are all local.
 - **Engines with a button.** Download a llama.cpp build for your graphics card, or Strata (a faster engine for a few models), from Settings. qqstudio suggests the right build and keeps it updated.
