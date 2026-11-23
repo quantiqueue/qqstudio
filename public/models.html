@@ -348,8 +348,8 @@
 </header>
 <div class="layout">
 <aside class="tabs">
-  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engines<span class="badge"></span></a>
   <a href="#loadouts" data-tab="loadouts"><span class="ic">◧</span>Loadouts<span class="badge" id="tabLoadouts"></span></a>
+  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engines<span class="badge"></span></a>
   <a href="#models" data-tab="models"><span class="ic">▤</span>Models<span class="badge" id="tabModels"></span></a>
   <a href="#install" data-tab="install"><span class="ic">⇩</span>Install Models<span class="badge" id="tabInstall"></span></a>
   <a href="#sessions" data-tab="sessions"><span class="ic">💬</span>Sessions<span class="badge"></span></a>
@@ -745,7 +745,7 @@ $("agSave").onclick = async () => {
   setTimeout(() => ($("agOut").textContent = ""), 1500);
 };
 function showTab() {
-  const tab = ["engine", "sessions", "loadouts", "models", "install", "agents", "tools", "skills", "mcp", "server", "about"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
+  const tab = ["engine", "sessions", "loadouts", "models", "install", "agents", "tools", "skills", "mcp", "server", "about"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "loadouts"; // no hash: the first tab
   document.querySelectorAll("[data-tab]").forEach((n) => n.classList.toggle("active", n.dataset.tab === tab));
 }
 window.addEventListener("hashchange", showTab);
