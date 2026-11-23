@@ -348,8 +348,8 @@
 </header>
 <div class="layout">
 <aside class="tabs">
-  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engines<span class="badge"></span></a>
   <a href="#loadouts" data-tab="loadouts"><span class="ic">◧</span>Loadouts<span class="badge" id="tabLoadouts"></span></a>
+  <a href="#engine" data-tab="engine"><span class="ic">⚙</span>Engines<span class="badge"></span></a>
   <a href="#models" data-tab="models"><span class="ic">▤</span>Models<span class="badge" id="tabModels"></span></a>
   <a href="#install" data-tab="install"><span class="ic">⇩</span>Install Models<span class="badge" id="tabInstall"></span></a>
   <a href="#sessions" data-tab="sessions"><span class="ic">💬</span>Sessions<span class="badge"></span></a>
@@ -446,6 +446,14 @@
       <div class="field"><label for="tbMsg">Cut-off note</label><input type="text" id="tbMsg" placeholder="optional, e.g. Time is up, answer now." spellcheck="false"></div>
       <div class="muted" style="margin:-4px 0 10px 108px">Inserted into the model's thinking when the budget runs out, to nudge it to answer.</div>
       <div style="margin-left:108px; display:flex; gap:10px; align-items:center"><button id="tbSave" class="load">Save</button><span class="muted" id="tbMsgOut"></span></div>
+    </div>
+
+    <h2 style="margin-top:28px; font-size:15px">Messages During a Reply</h2>
+    <div class="srv">
+      <div class="field"><label for="midTurn">Default</label><select id="midTurn">
+        <option value="steer">Steer</option><option value="queue">Queue</option><option value="interrupt">Interrupt</option>
+      </select></div>
+      <div class="muted" style="margin:-4px 0 10px 108px">What a message does when you send it while a reply is running. <b>Steer</b>: the model sees it after its current step (a thought, a reply or a tool run) ends. <b>Queue</b>: it waits until the whole reply is done. <b>Interrupt</b>: it cuts the step in flight, keeps what was written so far, and the model reacts at once. A sent message waits above the composer, where each one can be changed to another mode or cancelled. Several steers or queued messages are joined into one message. Stop clears them all.</div>
     </div>
 
     <h2 style="margin-top:28px; font-size:15px">Session Compaction</h2>
@@ -737,7 +745,7 @@ $("agSave").onclick = async () => {
   setTimeout(() => ($("agOut").textContent = ""), 1500);
 };
 function showTab() {
-  const tab = ["engine", "sessions", "loadouts", "models", "install", "agents", "tools", "skills", "mcp", "server", "about"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "engine";
+  const tab = ["engine", "sessions", "loadouts", "models", "install", "agents", "tools", "skills", "mcp", "server", "about"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "loadouts"; // no hash: the first tab
   document.querySelectorAll("[data-tab]").forEach((n) => n.classList.toggle("active", n.dataset.tab === tab));
 }
 window.addEventListener("hashchange", showTab);
@@ -819,11 +827,12 @@ const saveDefault = async (patch) => {
   $("tbMsgOut").textContent = r && r.ok ? "Saved" : "Error";
   setTimeout(() => ($("tbMsgOut").textContent = ""), 1500);
 };
+$("midTurn").onchange = () => fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ midTurn: $("midTurn").value }) });
 $("defEffort").onchange = () => saveDefault({ effort: $("defEffort").value });
 $("defBudget").onchange = () => saveDefault({ budget: $("defBudget").value });
 fetch("/api/config").then((r) => r.json()).then((c) => {
   const t = c.thinking || { budgets: {} };
-  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("memTok").value = c.memoryTokens || ""; $("maskSecrets").checked = c.maskSecrets !== false;
+  showThinking(t); $("tbMsg").value = t.message || ""; $("replyTok").value = c.replyTokens || ""; $("compactAt").value = c.compactAt || ""; $("memTok").value = c.memoryTokens || ""; $("maskSecrets").checked = c.maskSecrets !== false; $("midTurn").value = c.midTurn || "steer";
 }).catch(() => {});
 $("tbSave").onclick = async () => {
   const thinking = { message: $("tbMsg").value };
@@ -1230,7 +1239,7 @@ function loEditOpen(id, base) {
     visR.row.style.display = m?.mmproj ? "" : "none";
     const ci = inputs["ctx-size"];
     if (ci) { // the model's own maximum; blank means llama.cpp uses all of it
-      ci.inp.placeholder = strata ? "blank = Strata fits it to this PC" : m?.maxCtx ? `blank = ${Number(m.maxCtx).toLocaleString()} (all)` : "blank = model's full context";
+      ci.inp.placeholder = strata ? "blank = Strata fits it to this PC" : m?.maxCtx ? `blank = up to ${Number(m.maxCtx).toLocaleString()}` : "blank = model's full context";
       ci.r.help.textContent = ci.f.help + (m?.maxCtx ? ` This model's maximum: ${Number(m.maxCtx).toLocaleString()}.` : "");
     }
     const c = collect(), n = Object.keys(c.load).filter((k) => k !== "ctx-size").length + Object.keys(c.sampling).length + (c.other ? 1 : 0);
@@ -1271,6 +1280,10 @@ async function srvRefresh() {
   if (engData && engRel && JSON.stringify(engInstalled()) !== engPickSig) renderEngPick();
   if (!engData) { $("engList").innerHTML = '<div class="srv err"><span class="err-text">harness unreachable</span></div>'; return; }
   const run = engData.running || {};
+  // An engine added or removed here (a download finishing, a Strata install) is new to the loadout editor's engine list too
+  const engSig = engData.engines.map((e) => e.id + "\u0000" + e.name).join("\u0001");
+  if (loMeta && engSig !== srvRefresh.engSig && engSig !== loMeta.engines.map((e) => e.id + "\u0000" + e.name).join("\u0001")) loLoad();
+  srvRefresh.engSig = engSig;
   const list = $("engList"); list.innerHTML = "";
   for (const e of engData.engines) {
     const card = list.appendChild(el("div", "srv eng"));
@@ -1639,8 +1652,9 @@ async function loadFiles(repo, box) {
     box.textContent = "";
     if (!j.files.length) { box.textContent = "No .gguf files in this repo."; return; }
     // Offer the repo's vision projector alongside the model (F16 preferred, then BF16, then whatever there is).
-    const projs = j.files.filter((f) => f.mmproj);
-    const proj = projs.find((f) => /f16/i.test(f.name) && !/bf16/i.test(f.name)) || projs.find((f) => /bf16/i.test(f.name)) || projs[0];
+    // The repo's own projector (top level) before a copy in a subfolder (e.g. a runtime-specific folder with the same file names)
+    const projs = j.files.filter((f) => f.mmproj), topProjs = projs.filter((f) => !f.paths[0].includes("/")), pool = topProjs.length ? topProjs : projs;
+    const proj = pool.find((f) => /f16/i.test(f.name) && !/bf16/i.test(f.name)) || pool.find((f) => /bf16/i.test(f.name)) || pool[0];
     let withVision = null;
     if (proj && !proj.installed && j.files.some((f) => !f.mmproj)) {
       const opt = box.appendChild(el("label", "vis-opt"));
@@ -1652,8 +1666,12 @@ async function loadFiles(repo, box) {
     }
     for (const f of j.files) {
       const line = box.appendChild(el("div", "file"));
-      line.appendChild(el("span", "fname", f.name)).title = f.paths.join("\n");
+      const saved = f.saveAs?.length ? f.saveAs : [];
+      line.appendChild(el("span", "fname", f.name)).title = f.paths.join("\n") + (saved.join() !== f.paths.map((p) => p.split("/").pop()).join() ? "\n\nSaved as:\n" + saved.join("\n") : "");
       if (f.quant) line.appendChild(el("span", "tag q", f.quant));
+      if (f.folder) line.appendChild(el("span", "tag", f.folder)).title = `In the repo's ${f.folder} folder`
+        + (f.renamed ? ", published as .gguf_file (the uploader's choice, so tools don't list it beside the file of the same name). Saved as .gguf" : "")
+        + (saved.length ? `: ${saved[0]}${saved.length > 1 ? ` and ${saved.length - 1} more part${saved.length > 2 ? "s" : ""}` : ""}` : "");
       if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
       if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
       if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =

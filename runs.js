@@ -69,7 +69,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -198,12 +198,92 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   const memJobs = new Map(); // chatId -> AbortController of an update running after a reply
   // A real request is about to go to the engine: updates after replies give way (they run again after the next reply).
   function yieldMemory() { for (const c of memJobs.values()) c.abort(); }
+  // Answer first: for templates with no way to turn thinking off (only a reasoning_effort hint, which Inkling 2 thinks
+  // through even at "none": a memory turn ran to its 2,000-token cap with no answer), the prompt is rendered by the
+  // engine with the assistant's turn already open as text, and sent raw. Same rendering as the session's requests, so
+  // the slot's cache still matches. null: not possible here (images, or a template that renders differently), use chat.
+  // thinkCap > 0: first a short think, opened and closed with the template's own markers (found by rendering a message
+  // with a marked reasoning part), stopped at the cap or when the model closes it. With no thinking at all, Inkling 2
+  // Mini's memory answers flipped between NONE and ADD on small prompt changes; with up to 256 tokens they were right.
+  // Memory updates and tidy-ups on such models: this reasoning_effort through the normal chat request, if the template lists
+  // it (the model then thinks as it likes, up to the turn's cap). "" = the answer-first route below (MEMORY_THINK).
+  const MEMORY_EFFORT = ""; // "minimal" tried on Inkling 2 Mini (2026-11-23): 101–137 s, once 2,000 tokens of thinking and no answer; the session re-read 10k tokens
+  async function memoryThink(run) {
+    const ti = await templateInfo(run.model).catch(() => ({ effortOnly: false, efforts: [] }));
+    if (!ti.effortOnly) return noThink(run, false);
+    if (MEMORY_EFFORT && ti.efforts.includes(MEMORY_EFFORT)) {
+      const b = noThink(run, false);
+      return { ...b, chat_template_kwargs: { ...b.chat_template_kwargs, reasoning_effort: MEMORY_EFFORT } };
+    }
+    return { ...noThink(run, true), _thinkCap: MEMORY_THINK, _thinkStop: MEMORY_ANSWER };
+  }
+  const MEMORY_THINK = 256; // memory updates and tidy-ups on such models: tokens of thinking before the answer (titles and compaction: none)
+  // The think ends where the model starts writing the answer lines in it (Inkling 2 Mini drafts them there, then wrote them
+  // again as the answer: ~10 s of a 25 s update); the answer step writes them once.
+  const MEMORY_ANSWER = ["ADD ", "REPLACE ", "REMOVE ", "NONE"];
+  const ANSWER_MARK = "\u0001qq-answer\u0001", THINK_MARK = "\u0001qq-think\u0001";
+  const SAMPLING_KEYS = ["temperature", "top_k", "top_p", "min_p", "presence_penalty", "frequency_penalty", "repeat_penalty", "seed", "id_slot"];
+  async function rawCompletion(req, signal) {
+    const r = await fetch(`${llama.url()}/completion`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...req, cache_prompt: true, stream: true }), signal });
+    if (!r.ok) throw new Error(`completion: HTTP ${r.status}`);
+    const dec = new TextDecoder();
+    let buf = "", text = "";
+    for await (const chunk of r.body) {
+      if (signal?.aborted) break;
+      buf += dec.decode(chunk, { stream: true });
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        let j; try { j = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+        if (j.content) text += j.content;
+      }
+    }
+    if (signal?.aborted) throw new Error("stopped");
+    return text;
+  }
+  async function answerFirst(b, signal, thinkCap = 0, thinkStop = []) {
+    if (b.messages.some((m) => Array.isArray(m.content) && m.content.some((x) => x && x.type && !/^(input_)?text$/.test(x.type)))) return null;
+    const render = async (messages) => {
+      const r = await fetch(`${llama.url()}/apply-template`, { method: "POST", headers: { "Content-Type": "application/json" }, signal,
+        body: JSON.stringify({ messages, ...(b.tools ? { tools: b.tools } : {}), ...(b.chat_template_kwargs ? { chat_template_kwargs: b.chat_template_kwargs } : {}) }) });
+      if (!r.ok) throw new Error(`apply-template: HTTP ${r.status}`);
+      return (await r.json()).prompt;
+    };
+    const [plain, open, thought] = await Promise.all([render(b.messages), render([...b.messages, { role: "assistant", content: ANSWER_MARK }]),
+      thinkCap > 0 ? render([...b.messages, { role: "assistant", reasoning_content: THINK_MARK, content: ANSWER_MARK }]).catch(() => null) : null]);
+    const cut = typeof open === "string" ? open.indexOf(ANSWER_MARK) : -1;
+    if (cut < 0 || typeof plain !== "string" || !open.startsWith(plain)) return null;
+    const req = { n_predict: b.max_tokens || -1 };
+    for (const k of SAMPLING_KEYS) if (b[k] !== undefined) req[k] = b[k];
+    // The think's opener (after the prompt) and what closes it and opens the answer, from the template itself
+    let prompt = open.slice(0, cut), think = "";
+    const t = typeof thought === "string" && thought.startsWith(plain) ? thought.indexOf(THINK_MARK) : -1, a = t >= 0 ? thought.indexOf(ANSWER_MARK, t) : -1;
+    if (t > plain.length && a > t) {
+      const opener = thought.slice(plain.length, t), between = thought.slice(t + THINK_MARK.length, a);
+      const stop = (between.match(/^\s*(<\|[^|>]+\|>|<\/[^>]+>)/) || [])[1];
+      if (stop) {
+        think = await rawCompletion({ ...req, prompt: plain + opener, n_predict: thinkCap, stop: [stop, ...thinkStop] }, signal);
+        for (const x of [stop, ...thinkStop]) if (think.endsWith(x)) { think = think.slice(0, -x.length); break; }
+        prompt = plain + opener + think + between;
+      }
+    }
+    return { text: await rawCompletion({ ...req, prompt }, signal), calls: [], thought: think.trim() };
+  }
   // One non-thinking completion, streamed (closing the stream stops the engine at once). Returns the text and any calls.
   async function complete(body, signal) {
+    if (body._answerFirst !== undefined) {
+      const { _answerFirst, _thinkCap = 0, _thinkStop = [], ...b } = body;
+      body = b;
+      if (_answerFirst) {
+        const out = await answerFirst(b, signal, _thinkCap, _thinkStop).catch((e) => { if (signal?.aborted) throw e; console.error(`[run] answer-first request failed, asking normally: ${e.message}`); return null; });
+        if (out) return out;
+      }
+    }
     const r = await fetch(`${llama.url()}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, stream: true }), signal });
     if (!r.ok) { const t = await r.text().catch(() => ""); let m = t; try { const j = JSON.parse(t); m = j.error?.message || j.error || t; } catch {} throw new Error(m || r.statusText); }
     const dec = new TextDecoder(), calls = [];
-    let buf = "", text = "", ended = false;
+    let buf = "", text = "", thought = "", ended = false;
     try {
       for await (const chunk of r.body) {
         if (signal?.aborted) break;
@@ -218,6 +298,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (j.choices?.[0]?.finish_reason) ended = true;
           const d = j.choices?.[0]?.delta;
           if (d?.content) text += d.content;
+          if (d?.reasoning_content) thought += d.reasoning_content;
           for (const tc of d?.tool_calls || []) {
             const i = tc.index ?? calls.length;
             calls[i] = calls[i] || { name: "", arguments: "" };
@@ -228,12 +309,17 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       }
     } catch (e) { if (!(ended && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET"))) throw e; } // Strata ends streams without a final chunk
     if (signal?.aborted) throw new Error("stopped");
-    return { text, calls: calls.filter(Boolean) };
+    return { text, calls: calls.filter(Boolean), thought };
   }
   // Thinking off for these requests, everything else as in the session's own requests (reasoning_effort, for one, is part
   // of some templates' system message, so changing it would make the engine read the whole prompt again).
-  const noThink = (run) => ({ ...(run.think.body || {}), chat_template_kwargs: { ...(run.think.body?.chat_template_kwargs || {}), enable_thinking: false },
-    reasoning_budget_tokens: 0, thinking_budget_tokens: 0 });
+  // eo: the loaded model's template has no thinking switch, only reasoning_effort (effortOnly). A reply with effort Off
+  // sends "none" there, the lowest it has. Hidden turns keep the session's effort (so the prompt, and the cache, match)
+  // and are asked answer-first instead (see answerFirst), since such a model may think even at "none".
+  const offEffort = (body, eo) => (eo ? { ...body, chat_template_kwargs: { ...(body.chat_template_kwargs || {}), reasoning_effort: "none" } } : body);
+  const effortOnly = (model) => templateEffortOnly(model).then((x) => !!x, () => false);
+  const noThink = (run, eo) => ({ ...(run.think.body || {}), chat_template_kwargs: { ...(run.think.body?.chat_template_kwargs || {}), enable_thinking: false },
+    reasoning_budget_tokens: 0, thinking_budget_tokens: 0, _answerFirst: !!eo });
   // The hidden update turn. Runs only on the loadout that is already loaded (it never loads one for this).
   async function memoryPass(run, signal, wantTitle = false) {
     if (!run.memWs || run.deleted) return;
@@ -243,7 +329,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cap = memCap(), cur = memory.text(run.memWs), t0 = Date.now();
     let title = ""; try { title = (await readChat(run.id)).title || ""; } catch {}
     const here = `"${title.slice(0, 60) || "Untitled"}" (${run.id})`;
-    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 2000,
+    const body = { model: run.model, ...samplingFor(run.model), ...(await memoryThink(run)), temperature: 0.2, max_tokens: 2000,
       messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap, here) + (wantTitle ? memory.TITLE_ASK : "") }] };
     if (run.tools.length) body.tools = run.tools; // the same tool list as the session's requests (it's part of the prompt)
     const slot = slotOf.get(run.id);
@@ -258,10 +344,28 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const ops = memory.parseOps(out.text);
     for (const c of out.calls) if (/(^|__)memory$/.test(c.name)) try { const a = JSON.parse(c.arguments || "{}"); ops.push({ op: a.action || a.op, section: a.section, id: a.id, text: a.text }); } catch {}
     const secs = ((Date.now() - t0) / 1000).toFixed(1), said = (out.text.trim() || out.calls.map((c) => `${c.name} ${c.arguments}`).join(" ")).slice(0, 600);
-    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${secs}s)`); memory.log(run.memWs, `update ${run.id} ${secs}s · nothing kept · answer: ${said || "(empty)"}`); return; }
-    const r = await memory.apply(run.memWs, ops, { cap });
-    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · ${r.tokens}/${cap} tokens (${secs}s)`);
-    memory.log(run.memWs, `update ${run.id} ${secs}s · ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · answer: ${said}`);
+    const why = out.thought ? ` · thought: ${out.thought.replace(/\s+/g, " ").slice(0, 600)}` : ""; // the short think on models asked answer-first
+    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${secs}s)`); memory.log(run.memWs, `update ${run.id} ${secs}s · nothing kept · answer: ${said || "(empty)"}${why}`); return; }
+    let r = await memory.apply(run.memWs, ops, { cap });
+    // Lines refused for what they say (over 200 characters, a secret) go back to the model once, like a tool error, instead
+    // of being lost: its answer, then the refusals, then corrected lines. Same prompt plus a little, so the cache holds.
+    let fixed = "";
+    if (r.fixable?.length && !signal?.aborted) {
+      const ask = "[From qqstudio] These lines were not saved:\n" + r.fixable.map((f) => `${f.line}\n  (${f.why})`).join("\n") +
+        `\nAnswer only with these lines corrected (each entry at most ${memory.MAX_ENTRY} characters: shorten it, keep what matters), or with NONE.`;
+      const fixBody = { ...body, _thinkCap: 0, max_tokens: 600, messages: [...body.messages, { role: "assistant", content: out.text }, { role: "user", content: ask }] };
+      let out2 = null;
+      try { release = await ensureEngine(run.model, null, signal); out2 = await complete(fixBody, signal); } catch (e) { if (!signal?.aborted) console.error(`[memory] ${run.id} fix-up: ${e.message}`); } finally { if (release) release(); }
+      const ops2 = out2 ? memory.parseOps(out2.text) : [];
+      if (ops2.length) {
+        const r2 = await memory.apply(run.memWs, ops2, { cap });
+        fixed = ` · corrected: ${r2.done.join(", ") || "no changes"}${r2.refused.length ? ` (still refused: ${r2.refused.join("; ")})` : ""}`;
+        r = { ...r2, done: r.done }; // the first pass's changes; the corrected ones are in `fixed`
+      } else if (out2) fixed = " · corrected: none";
+    }
+    const total = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${fixed ? "" : r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}${fixed} · memory ${r.tokens}/${cap} tokens (${total}s)`);
+    memory.log(run.memWs, `update ${run.id} ${total}s · ${r.done.join(", ") || "no changes"}${r.refused.length && !fixed ? ` · refused: ${r.refused.join("; ")}` : ""}${fixed} · answer: ${said}${why}`);
   }
   // Past 80% of the cap: a request with only the memory merges and removes entries. A result that throws away most of
   // the memory is not applied.
@@ -269,7 +373,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cap = memCap(), cur = memory.text(run.memWs), used = memory.tokens(cur);
     if (!cur || used <= cap * 0.8) return;
     if (!(await loadedNow(run.model))) return;
-    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 3000,
+    const body = { model: run.model, ...samplingFor(run.model), ...(await memoryThink(run)), temperature: 0.2, max_tokens: 3000,
       messages: [{ role: "user", content: memory.TIDY_PROMPT(cur, used, cap) }] };
     const slot = await pickSlot(run, slotOf.get(run.id) ?? -1); // not the session's slot: its cache stays for the next message
     if (slot !== undefined) body.id_slot = slot;
@@ -301,7 +405,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   async function titlePass(run, signal) {
     if (!(await loadedNow(run.model))) return;
     const msgs = run.messages.filter((m) => (m.role === "user" || m.role === "assistant") && !m._hidden).slice(0, 6);
-    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.3, max_tokens: 60,
+    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run, await effortOnly(run.model)), temperature: 0.3, max_tokens: 60,
       messages: [{ role: "user", content: memory.TITLE_PROMPT(transcript(msgs).slice(0, 3000)) }] };
     const slot = await pickSlot(run, slotOf.get(run.id) ?? -1); // not the session's slot: its cache stays for the next message
     if (slot !== undefined) body.id_slot = slot;
@@ -434,15 +538,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (run.memWs) await memoryPass(run, run.abort.signal).catch((e) => { if (!run.stopped) console.error(`[memory] ${run.id}: ${e.message}`); });
       if (run.stopped) return;
       release = await ensureEngine(run.model, null, run.abort.signal);
-      const r = await fetch(`${llama.url()}/v1/chat/completions`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: run.abort.signal,
-        body: JSON.stringify({ model: run.model, stream: false, max_tokens: 3000, temperature: 0.3, ...((s) => (s === undefined ? {} : { id_slot: s }))(await pickSlot(run, run.slot ?? -1)),
-          chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0,
-          messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Summarize this conversation so far:\n\n${text}` }] }),
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error?.message || j.error || r.statusText);
-      summary = (j.choices?.[0]?.message?.content || "").trim();
+      summary = (await complete({ model: run.model, max_tokens: 3000, temperature: 0.3, ...((s) => (s === undefined ? {} : { id_slot: s }))(await pickSlot(run, run.slot ?? -1)),
+        chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0, _answerFirst: await effortOnly(run.model),
+        messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Summarize this conversation so far:\n\n${text}` }] }, run.abort.signal)).text.trim();
     } catch (e) {
       if (!run.stopped) emit(run, { type: "notice", text: "Compaction failed: " + e.message });
       return;
@@ -472,8 +570,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const t0 = Date.now();
     const cur = run.cur = { model, content: "", reasoning: "", phase: "Sending request", pct: null, gen: null, t0, phaseAt: t0 }; // gen: {n, t0, tool} generated tokens this step; t0/phaseAt/think0/think1: for a page that attaches mid-step
     let think0 = null, think1 = null, timings = null, failed = false, retry = false, gotChunk = false, lastSave = Date.now();
-    let looped = false, runaway = null, finish = null, ended = false, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
+    let interrupted = false, looped = false, runaway = null, finish = null, ended = false, checkedAt = 0, usage = null, ppTotal = 0, changed = null, cached = null;
     const calls = [];
+    run.stepping = true; // a message sent as "interrupt" may cut this step (not a tool run or a compaction)
     emit(run, { type: "step", model });
     const phase = (text, pct = null) => {
       if (cur.phase === text && cur.pct === pct) return;
@@ -490,7 +589,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (!polling) break;
           if (st === "failed") phase("Model failed to load (Settings > Loadouts > Log)");
           else if (st === "loading") phase("Loading model");
-          else if (sent && !gotChunk) phase("Reading prompt");
+          // An engine that serves one request at a time (Strata) takes this one only after a sub-agent's step ends
+          else if (sent && !gotChunk) phase(oneAtATime(model) && [...run.subs.values()].some((s) => s.status === "running" && s.run?.cur) ? "Waiting for sub-agent to accept request update" : "Reading prompt");
         } catch {}
         await sleep(1000);
       }
@@ -505,7 +605,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       sent = true;
       const body = {
         model, messages: [{ role: "system", content: run.system }, ...(await modelMessages(run))],
-        return_progress: true, stream_options: { include_usage: true }, ...samplingFor(model), ...run.think.body, stream: true,
+        return_progress: true, stream_options: { include_usage: true }, ...samplingFor(model),
+        ...(run.think.body?.chat_template_kwargs?.enable_thinking === false ? offEffort(run.think.body, await effortOnly(model)) : run.think.body), stream: true,
         max_tokens: run.maxTokens,
       };
       if (run.tools.length) body.tools = run.tools;
@@ -520,11 +621,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       let buf = "";
       run.stream = r.body; // Stop cancels it too: aborting the fetch alone doesn't end a body that's already streaming on older Node 18
       for await (const chunk of r.body) {
-        if (run.stopped || run.loopStop) break; // leaving the loop cancels the stream, which closes the connection, so llama-server stops generating
+        if (run.stopped || run.loopStop || run.interrupt) break; // leaving the loop cancels the stream, which closes the connection, so llama-server stops generating
         buf += dec.decode(chunk, { stream: true });
         const lines = buf.split("\n"); buf = lines.pop();
         for (const line of lines) {
-          if (run.loopStop) break; // Stop on the loop warning: drop the rest of this chunk too
+          if (run.loopStop || run.interrupt) break; // Stop on the loop warning or an interrupt: drop the rest of this chunk too
           if (!line.startsWith("data:")) continue;
           const data = line.slice(5).trim();
           if (data === "[DONE]") { ended = true; continue; }
@@ -549,7 +650,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const ev = { type: "delta" };
           if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
-            g.total = timings?.predicted_n > g.total ? timings.predicted_n : g.total + chunkTokens(d);
+            if (timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.exactRun = true; } else g.total += chunkTokens(d); // exactRun: the engine counts as it goes
             if (d.reasoning_content && !d.content && !d.tool_calls) g.thinking = true;
             else if (g.thinking) { g.thinking = false; g.base = g.total - 1; g.t0 = Date.now(); } // count and time the reply from where thinking ended
             g.n = g.total - g.base;
@@ -605,25 +706,28 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       }
     } catch (e) {
       if (run.loopStop && !run.stopped) looped = true; // Stop on the loop warning cut the stream
+      if (run.interrupt && !run.stopped && !looped) interrupted = true; // a message sent as "interrupt" cut it
       // The reply already finished and the server then dropped the connection without ending the stream (Strata's
       // server does this): Node's fetch reports "terminated", but nothing is missing.
-      if ((ended || finish) && !run.stopped && !looped && !runaway && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET")) e = null;
+      if ((ended || finish) && !run.stopped && !looped && !interrupted && !runaway && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET")) e = null;
       if (!e) {} else
       // llama-server couldn't read the model's tool call (e.g. "does not match the expected peg-native format": a stray
       // space or token in the template's tool-call syntax, common with small or heavily quantized models). Sampling
       // differs each time, so the same step is asked again, up to twice in a row, before it counts as a failure.
       if (runaway && !run.stopped) e = null; else // the runaway guard ended the stream itself
-      if (!run.stopped && !looped && /does not match the expected .*format|failed to parse/i.test(e.message) && (run.unreadable || 0) < 2) {
+      if (!run.stopped && !looped && !interrupted && /does not match the expected .*format|failed to parse/i.test(e.message) && (run.unreadable || 0) < 2) {
         retry = true; run.unreadable = (run.unreadable || 0) + 1;
         console.log(`[run] ${run.id} unreadable tool call (${e.message}); asking again (${run.unreadable} of 2)`);
         emit(run, { type: "retry", text: `The model's tool call came out malformed, so it was asked again (${run.unreadable} of 2).` });
-      } else if (!run.stopped && !looped) {
+      } else if (!run.stopped && !looped && !interrupted) {
         failed = true;
         run.endReason = "an error: " + (e.cause?.code === "ECONNREFUSED" ? "llama-server couldn't be reached" : e.message); // a sub-agent's report says so
         emit(run, { type: "failed", text: (cur.content ? cur.content + "\n\n" : "") + "Error: " + (e.cause?.code === "ECONNREFUSED" ? `Cannot reach llama-server at ${llama.url()}` : e.message) });
       }
     } finally {
       if (run.loopStop && !run.stopped) looped = true; // also when the loop above ended by itself (no error thrown)
+      if (run.interrupt && !run.stopped && !looped) interrupted = true; // also when the loop above ended by itself
+      run.stepping = false;
       polling = false;
       run.abort = null; run.stream = null;
       if (release) release();
@@ -646,17 +750,24 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const g = cur.gen, replied = g && !g.thinking;
     // The engine's own count for the step when it gives one (exact, also when the running count was too high or low)
     const exact = timings?.predicted_n || usage?.completion || 0;
-    if (g && exact > 0) { g.total = exact; g.n = Math.max(0, g.total - g.base); }
+    if (g && exact > 0) {
+      // After thinking, the thinking part of the running count is an estimate (a long chunk counts by its length), so the exact
+      // total minus it can be far off: a step with 2,600 thinking tokens showed "0 tok" for its reply. Unless the engine counted
+      // as it went, the reply keeps its own running count; the step's total is still the exact one.
+      const est = g.n;
+      g.total = exact;
+      g.n = g.base > 0 && !g.exactRun ? est : Math.max(0, g.total - g.base);
+    }
     run.genDone += g ? g.total : 0; // the whole reply's count (all steps, thinking included) for the footer
     const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
     const meta = `${model} · ${secs}s` +
       (replied ? ` · ${g.n} tok` + (timings?.predicted_per_second ? ` @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") : "") +
-      (run.stopped ? " · stopped" : looped ? " · stopped: repeating" : runaway ? " · stopped: repeated tool calls" : finish === "length" ? " · cut off (length limit)" : "");
+      (run.stopped ? " · stopped" : interrupted ? " · interrupted" : looped ? " · stopped: repeating" : runaway ? " · stopped: repeated tool calls" : finish === "length" ? " · cut off (length limit)" : "");
     const thinkSecs = think0 === null ? null : +(((think1 ?? Date.now()) - think0) / 1000).toFixed(1);
     const tb = run.think.budget, note = (run.think.message || "").trim();
     const budgetHit = !!(cur.reasoning && tb > 0 && (cur.reasoning.length / 3.6 >= tb * 0.9 || (note && cur.reasoning.trim().endsWith(note))));
     if (!retry && !failed) run.unreadable = 0;
-    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped ? [] : toolCalls, usage, meta, failed, retry, thinkSecs, budgetHit, looped, runaway, t0 };
+    return { content: cur.content, reasoning: cur.reasoning, toolCalls: looped || interrupted ? [] : toolCalls, usage, meta, failed, retry, thinkSecs, budgetHit, looped, interrupted, runaway, t0 };
   }
 
   // The instructions: the page's system prompt plus the compact list of tools on request (minus those with full details).
@@ -857,7 +968,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     s.status = "running"; s.t0 = Date.now();
     try { s.run = await start(s.body, { parentRun: run }); }
     catch (e) { s.status = "halted"; s.reason = "it couldn't start: " + e.message; s.end = Date.now(); relay(s); console.error(`[run] ${run.id} sub-agent ${s.alias}: ${e.message}`); return; }
-    for (const text of s.notes) steer(s.run, { text: `[Message from the main assistant] ${text}` });
+    for (const text of s.notes) steer(s.run, { text: `[Message from the main assistant] ${text}`, agent: true });
     relay(s);
     markTask(run, s.title, "in_progress");
     console.log(`[run] ${run.id} started sub-agent ${s.alias} (${s.id}): ${s.title}`);
@@ -944,7 +1055,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (name === "message_agent") {
       const text = String(args.text || args.message || "").trim();
       if (!text) return { status: "bad arguments", text: "ERROR: message_agent needs text." };
-      steer(s.run, { text: `[Message from the main assistant] ${text}` });
+      steer(s.run, { text: `[Message from the main assistant] ${text}`, agent: true, mode: "interrupt" }); // a correction shouldn't wait out a long think
       return { status: "done", text: `Sent to ${s.alias}; it sees the message after its current step.` };
     }
     // stop_agent. Not while it waits for the user's approval: the user answers that (or stops it), not the main assistant.
@@ -1114,11 +1225,48 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   }
 
   // ---------- steering ----------
+  const MODES = ["steer", "interrupt", "queue"];
   // Messages sent while a reply runs wait ("pending") until the current step is done, then join the conversation as one
   // user message before the next model call, never between a tool call and its results.
+  // Modes: "steer" (after the current step), "interrupt" (cuts the step in flight, then the same as steer) and "queue"
+  // (after the whole reply is done). Queued messages wait in run.queue; steers and interrupts in run.pending.
+  function releaseQueue(run) {
+    if (!run.queue.length) return;
+    for (const i of run.queue.splice(0)) { i.mode = "steer"; run.pending.push(i); } // applyPending joins them into one message
+  }
+  // Cuts the step in flight so the message is seen at once. Between steps, during a tool run or a compaction, and while the
+  // reply waits for sub-agents, it acts as a steer (the loop applies it at the next check; a waiting reply is woken).
+  function interruptNow(run) {
+    if (run.approval) run.approval.resolve(false); // waiting for an approval: it's denied and the message goes in
+    if (run.question) run.question.resolve(null);  // waiting for an answer: the question is dropped
+    if (run.stepping && !run.stopped) {
+      run.interrupt = true;
+      if (run.loopWarn) { run.loopWarn = null; emit(run, { type: "loopwarn", on: false }); }
+      if (run.abort) run.abort.abort();
+      if (run.stream) try { run.stream.cancel().catch(() => {}); } catch {} // a locked (being read) body throws: the stream loop's own check ends it
+    }
+    if (run.wake) run.wake();
+  }
+  // An interrupt was cancelled or changed before the stream was cut: nothing should cut it any more.
+  function interruptCheck(run) { if (run.interrupt && !run.pending.some((i) => i.mode === "interrupt")) run.interrupt = false; }
+  // Change a pending message's mode or cancel it: {id, action: "steer" | "queue" | "interrupt" | "cancel"}.
+  function pendingAction(run, b) {
+    const id = String(b.id || ""), act = String(b.action || "");
+    const from = run.pending.find((i) => i.id === id && !i.report) || run.queue.find((i) => i.id === id);
+    if (!from) throw Object.assign(new Error("No such pending message"), { status: 409 }); // it was just applied
+    if (from.agent) throw Object.assign(new Error("Messages from the main assistant can't be changed"), { status: 403 });
+    run.pending = run.pending.filter((i) => i !== from); run.queue = run.queue.filter((i) => i !== from);
+    if (act === "cancel") { emit(run, { type: "pending_cancel", id }); interruptCheck(run); return; }
+    if (!MODES.includes(act)) { (from.mode === "queue" ? run.queue : run.pending).push(from); throw Object.assign(new Error("Unknown action"), { status: 400 }); }
+    from.mode = act;
+    (act === "queue" ? run.queue : run.pending).push(from);
+    emit(run, { type: "pending_mode", id, mode: act });
+    if (act === "interrupt") interruptNow(run); else { interruptCheck(run); if (act === "steer" && run.wake) run.wake(); }
+  }
+
   async function applyPending(run, leftover = false) {
     if (!run.pending.length) return false;
-    const all = run.pending.splice(0), items = all.filter((i) => !i.report);
+    const all = run.pending.splice(0), items = all.filter((i) => !i.report).sort((a, b) => (a.seq || 0) - (b.seq || 0));
     for (const r of all.filter((i) => i.report)) { // a sub-agent's report: its own message, shown as a report card
       const m = { role: "user", content: r.text, _agentReport: r.report };
       run.messages.push(m);
@@ -1138,10 +1286,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const text = String(b.text || "").trim();
     const images = (Array.isArray(b.images) ? b.images : []).filter((i) => i && typeof i.src === "string").map((i) => ({ src: i.src, full: i.full || i.src }));
     if (!text && !images.length) throw Object.assign(new Error("Empty message"), { status: 400 });
-    const item = { id: String(b.id || Date.now().toString(36)), text, images };
-    run.pending.push(item);
+    // agent: from the main assistant to its sub-agent. message_agent interrupts (notes for one that hadn't started join as a
+    // steer); only the user's own messages can be changed.
+    const mode = b.agent ? (b.mode === "interrupt" ? "interrupt" : "steer") : MODES.includes(b.mode) ? b.mode : "steer";
+    const item = { id: String(b.id || Date.now().toString(36)), text, images, mode, seq: ++run.msgSeq, ...(b.agent ? { agent: true } : {}) }; // seq: they join in the order they were sent, whatever mode each was changed to since
+    (mode === "queue" ? run.queue : run.pending).push(item);
     emit(run, { type: "steer_pending", ...item });
-    if (run.wake) run.wake(); // waiting for sub-agents: a message wakes the reply up
+    if (mode === "interrupt") interruptNow(run);
+    else if (mode === "steer" && run.wake) run.wake(); // waiting for sub-agents: a message wakes the reply up (a queued one waits for the end)
     return item;
   }
 
@@ -1162,7 +1314,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         const r = await step(run);
         run.cur = null;
         if (r.retry) continue; // nothing kept from the unreadable attempt; the same step again
+        run.interrupt = false; // an interrupt only cuts the step it arrived in; its message joins at the top of the loop
         // A step with only thinking (e.g. stopped mid-thought) is still saved, so the page closes it.
+        if (r.interrupted && !r.content && !r.reasoning) continue; // cut before anything came: just the message, then the step again
         if (r.failed || (!r.content && !r.toolCalls.length && !r.reasoning)) break;
         const msg = { role: "assistant", content: r.content, _meta: r.meta, _t0: r.t0, _at: Date.now() }; // step start/end: "Reasoned for 42s"
         if (r.usage) { msg._usage = { ...r.usage, model: run.model }; msg._ctxFrom = lastSummary(run.messages); } // exact counts from llama-server (context meter, compaction)
@@ -1179,6 +1333,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         if (!r.toolCalls.length) {
           if (run.pending.length && !run.stopped) continue; // a steer arrived as it finished: keep going
           if (liveSubs(run) && !run.stopped) { if (await idle(run)) continue; } // sub-agents still working: wait for a report or a message
+          if (run.queue.length && !run.stopped && !liveSubs(run)) { releaseQueue(run); continue; } // the reply is complete: queued messages go in now, as one message
           if (!run.stopped && !liveSubs(run) && await todoNudge(run)) continue; // really ending: is its task list up to date?
           break;
         }
@@ -1227,7 +1382,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       // Stopped with sub-agents still winding down (Stop stops them too): give them a moment, so their reports and the
       // chips' final state land in this reply instead of the chips staying "running" on the page.
       for (let i = 0; i < 50 && activeSubs(run); i++) await sleep(100);
-      if (run.pending.length && !run.deleted) await applyPending(run, true).catch(() => {}); // stopped with steers pending: the page starts a new reply with them
+      if (run.queue.length && !run.stopped && !run.deleted) releaseQueue(run); // ended without finishing (an error, a halt): queued messages still go in
+      if (run.pending.length && !run.deleted) await applyPending(run, true).catch(() => {}); // pending messages (and sub-agent reports) left at the end: the page starts a new reply with them
       // Stopped by the user: its task list goes too (it described work that's no longer happening).
       const cleared = run.stopped && !run.parentRun && !run.deleted ? { todo: [] } : {};
       if (cleared.todo) emit(run, { type: "todo", items: [] });
@@ -1244,6 +1400,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   function stop(run) {
     if (!run) return;
     run.stopped = true;
+    for (const i of [...run.pending.filter((x) => !x.report), ...run.queue]) emit(run, { type: "pending_cancel", id: i.id, stopped: true }); // Stop clears every pending message
+    run.pending = run.pending.filter((x) => x.report); run.queue = [];
     if (run.abort) run.abort.abort();
     if (run.stream) try { run.stream.cancel().catch(() => {}); } catch {} // a locked (being read) body throws: the loop's own check ends it
     if (run.approval) run.approval.resolve(false);
@@ -1328,7 +1486,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       t0: Date.now(), genDone: 0, // for "N tokens in 1m 2s" under the reply
       messages: (chat.messages || []).filter((m) => !m._partial),
       startLen: (chat.messages || []).filter((m) => !m._partial).length,
-      clients: new Set(), pending: [], cur: null, tool: null, approval: null, abort: null, stopped: false, deleted: false,
+      clients: new Set(), pending: [], queue: [], msgSeq: 0, interrupt: false, stepping: false, cur: null, tool: null, approval: null, abort: null, stopped: false, deleted: false,
       loopWarn: null, loopIgnored: false, loopStop: false, // the repeating warning: up, ignored for this reply, stopped
       body, parentRun: opts.parentRun || null, subs: new Map(), agentSeq: 0, wake: null, // sub-agents
     };
@@ -1356,7 +1514,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0), sub: subTokens(run) };
     const question = run.question && { id: run.question.id, tc: run.question.tc, questions: run.question.questions };
     const agents = [...run.subs.values()].filter((s) => s.status === "running" || s.status === "pending").map(agentInfo);
-    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: run.pending.filter((p) => !p.report), stat, question, agents, waiting: run.waitWhy || !!run.wake, loopWarn: run.loopWarn })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: "snapshot", messages: run.messages, cur, tool: run.tool, pending: [...run.pending.filter((p) => !p.report), ...run.queue], stat, question, agents, waiting: run.waitWhy || !!run.wake, loopWarn: run.loopWarn })}\n\n`);
     run.clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15000);
     req.on("close", () => { clearInterval(ping); run.clients.delete(res); });
@@ -1365,7 +1523,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   // /api/runs routes.
   async function handle(req, res, { readBody, sendJson }) {
     const u = new URL(req.url, "http://x");
-    const m = u.pathname.match(/^\/api\/runs(?:\/([^/]+)(?:\/(events|stop|approve|steer|answer|loop))?)?$/);
+    const m = u.pathname.match(/^\/api\/runs(?:\/([^/]+)(?:\/(events|stop|approve|steer|pending|answer|loop))?)?$/);
     if (!m) return sendJson(res, 404, { error: "Not found" });
     const [, id, action] = m;
     try {
@@ -1376,7 +1534,13 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (id && action === "steer" && req.method === "POST") {
         const run = runs.get(id);
         if (!run || run.stopped) return sendJson(res, 409, { error: "No reply in progress" }); // the page sends it as a normal message
-        return sendJson(res, 200, { ok: true, id: steer(run, JSON.parse(await readBody(req))).id });
+        return sendJson(res, 200, { ok: true, id: steer(run, { ...JSON.parse(await readBody(req)), agent: false }).id }); // agent: only the main assistant's own messages
+      }
+      if (id && action === "pending" && req.method === "POST") { // change a pending message's mode or cancel it: {id, action}
+        const run = runs.get(id);
+        if (!run || run.stopped) return sendJson(res, 409, { error: "No reply in progress" });
+        pendingAction(run, JSON.parse(await readBody(req)));
+        return sendJson(res, 200, { ok: true });
       }
       if (id && action === "answer" && req.method === "POST") { // {id, answers: [{choices: [labels], other}]} or {id, text}
         const b = JSON.parse(await readBody(req)), run = runs.get(id);

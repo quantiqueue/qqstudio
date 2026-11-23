@@ -371,7 +371,7 @@ function updateChat(file, fn) {
 }
 // A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
-const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
@@ -647,14 +647,34 @@ function strataCatalogNow() {
 // Strata answers /props in llama-server's shape too (the context it actually fitted, its batch slots); its loadout's
 // settings stand in only while it can't answer.
 const strataSetting = (model, key) => { const l = loadouts.get(model); return l && loadouts.isStrata(l.engine) ? Number(l.load?.[key]) || null : undefined; };
+const ctxPick = (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx;
 async function nCtx(model) {
-  const n = await modelProps(model, (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx);
+  const n = await modelProps(model, ctxPick);
   return n || strataSetting(model, "ctx-size") || null;
 }
 // Parallel slots of the loaded model (llama-server --parallel); each keeps its own prompt cache.
 async function nSlots(model) { return (await modelProps(model, (j) => j.total_slots)) || strataSetting(model, "parallel") || null; }
+// Templates that turn thinking off only through reasoning_effort: they read it and have no enable_thinking switch
+// (Inkling 2, where a missing effort means high). Read from /props' chat_template once per loaded process.
+// templateInfo also says which effort names the template lists ("minimal" etc.), so a value it would refuse is never sent.
+const templateKnown = new Map(); // "<loadout>|<sig>" -> {effortOnly, efforts}
+async function templateInfo(model) {
+  const key = model + "|" + (llama.current().sig || "");
+  if (templateKnown.has(key)) return templateKnown.get(key);
+  const t = await modelProps(model, (j) => (typeof j.chat_template === "string" && j.chat_template ? j.chat_template : null));
+  if (!t) return { effortOnly: false, efforts: [] };
+  const info = { effortOnly: /reasoning_effort/.test(t) && !/enable_thinking/.test(t),
+    efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].filter((e) => t.includes(`"${e}"`)) };
+  templateKnown.set(key, info);
+  return info;
+}
+async function templateEffortOnly(model) { return (await templateInfo(model)).effortOnly; }
+// For the page's context meter: the running engine's own figure (exact), or, while the loadout isn't loaded, the context
+// size in its settings (any engine; blank means the model's trained context, unknown until it loads).
 async function handleCtx(req, res) {
-  sendJson(res, 200, { n_ctx: await nCtx(new URL(req.url, "http://x").searchParams.get("model") || "") });
+  const model = new URL(req.url, "http://x").searchParams.get("model") || "";
+  const live = await modelProps(model, ctxPick), l = loadouts.get(model);
+  sendJson(res, 200, { n_ctx: live || (l && Number(l.load?.["ctx-size"])) || null, exact: !!live });
 }
 
 // ---- MCP servers ----
@@ -688,7 +708,7 @@ const lazyInfo = () => ({ lazyAt: lazyTools.threshold(getConfig()), serverTokens
 const THINK_DEFAULTS = { budgets: { low: 1024, medium: 4096, high: 16384 }, message: "", effort: "medium", budget: "unlimited" };
 const EFFORTS = ["default", "off", "low", "medium", "high", "max"]; // "default" is shown as Auto (nothing sent)
 const BUDGETS = ["auto", "off", "low", "medium", "high", "unlimited"]; // low/medium/high: the caps in budgets
-const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000, memoryTokens: 2000 }; // memoryTokens: workspace memory cap
+const CONFIG_DEFAULTS = { modelsFolder: DATA.models, replyTokens: 16384, compactAt: 90, maskSecrets: true, lazyToolsAt: 3000, memoryTokens: 2000, midTurn: "steer" }; // memoryTokens: workspace memory cap; midTurn: what a message sent during a reply does (steer, queue or interrupt)
 const AGENT_DEFAULTS = { maxActive: 1, reportWords: 300, instructions: "" }; // Settings > Agents // replyTokens: output cap per model call (0 = none); compactAt: % of the context window that triggers compaction (0 = off)
 function getConfig() {
   const c = DATA.readJson(DATA.config, {});
@@ -713,6 +733,7 @@ async function handleConfig(req, res) {
       cur.agents = a;
     }
     if ("compactAt" in patch) { const v = patch.compactAt === "" || patch.compactAt == null ? 0 : Math.round(Number(patch.compactAt)); if (Number.isFinite(v) && v >= 0 && v <= 99) cur.compactAt = v; }
+    if (["steer", "queue", "interrupt"].includes(patch.midTurn)) cur.midTurn = patch.midTurn;
     if ("memoryTokens" in patch) { const v = Math.round(Number(patch.memoryTokens)); if (Number.isFinite(v) && v >= 200 && v <= 20000) cur.memoryTokens = v; }
     if ("lazyToolsAt" in patch) { const v = patch.lazyToolsAt === "" || patch.lazyToolsAt == null ? 0 : Math.round(Number(patch.lazyToolsAt)); if (Number.isFinite(v) && v >= 0) cur.lazyToolsAt = v; }
     if ("replyTokens" in patch) { const v = patch.replyTokens === "" || patch.replyTokens == null ? 0 : Math.round(Number(patch.replyTokens)); if (Number.isFinite(v) && v >= 0) cur.replyTokens = v; }
@@ -872,7 +893,7 @@ async function handleHf(req, res) {
       return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; return t ? { ...g, strata: t } : g; }) });
     }
     if (req.method === "GET" && u.pathname === "/api/hf/downloads") return sendJson(res, 200, { jobs: hf.list() });
-    if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: hf.startDownload(JSON.parse(await readBody(req))) });
+    if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: await hf.startDownload(JSON.parse(await readBody(req))) });
     if (req.method === "POST" && u.pathname === "/api/hf/cancel") { hf.cancel(JSON.parse(await readBody(req)).id); return sendJson(res, 200, { ok: true }); }
     if (req.method === "POST" && u.pathname === "/api/hf/clear") { hf.clearFinished(); return sendJson(res, 200, { ok: true }); }
     if (req.method === "GET" && u.pathname === "/api/hf/presets") return sendJson(res, 200, presets.info(u.searchParams.get("folder")));
