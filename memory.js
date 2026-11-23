@@ -102,7 +102,7 @@ function apply(ws, ops, { cap = DEFAULT_CAP, dry = false } = {}) {
   return job;
 }
 function applyNow(ws, ops, cap, dry) { // dry: work out the result without writing it
-  const m = read(ws), done = [], refused = [];
+  const m = read(ws), done = [], refused = [], fixable = []; // fixable: lines refused for what they say (too long, a secret), in full, for the model to correct
   const find = (id) => { for (const [s, list] of m.sections) { const i = list.findIndex((x) => x.id === String(id || "").trim().replace(/^\[|\]$/g, "")); if (i >= 0) return [s, list, i]; } return null; };
   for (const op of ops || []) {
     const kind = String(op?.op || op?.action || "").toLowerCase(), t = clean(op?.text);
@@ -115,11 +115,11 @@ function applyNow(ws, ops, cap, dry) { // dry: work out the result without writi
     if (kind === "replace" || kind === "update" || kind === "edit") {
       const f = find(op.id);
       if (!f) { refused.push(`${op.id}: no such entry`); continue; }
-      if (why) { refused.push(`${op.id}: ${why}`); continue; }
+      if (why) { refused.push(`${op.id}: ${why}`); if (t) fixable.push({ line: `REPLACE ${op.id}: ${t}`, why }); continue; }
       f[1][f[2]].text = t; done.push(`replaced ${f[1][f[2]].id}`); continue;
     }
     if (kind !== "add") { refused.push(`unknown change "${kind}"`); continue; }
-    if (why) { refused.push(`"${t.slice(0, 40)}": ${why}`); continue; }
+    if (why) { refused.push(`"${t.slice(0, 40)}": ${why}`); if (t) fixable.push({ line: `ADD ${sectionName(op.section)}: ${t}`, why }); continue; }
     if (entries(m).some((x) => x.text.toLowerCase() === t.toLowerCase())) { refused.push(`"${t.slice(0, 40)}": already saved`); continue; }
     if (tokens(text(ws, m)) + tokens(t) > cap) { refused.push(`"${t.slice(0, 40)}": memory is full (${cap} tokens); merge or remove entries first`); continue; }
     const s = sectionName(op.section);
@@ -134,7 +134,7 @@ function applyNow(ws, ops, cap, dry) { // dry: work out the result without writi
     fs.writeFileSync(tmp, render(m), "utf8");
     fs.renameSync(tmp, fileOf(ws));
   }
-  return { done, refused, tokens: tokens(text(ws, m)), cap };
+  return { done, refused, fixable, tokens: tokens(text(ws, m)), cap };
 }
 
 // The model's answer to an update request: lines "ADD <section>: text", "REPLACE <id>: text", "REMOVE <id>", or NONE.

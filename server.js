@@ -371,7 +371,7 @@ function updateChat(file, fn) {
 }
 // A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
-const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, ensureEngine, newSession: newSubSession,
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
@@ -654,6 +654,21 @@ async function nCtx(model) {
 }
 // Parallel slots of the loaded model (llama-server --parallel); each keeps its own prompt cache.
 async function nSlots(model) { return (await modelProps(model, (j) => j.total_slots)) || strataSetting(model, "parallel") || null; }
+// Templates that turn thinking off only through reasoning_effort: they read it and have no enable_thinking switch
+// (Inkling 2, where a missing effort means high). Read from /props' chat_template once per loaded process.
+// templateInfo also says which effort names the template lists ("minimal" etc.), so a value it would refuse is never sent.
+const templateKnown = new Map(); // "<loadout>|<sig>" -> {effortOnly, efforts}
+async function templateInfo(model) {
+  const key = model + "|" + (llama.current().sig || "");
+  if (templateKnown.has(key)) return templateKnown.get(key);
+  const t = await modelProps(model, (j) => (typeof j.chat_template === "string" && j.chat_template ? j.chat_template : null));
+  if (!t) return { effortOnly: false, efforts: [] };
+  const info = { effortOnly: /reasoning_effort/.test(t) && !/enable_thinking/.test(t),
+    efforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"].filter((e) => t.includes(`"${e}"`)) };
+  templateKnown.set(key, info);
+  return info;
+}
+async function templateEffortOnly(model) { return (await templateInfo(model)).effortOnly; }
 // For the page's context meter: the running engine's own figure (exact), or, while the loadout isn't loaded, the context
 // size in its settings (any engine; blank means the model's trained context, unknown until it loads).
 async function handleCtx(req, res) {
@@ -878,7 +893,7 @@ async function handleHf(req, res) {
       return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; return t ? { ...g, strata: t } : g; }) });
     }
     if (req.method === "GET" && u.pathname === "/api/hf/downloads") return sendJson(res, 200, { jobs: hf.list() });
-    if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: hf.startDownload(JSON.parse(await readBody(req))) });
+    if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: await hf.startDownload(JSON.parse(await readBody(req))) });
     if (req.method === "POST" && u.pathname === "/api/hf/cancel") { hf.cancel(JSON.parse(await readBody(req)).id); return sendJson(res, 200, { ok: true }); }
     if (req.method === "POST" && u.pathname === "/api/hf/clear") { hf.clearFinished(); return sendJson(res, 200, { ok: true }); }
     if (req.method === "GET" && u.pathname === "/api/hf/presets") return sendJson(res, 200, presets.info(u.searchParams.get("folder")));

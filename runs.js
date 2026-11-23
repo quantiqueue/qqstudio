@@ -69,7 +69,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -198,12 +198,92 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   const memJobs = new Map(); // chatId -> AbortController of an update running after a reply
   // A real request is about to go to the engine: updates after replies give way (they run again after the next reply).
   function yieldMemory() { for (const c of memJobs.values()) c.abort(); }
+  // Answer first: for templates with no way to turn thinking off (only a reasoning_effort hint, which Inkling 2 thinks
+  // through even at "none": a memory turn ran to its 2,000-token cap with no answer), the prompt is rendered by the
+  // engine with the assistant's turn already open as text, and sent raw. Same rendering as the session's requests, so
+  // the slot's cache still matches. null: not possible here (images, or a template that renders differently), use chat.
+  // thinkCap > 0: first a short think, opened and closed with the template's own markers (found by rendering a message
+  // with a marked reasoning part), stopped at the cap or when the model closes it. With no thinking at all, Inkling 2
+  // Mini's memory answers flipped between NONE and ADD on small prompt changes; with up to 256 tokens they were right.
+  // Memory updates and tidy-ups on such models: this reasoning_effort through the normal chat request, if the template lists
+  // it (the model then thinks as it likes, up to the turn's cap). "" = the answer-first route below (MEMORY_THINK).
+  const MEMORY_EFFORT = ""; // "minimal" tried on Inkling 2 Mini (2026-11-23): 101–137 s, once 2,000 tokens of thinking and no answer; the session re-read 10k tokens
+  async function memoryThink(run) {
+    const ti = await templateInfo(run.model).catch(() => ({ effortOnly: false, efforts: [] }));
+    if (!ti.effortOnly) return noThink(run, false);
+    if (MEMORY_EFFORT && ti.efforts.includes(MEMORY_EFFORT)) {
+      const b = noThink(run, false);
+      return { ...b, chat_template_kwargs: { ...b.chat_template_kwargs, reasoning_effort: MEMORY_EFFORT } };
+    }
+    return { ...noThink(run, true), _thinkCap: MEMORY_THINK, _thinkStop: MEMORY_ANSWER };
+  }
+  const MEMORY_THINK = 256; // memory updates and tidy-ups on such models: tokens of thinking before the answer (titles and compaction: none)
+  // The think ends where the model starts writing the answer lines in it (Inkling 2 Mini drafts them there, then wrote them
+  // again as the answer: ~10 s of a 25 s update); the answer step writes them once.
+  const MEMORY_ANSWER = ["ADD ", "REPLACE ", "REMOVE ", "NONE"];
+  const ANSWER_MARK = "\u0001qq-answer\u0001", THINK_MARK = "\u0001qq-think\u0001";
+  const SAMPLING_KEYS = ["temperature", "top_k", "top_p", "min_p", "presence_penalty", "frequency_penalty", "repeat_penalty", "seed", "id_slot"];
+  async function rawCompletion(req, signal) {
+    const r = await fetch(`${llama.url()}/completion`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...req, cache_prompt: true, stream: true }), signal });
+    if (!r.ok) throw new Error(`completion: HTTP ${r.status}`);
+    const dec = new TextDecoder();
+    let buf = "", text = "";
+    for await (const chunk of r.body) {
+      if (signal?.aborted) break;
+      buf += dec.decode(chunk, { stream: true });
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        let j; try { j = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+        if (j.content) text += j.content;
+      }
+    }
+    if (signal?.aborted) throw new Error("stopped");
+    return text;
+  }
+  async function answerFirst(b, signal, thinkCap = 0, thinkStop = []) {
+    if (b.messages.some((m) => Array.isArray(m.content) && m.content.some((x) => x && x.type && !/^(input_)?text$/.test(x.type)))) return null;
+    const render = async (messages) => {
+      const r = await fetch(`${llama.url()}/apply-template`, { method: "POST", headers: { "Content-Type": "application/json" }, signal,
+        body: JSON.stringify({ messages, ...(b.tools ? { tools: b.tools } : {}), ...(b.chat_template_kwargs ? { chat_template_kwargs: b.chat_template_kwargs } : {}) }) });
+      if (!r.ok) throw new Error(`apply-template: HTTP ${r.status}`);
+      return (await r.json()).prompt;
+    };
+    const [plain, open, thought] = await Promise.all([render(b.messages), render([...b.messages, { role: "assistant", content: ANSWER_MARK }]),
+      thinkCap > 0 ? render([...b.messages, { role: "assistant", reasoning_content: THINK_MARK, content: ANSWER_MARK }]).catch(() => null) : null]);
+    const cut = typeof open === "string" ? open.indexOf(ANSWER_MARK) : -1;
+    if (cut < 0 || typeof plain !== "string" || !open.startsWith(plain)) return null;
+    const req = { n_predict: b.max_tokens || -1 };
+    for (const k of SAMPLING_KEYS) if (b[k] !== undefined) req[k] = b[k];
+    // The think's opener (after the prompt) and what closes it and opens the answer, from the template itself
+    let prompt = open.slice(0, cut), think = "";
+    const t = typeof thought === "string" && thought.startsWith(plain) ? thought.indexOf(THINK_MARK) : -1, a = t >= 0 ? thought.indexOf(ANSWER_MARK, t) : -1;
+    if (t > plain.length && a > t) {
+      const opener = thought.slice(plain.length, t), between = thought.slice(t + THINK_MARK.length, a);
+      const stop = (between.match(/^\s*(<\|[^|>]+\|>|<\/[^>]+>)/) || [])[1];
+      if (stop) {
+        think = await rawCompletion({ ...req, prompt: plain + opener, n_predict: thinkCap, stop: [stop, ...thinkStop] }, signal);
+        for (const x of [stop, ...thinkStop]) if (think.endsWith(x)) { think = think.slice(0, -x.length); break; }
+        prompt = plain + opener + think + between;
+      }
+    }
+    return { text: await rawCompletion({ ...req, prompt }, signal), calls: [], thought: think.trim() };
+  }
   // One non-thinking completion, streamed (closing the stream stops the engine at once). Returns the text and any calls.
   async function complete(body, signal) {
+    if (body._answerFirst !== undefined) {
+      const { _answerFirst, _thinkCap = 0, _thinkStop = [], ...b } = body;
+      body = b;
+      if (_answerFirst) {
+        const out = await answerFirst(b, signal, _thinkCap, _thinkStop).catch((e) => { if (signal?.aborted) throw e; console.error(`[run] answer-first request failed, asking normally: ${e.message}`); return null; });
+        if (out) return out;
+      }
+    }
     const r = await fetch(`${llama.url()}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, stream: true }), signal });
     if (!r.ok) { const t = await r.text().catch(() => ""); let m = t; try { const j = JSON.parse(t); m = j.error?.message || j.error || t; } catch {} throw new Error(m || r.statusText); }
     const dec = new TextDecoder(), calls = [];
-    let buf = "", text = "", ended = false;
+    let buf = "", text = "", thought = "", ended = false;
     try {
       for await (const chunk of r.body) {
         if (signal?.aborted) break;
@@ -218,6 +298,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (j.choices?.[0]?.finish_reason) ended = true;
           const d = j.choices?.[0]?.delta;
           if (d?.content) text += d.content;
+          if (d?.reasoning_content) thought += d.reasoning_content;
           for (const tc of d?.tool_calls || []) {
             const i = tc.index ?? calls.length;
             calls[i] = calls[i] || { name: "", arguments: "" };
@@ -228,12 +309,17 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       }
     } catch (e) { if (!(ended && (e.message === "terminated" || e.cause?.code === "UND_ERR_SOCKET"))) throw e; } // Strata ends streams without a final chunk
     if (signal?.aborted) throw new Error("stopped");
-    return { text, calls: calls.filter(Boolean) };
+    return { text, calls: calls.filter(Boolean), thought };
   }
   // Thinking off for these requests, everything else as in the session's own requests (reasoning_effort, for one, is part
   // of some templates' system message, so changing it would make the engine read the whole prompt again).
-  const noThink = (run) => ({ ...(run.think.body || {}), chat_template_kwargs: { ...(run.think.body?.chat_template_kwargs || {}), enable_thinking: false },
-    reasoning_budget_tokens: 0, thinking_budget_tokens: 0 });
+  // eo: the loaded model's template has no thinking switch, only reasoning_effort (effortOnly). A reply with effort Off
+  // sends "none" there, the lowest it has. Hidden turns keep the session's effort (so the prompt, and the cache, match)
+  // and are asked answer-first instead (see answerFirst), since such a model may think even at "none".
+  const offEffort = (body, eo) => (eo ? { ...body, chat_template_kwargs: { ...(body.chat_template_kwargs || {}), reasoning_effort: "none" } } : body);
+  const effortOnly = (model) => templateEffortOnly(model).then((x) => !!x, () => false);
+  const noThink = (run, eo) => ({ ...(run.think.body || {}), chat_template_kwargs: { ...(run.think.body?.chat_template_kwargs || {}), enable_thinking: false },
+    reasoning_budget_tokens: 0, thinking_budget_tokens: 0, _answerFirst: !!eo });
   // The hidden update turn. Runs only on the loadout that is already loaded (it never loads one for this).
   async function memoryPass(run, signal, wantTitle = false) {
     if (!run.memWs || run.deleted) return;
@@ -243,7 +329,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cap = memCap(), cur = memory.text(run.memWs), t0 = Date.now();
     let title = ""; try { title = (await readChat(run.id)).title || ""; } catch {}
     const here = `"${title.slice(0, 60) || "Untitled"}" (${run.id})`;
-    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 2000,
+    const body = { model: run.model, ...samplingFor(run.model), ...(await memoryThink(run)), temperature: 0.2, max_tokens: 2000,
       messages: [{ role: "system", content: run.system }, ...msgs, { role: "user", content: memory.UPDATE_PROMPT(cur, memory.tokens(cur), cap, here) + (wantTitle ? memory.TITLE_ASK : "") }] };
     if (run.tools.length) body.tools = run.tools; // the same tool list as the session's requests (it's part of the prompt)
     const slot = slotOf.get(run.id);
@@ -258,10 +344,28 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const ops = memory.parseOps(out.text);
     for (const c of out.calls) if (/(^|__)memory$/.test(c.name)) try { const a = JSON.parse(c.arguments || "{}"); ops.push({ op: a.action || a.op, section: a.section, id: a.id, text: a.text }); } catch {}
     const secs = ((Date.now() - t0) / 1000).toFixed(1), said = (out.text.trim() || out.calls.map((c) => `${c.name} ${c.arguments}`).join(" ")).slice(0, 600);
-    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${secs}s)`); memory.log(run.memWs, `update ${run.id} ${secs}s · nothing kept · answer: ${said || "(empty)"}`); return; }
-    const r = await memory.apply(run.memWs, ops, { cap });
-    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · ${r.tokens}/${cap} tokens (${secs}s)`);
-    memory.log(run.memWs, `update ${run.id} ${secs}s · ${r.done.join(", ") || "no changes"}${r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""} · answer: ${said}`);
+    const why = out.thought ? ` · thought: ${out.thought.replace(/\s+/g, " ").slice(0, 600)}` : ""; // the short think on models asked answer-first
+    if (!ops.length) { console.log(`[memory] ${run.id} nothing to keep (${secs}s)`); memory.log(run.memWs, `update ${run.id} ${secs}s · nothing kept · answer: ${said || "(empty)"}${why}`); return; }
+    let r = await memory.apply(run.memWs, ops, { cap });
+    // Lines refused for what they say (over 200 characters, a secret) go back to the model once, like a tool error, instead
+    // of being lost: its answer, then the refusals, then corrected lines. Same prompt plus a little, so the cache holds.
+    let fixed = "";
+    if (r.fixable?.length && !signal?.aborted) {
+      const ask = "[From qqstudio] These lines were not saved:\n" + r.fixable.map((f) => `${f.line}\n  (${f.why})`).join("\n") +
+        `\nAnswer only with these lines corrected (each entry at most ${memory.MAX_ENTRY} characters: shorten it, keep what matters), or with NONE.`;
+      const fixBody = { ...body, _thinkCap: 0, max_tokens: 600, messages: [...body.messages, { role: "assistant", content: out.text }, { role: "user", content: ask }] };
+      let out2 = null;
+      try { release = await ensureEngine(run.model, null, signal); out2 = await complete(fixBody, signal); } catch (e) { if (!signal?.aborted) console.error(`[memory] ${run.id} fix-up: ${e.message}`); } finally { if (release) release(); }
+      const ops2 = out2 ? memory.parseOps(out2.text) : [];
+      if (ops2.length) {
+        const r2 = await memory.apply(run.memWs, ops2, { cap });
+        fixed = ` · corrected: ${r2.done.join(", ") || "no changes"}${r2.refused.length ? ` (still refused: ${r2.refused.join("; ")})` : ""}`;
+        r = { ...r2, done: r.done }; // the first pass's changes; the corrected ones are in `fixed`
+      } else if (out2) fixed = " · corrected: none";
+    }
+    const total = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${fixed ? "" : r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}${fixed} · memory ${r.tokens}/${cap} tokens (${total}s)`);
+    memory.log(run.memWs, `update ${run.id} ${total}s · ${r.done.join(", ") || "no changes"}${r.refused.length && !fixed ? ` · refused: ${r.refused.join("; ")}` : ""}${fixed} · answer: ${said}${why}`);
   }
   // Past 80% of the cap: a request with only the memory merges and removes entries. A result that throws away most of
   // the memory is not applied.
@@ -269,7 +373,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const cap = memCap(), cur = memory.text(run.memWs), used = memory.tokens(cur);
     if (!cur || used <= cap * 0.8) return;
     if (!(await loadedNow(run.model))) return;
-    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.2, max_tokens: 3000,
+    const body = { model: run.model, ...samplingFor(run.model), ...(await memoryThink(run)), temperature: 0.2, max_tokens: 3000,
       messages: [{ role: "user", content: memory.TIDY_PROMPT(cur, used, cap) }] };
     const slot = await pickSlot(run, slotOf.get(run.id) ?? -1); // not the session's slot: its cache stays for the next message
     if (slot !== undefined) body.id_slot = slot;
@@ -301,7 +405,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   async function titlePass(run, signal) {
     if (!(await loadedNow(run.model))) return;
     const msgs = run.messages.filter((m) => (m.role === "user" || m.role === "assistant") && !m._hidden).slice(0, 6);
-    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run), temperature: 0.3, max_tokens: 60,
+    const body = { model: run.model, ...samplingFor(run.model), ...noThink(run, await effortOnly(run.model)), temperature: 0.3, max_tokens: 60,
       messages: [{ role: "user", content: memory.TITLE_PROMPT(transcript(msgs).slice(0, 3000)) }] };
     const slot = await pickSlot(run, slotOf.get(run.id) ?? -1); // not the session's slot: its cache stays for the next message
     if (slot !== undefined) body.id_slot = slot;
@@ -434,15 +538,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (run.memWs) await memoryPass(run, run.abort.signal).catch((e) => { if (!run.stopped) console.error(`[memory] ${run.id}: ${e.message}`); });
       if (run.stopped) return;
       release = await ensureEngine(run.model, null, run.abort.signal);
-      const r = await fetch(`${llama.url()}/v1/chat/completions`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: run.abort.signal,
-        body: JSON.stringify({ model: run.model, stream: false, max_tokens: 3000, temperature: 0.3, ...((s) => (s === undefined ? {} : { id_slot: s }))(await pickSlot(run, run.slot ?? -1)),
-          chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0,
-          messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Summarize this conversation so far:\n\n${text}` }] }),
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error?.message || j.error || r.statusText);
-      summary = (j.choices?.[0]?.message?.content || "").trim();
+      summary = (await complete({ model: run.model, max_tokens: 3000, temperature: 0.3, ...((s) => (s === undefined ? {} : { id_slot: s }))(await pickSlot(run, run.slot ?? -1)),
+        chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0, _answerFirst: await effortOnly(run.model),
+        messages: [{ role: "system", content: SUMMARY_PROMPT }, { role: "user", content: `Summarize this conversation so far:\n\n${text}` }] }, run.abort.signal)).text.trim();
     } catch (e) {
       if (!run.stopped) emit(run, { type: "notice", text: "Compaction failed: " + e.message });
       return;
@@ -506,7 +604,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       sent = true;
       const body = {
         model, messages: [{ role: "system", content: run.system }, ...(await modelMessages(run))],
-        return_progress: true, stream_options: { include_usage: true }, ...samplingFor(model), ...run.think.body, stream: true,
+        return_progress: true, stream_options: { include_usage: true }, ...samplingFor(model),
+        ...(run.think.body?.chat_template_kwargs?.enable_thinking === false ? offEffort(run.think.body, await effortOnly(model)) : run.think.body), stream: true,
         max_tokens: run.maxTokens,
       };
       if (run.tools.length) body.tools = run.tools;

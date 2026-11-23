@@ -1280,6 +1280,10 @@ async function srvRefresh() {
   if (engData && engRel && JSON.stringify(engInstalled()) !== engPickSig) renderEngPick();
   if (!engData) { $("engList").innerHTML = '<div class="srv err"><span class="err-text">harness unreachable</span></div>'; return; }
   const run = engData.running || {};
+  // An engine added or removed here (a download finishing, a Strata install) is new to the loadout editor's engine list too
+  const engSig = engData.engines.map((e) => e.id + "\u0000" + e.name).join("\u0001");
+  if (loMeta && engSig !== srvRefresh.engSig && engSig !== loMeta.engines.map((e) => e.id + "\u0000" + e.name).join("\u0001")) loLoad();
+  srvRefresh.engSig = engSig;
   const list = $("engList"); list.innerHTML = "";
   for (const e of engData.engines) {
     const card = list.appendChild(el("div", "srv eng"));
@@ -1648,8 +1652,9 @@ async function loadFiles(repo, box) {
     box.textContent = "";
     if (!j.files.length) { box.textContent = "No .gguf files in this repo."; return; }
     // Offer the repo's vision projector alongside the model (F16 preferred, then BF16, then whatever there is).
-    const projs = j.files.filter((f) => f.mmproj);
-    const proj = projs.find((f) => /f16/i.test(f.name) && !/bf16/i.test(f.name)) || projs.find((f) => /bf16/i.test(f.name)) || projs[0];
+    // The repo's own projector (top level) before a copy in a subfolder (e.g. a runtime-specific folder with the same file names)
+    const projs = j.files.filter((f) => f.mmproj), topProjs = projs.filter((f) => !f.paths[0].includes("/")), pool = topProjs.length ? topProjs : projs;
+    const proj = pool.find((f) => /f16/i.test(f.name) && !/bf16/i.test(f.name)) || pool.find((f) => /bf16/i.test(f.name)) || pool[0];
     let withVision = null;
     if (proj && !proj.installed && j.files.some((f) => !f.mmproj)) {
       const opt = box.appendChild(el("label", "vis-opt"));
@@ -1661,8 +1666,12 @@ async function loadFiles(repo, box) {
     }
     for (const f of j.files) {
       const line = box.appendChild(el("div", "file"));
-      line.appendChild(el("span", "fname", f.name)).title = f.paths.join("\n");
+      const saved = f.saveAs?.length ? f.saveAs : [];
+      line.appendChild(el("span", "fname", f.name)).title = f.paths.join("\n") + (saved.join() !== f.paths.map((p) => p.split("/").pop()).join() ? "\n\nSaved as:\n" + saved.join("\n") : "");
       if (f.quant) line.appendChild(el("span", "tag q", f.quant));
+      if (f.folder) line.appendChild(el("span", "tag", f.folder)).title = `In the repo's ${f.folder} folder`
+        + (f.renamed ? ", published as .gguf_file (the uploader's choice, so tools don't list it beside the file of the same name). Saved as .gguf" : "")
+        + (saved.length ? `: ${saved[0]}${saved.length > 1 ? ` and ${saved.length - 1} more part${saved.length > 2 ? "s" : ""}` : ""}` : "");
       if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
       if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
       if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
