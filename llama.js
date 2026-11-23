@@ -623,6 +623,21 @@ function strataRelease({ force = false } = {}) {
   return strataRelRunning.catch((err) => { if (strataRel) return { ...strataRel.value, stale: true, note: err.message }; throw err; });
 }
 const strataState = (e) => path.join(engineDir(e), "state");
+// The Control that Strata's own commands run: \`strata update\` doesn't replace the Terminal folder (e.root), it puts the new
+// Control in <components>/control/<version>/ and points control/active.json at it; strata.py hands every command over to it
+// (strata_cli/handover.py). Code that imports Strata's modules itself (strata_catalog.py) must use that folder too, or it reads
+// the Control first downloaded (on the PC: a catalog without Inkling, Hy4-Flash or Qwen3.6). Falls back to e.root.
+function strataControl(e) {
+  try {
+    const base = path.join(strataState(e), "components", "control");
+    const p = JSON.parse(fs.readFileSync(path.join(base, "active.json"), "utf8").replace(/^\uFEFF/, ""));
+    if (p && typeof p.folder === "string" && /^[\w.+-]+$/.test(p.folder)) {
+      const dir = path.join(base, p.folder);
+      if (fs.existsSync(path.join(dir, "strata.py")) && fs.existsSync(strataPython(dir))) return dir;
+    }
+  } catch {}
+  return e.root;
+}
 const strataPython = (root) => (process.platform === "win32" ? path.join(root, "python", "python.exe") : path.join(root, "python", "bin", "python3"));
 // The environment Strata runs in: its own Python only, and every per-user folder moved into this engine's state folder.
 function strataEnv(e) {
@@ -828,7 +843,7 @@ function strataCatalogFile(e) { return path.join(P.enginesDir, e.id, "catalog.js
 // What a cached catalog was made from: Strata's Terminal and engine versions, and the shape of strata_catalog.py's answer
 // (2: Inkling-2-Mini's files and extras). A list made by another Strata or an older script is read again.
 const CATALOG_SHAPE = 2;
-const catalogStamp = (e) => `${CATALOG_SHAPE}|${e.build || ""}|${e.engineVersion || ""}`;
+const catalogStamp = (e) => `${CATALOG_SHAPE}|${e.build || ""}|${e.engineVersion || ""}|${strataControl(e)}`;
 const catalogStale = (e, c) => !c || c instanceof Promise || Date.now() - c.at > 24 * 3600e3 || c.stamp !== catalogStamp(e) || !c.files?.[0]?.sizes;
 function strataCatalogStale(id) { const e = byId(id); return !e || catalogStale(e, strataCatalogCached(id)); }
 function strataCatalog(id, fresh = false) {
@@ -839,8 +854,8 @@ function strataCatalog(id, fresh = false) {
   if (c && !(c instanceof Promise) && !fresh && !catalogStale(e, c)) return Promise.resolve(c);
   if (c instanceof Promise) return c;
   const job = new Promise((resolve) => {
-    const py = strataPython(e.root);
-    execFile(py, [path.join(__dirname, "strata_catalog.py"), e.root], { cwd: e.root, env: strataEnv(e), windowsHide: true, timeout: 120000, maxBuffer: 8 << 20 },
+    const root = strataControl(e), py = strataPython(root);
+    execFile(py, [path.join(__dirname, "strata_catalog.py"), root], { cwd: root, env: strataEnv(e), windowsHide: true, timeout: 120000, maxBuffer: 8 << 20 },
       (err, stdout, stderr) => {
         let j = null;
         try { j = JSON.parse(String(stdout).trim().split(/\r?\n/).pop()); } catch {}
