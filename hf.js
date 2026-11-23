@@ -13,7 +13,18 @@ const jobs = new Map(); // id -> job
 // mainline llama.cpp reads; the ending keeps tools from listing them beside the root files of the same name). Saved as .gguf.
 // And .strata: Strata's own format (Inkling-2-Mini's SQ builds in strata-engine's repos), which only the Strata engine runs.
 const GGUF_RX = /\.(?:gguf(?:_file)?|strata)$/i;
-const trees = new Map(); // repo -> {at, paths}: the repo's model files, from the last listing (for the names downloads are saved under)
+const trees = new Map(); // repo -> {at, paths, shas}: the repo's model files, from the last listing (for the names downloads are saved under)
+// Beside downloaded files: which repo file each one is, with its SHA-256 (Hugging Face's LFS id), so a file saved under
+// another name (x-Old_Support.gguf) is still known by its content. {<saved name>: {repo, path, sha256, size}}
+const SOURCES = ".qqstudio-sources.json";
+const shaOf = (f) => (f.lfs && f.lfs.oid) || "";
+function sourcesIn(dir) { try { return JSON.parse(fs.readFileSync(path.join(dir, SOURCES), "utf8")) || {}; } catch { return {}; } }
+function noteSource(job) {
+  if (!job.sha) return;
+  const dir = path.dirname(job.dest), all = sourcesIn(dir);
+  all[path.basename(job.dest)] = { repo: job.repo, path: job.path, sha256: job.sha, size: job.total || 0 };
+  try { fs.writeFileSync(path.join(dir, SOURCES), JSON.stringify(all, null, 1)); } catch {}
+}
 
 function hfHeaders(extra = {}) {
   return { "User-Agent": "llamacpp-harness/0.1", ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), ...extra };
@@ -29,7 +40,7 @@ async function tree(repo) {
   const r = await fetch(`${HF}/api/models/${repo}/tree/main?recursive=true`, { headers: hfHeaders(), signal: AbortSignal.timeout(20000) });
   if (!r.ok) throw new Error(`Could not list files: HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (gated repo: set HF_TOKEN)" : ""}`);
   const all = (await r.json()).filter((f) => f.type === "file" && GGUF_RX.test(f.path));
-  trees.set(repo, { at: Date.now(), paths: all.map((f) => f.path) });
+  trees.set(repo, { at: Date.now(), paths: all.map((f) => f.path), shas: Object.fromEntries(all.map((f) => [f.path, shaOf(f)])) });
   return all;
 }
 
@@ -84,8 +95,9 @@ async function files(repo, folder) {
   const groups = new Map();
   for (const f of all) {
     const base = f.path.replace(/-\d{5}-of-\d{5}(\.gguf(?:_file)?)$/i, "$1");
-    const g = groups.get(base) || { name: path.posix.basename(base).replace(/\.gguf_file$/i, ".gguf"), paths: [], size: 0, sizes: {} };
+    const g = groups.get(base) || { name: path.posix.basename(base).replace(/\.gguf_file$/i, ".gguf"), paths: [], size: 0, sizes: {}, shas: {} };
     g.paths.push(f.path);
+    g.shas[repo + "/" + f.path] = shaOf(f);
     g.sizes[repo + "/" + f.path] = (f.lfs && f.lfs.size) || f.size || 0;
     g.size += g.sizes[repo + "/" + f.path];
     groups.set(base, g);
@@ -116,7 +128,9 @@ async function startDownload({ repo, paths, folder, sizes = {} }) {
   const dir = targetDir(path.resolve(folder), repo);
   // Saved names depend on the whole repo (same-name files in other folders): the listing the page showed, else a fresh one
   const t = trees.get(repo);
-  const names = saveNames(t && Date.now() - t.at < 30 * 60 * 1000 && paths.every((p) => t.paths.includes(p)) ? t.paths : (await tree(repo)).map((f) => f.path));
+  const fresh = t && Date.now() - t.at < 30 * 60 * 1000 && paths.every((p) => t.paths.includes(p));
+  const names = saveNames(fresh ? t.paths : (await tree(repo)).map((f) => f.path));
+  const shas = trees.get(repo)?.shas || {};
   const created = [];
   for (const p of paths) {
     const file = names.get(p);
@@ -126,7 +140,7 @@ async function startDownload({ repo, paths, folder, sizes = {} }) {
     if (existing) { created.push(existing.id); continue; }
     const job = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      repo, file, path: p, dest, total: sizes[p] || 0, done: 0, speed: 0,
+      repo, file, path: p, dest, sha: shas[p] || "", total: sizes[p] || 0, done: 0, speed: 0,
       status: "downloading", error: null, started: Date.now(), ac: new AbortController(),
     };
     jobs.set(job.id, job);
@@ -139,13 +153,13 @@ async function startDownload({ repo, paths, folder, sizes = {} }) {
 async function runJob(job) {
   const part = job.dest + ".part";
   try {
-    if (fs.existsSync(job.dest)) { job.status = "done"; job.done = job.total = fs.statSync(job.dest).size; return; }
+    if (fs.existsSync(job.dest)) { job.status = "done"; job.done = job.total = fs.statSync(job.dest).size; noteSource(job); return; }
     fs.mkdirSync(path.dirname(job.dest), { recursive: true });
     let start = 0;
     try { start = fs.statSync(part).size; } catch {}
     const url = `${HF}/${job.repo}/resolve/main/${job.path.split("/").map(encodeURIComponent).join("/")}`;
     const r = await fetch(url, { headers: hfHeaders(start ? { Range: `bytes=${start}-` } : {}), redirect: "follow", signal: job.ac.signal });
-    if (r.status === 416 && start) { fs.renameSync(part, job.dest); require("./presets").invalidate(); job.done = job.total = start; job.status = "done"; return; }
+    if (r.status === 416 && start) { fs.renameSync(part, job.dest); job.done = job.total = start; noteSource(job); require("./presets").invalidate(); job.status = "done"; return; }
     if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 401 || r.status === 403 ? " (gated repo: accept the license on huggingface.co and set HF_TOKEN)" : ""}`);
     if (start && r.status !== 206) start = 0; // server ignored Range: start over
     job.total = start + Number(r.headers.get("content-length") || 0) || job.total;
@@ -159,6 +173,7 @@ async function runJob(job) {
     });
     await pipeline(src, fs.createWriteStream(part, { flags: start ? "a" : "w" }));
     fs.renameSync(part, job.dest);
+    noteSource(job);
     require("./presets").invalidate(); // the models list shows it now (no watcher off Windows and macOS)
     job.status = "done";
     console.log(`[hf] downloaded ${job.dest}`);
@@ -185,4 +200,4 @@ function list() {
   return [...jobs.values()].map(({ ac, ...j }) => j).sort((a, b) => b.started - a.started);
 }
 
-module.exports = { search, files, startDownload, cancel, clearFinished, list };
+module.exports = { search, files, startDownload, cancel, clearFinished, list, sourcesIn };

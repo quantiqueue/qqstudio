@@ -66,10 +66,11 @@ function strataIndex() {
   const e = strataEngine(), c = e && llama.strataCatalogCached(e.id);
   if (!c?.files?.length || !c.files[0].sizes) return null; // (an older list without sizes: refreshed by the server)
   if (strataIdx.at === c.at) return strataIdx;
-  const byPath = new Map(), byBase = new Map(), sets = new Map(), rows = new Map();
+  const byPath = new Map(), byBase = new Map(), bySha = new Map(), sets = new Map(), rows = new Map();
   for (const r of c.rows || []) rows.set(r.family + "/" + r.model, r);
-  const extras = new Map(); // repo/path -> {repo, path, sizes, extra: "vision"|"drafter"}: optional files beside a set, not part of it
+  const extras = new Map(); // repo/path -> {repo, path, sizes, shas, extra: "vision"|"drafter"}: optional files beside a set, not part of it
   for (const f of c.files) {
+    for (const h of f.shas || []) bySha.set(h, f); // the file's content: found wherever the uploader has moved or renamed it
     if (f.extra) { extras.set(f.repo + "/" + f.path, f); continue; }
     const k = f.family + "/" + f.model;
     byPath.set(f.repo + "/" + f.path, f);
@@ -78,35 +79,61 @@ function strataIndex() {
     sets.get(k).push(f);
   }
   // owners: who publishes Strata's own .strata builds (strata-engine): a GGUF search doesn't find those repos, so search asks them too
-  strataIdx = { at: c.at, byPath, byBase, sets, rows, extras, repos: new Set(c.files.map((f) => f.repo)),
+  strataIdx = { at: c.at, byPath, byBase, bySha, sets, rows, extras, repos: new Set(c.files.map((f) => f.repo)),
     owners: [...new Set(c.files.filter((f) => STRATA_FILE.test(f.path)).map((f) => f.repo.split("/")[0]))] };
   return strataIdx;
 }
 // A Hugging Face search result: is it one of the repos Strata's catalog downloads from?
 const strataRepo = (repo) => !!strataIndex()?.repos.has(repo);
 const strataOwners = () => strataIndex()?.owners || [];
-// A file group of a Hugging Face repo ({paths, sizes: {path: bytes}}): null, or {title, words} when it is a full set Strata lists,
-// with different: true when a file's size isn't the one Strata pinned (the repo changed it since: Strata's check would refuse it).
+// One repo file against Strata's table ({sizes, shas} keyed repo/path): the entry whose pinned SHA-256 it has, wherever it is
+// in the repo and whatever it's called (Unsloth moved the pinned Inkling files to Old_Support/ on 2026-11-23); else the entry
+// at its exact path, with different: true when its size or SHA-256 isn't the pinned one (replaced since: Strata refuses it).
+function strataHit(ix, repo, p, g) {
+  const sha = g.shas?.[repo + "/" + p], size = g.sizes?.[repo + "/" + p];
+  const bySha = sha && ix.bySha.get(sha);
+  if (bySha) return { f: bySha, different: false };
+  const f = ix.byPath.get(repo + "/" + p) || ix.extras.get(repo + "/" + p);
+  if (!f) return null;
+  return { f, different: !!((f.sizes?.length && size && !f.sizes.includes(size)) || (f.shas?.length && sha && !f.shas.includes(sha))) };
+}
+// A file group of a Hugging Face repo ({paths, sizes, shas}): null, or {title, words, extra?} when it is a full set Strata lists
+// (or one of its optional extras: the Vision shard, the DSpark drafter). A file at a listed path that the uploader has replaced
+// since (another size or SHA-256) is not Strata's: null, no tag.
 function strataFiles(repo, g) {
   const ix = strataIndex();
   if (!ix || !ix.repos.has(repo)) return null;
-  const x = g.paths.length === 1 && ix.extras.get(repo + "/" + g.paths[0]);
-  if (x) return { extra: x.extra, title: x.extra === "vision" ? "Strata's picture reader" : "Strata's DSpark drafter", words: "", different: !!(x.sizes?.length && g.sizes?.[repo + "/" + x.path] && !x.sizes.includes(g.sizes[repo + "/" + x.path])) };
-  const hits = g.paths.map((p) => ix.byPath.get(repo + "/" + p));
+  const hits = g.paths.map((p) => strataHit(ix, repo, p, g));
   if (!hits.length || hits.some((h) => !h)) return null;
-  const k = hits[0].family + "/" + hits[0].model, set = ix.sets.get(k) || [];
-  if (set.length !== hits.length) return null;
+  if (hits.some((h) => h.different)) return null;
+  const first = hits[0].f;
+  if (first.extra) return hits.length === 1 ? { extra: first.extra, title: first.extra === "vision" ? "Strata's picture reader" : "Strata's DSpark drafter", words: "" } : null;
+  const k = first.family + "/" + first.model, set = ix.sets.get(k) || [];
+  if (set.length !== hits.length || hits.some((h) => h.f.extra || h.f.family + "/" + h.f.model !== k)) return null;
   const r = ix.rows.get(k);
-  return { title: r ? r.title : k, words: r ? r.words : "", different: hits.some((h) => h.sizes?.length && g.sizes?.[repo + "/" + h.path] && !h.sizes.includes(g.sizes[repo + "/" + h.path])) };
+  return { title: r ? r.title : k, words: r ? r.words : "" };
 }
+// What a file in the models folder is in Strata's table: by the SHA-256 recorded when qqstudio downloaded it (hf.js
+// .qqstudio-sources.json: a pinned file saved under another name), else by its name; then the size must be a pinned one.
+function strataLocalFile(ix, dir, name, sources) {
+  let size; try { size = fs.statSync(path.join(dir, name)).size; } catch { return null; }
+  const src = sources[name];
+  const f = src?.sha256 ? ix.bySha.get(src.sha256) : !src ? ix.byBase.get(name.toLowerCase()) : null; // a recorded hash that isn't pinned: not Strata's file, whatever its name
+  return f && (!f.sizes?.length || f.sizes.includes(size)) ? f : null;
+}
+const strataFileOf = (m) => { const ix = strataIndex(); if (!ix) return null; const dir = path.dirname(m.model); return strataLocalFile(ix, dir, path.basename(m.model), require("./hf").sourcesIn(dir)); };
 // A model in the models folder: all files of one of Strata's sets, beside each other, at the pinned sizes.
 function strataLocal(m) {
   const ix = strataIndex();
   if (!ix) return STRATA_MODEL.test(m.name) || STRATA_MODEL.test(m.model);
-  const f = ix.byBase.get(path.basename(m.model).toLowerCase());
-  if (!f) return false;
-  const dir = path.dirname(m.model);
-  return (ix.sets.get(f.family + "/" + f.model) || []).every((x) => { try { const n = fs.statSync(path.join(dir, path.posix.basename(x.path))).size; return !x.sizes?.length || x.sizes.includes(n); } catch { return false; } });
+  const dir = path.dirname(m.model), sources = require("./hf").sourcesIn(dir);
+  const f = strataLocalFile(ix, dir, path.basename(m.model), sources);
+  if (!f || f.extra) return false;
+  const set = ix.sets.get(f.family + "/" + f.model) || [];
+  if (set.length === 1) return true;
+  let names = []; try { names = fs.readdirSync(dir); } catch {}
+  const here = new Set(names.filter((n) => sources[n] || ix.byBase.has(n.toLowerCase())).map((n) => strataLocalFile(ix, dir, n, sources)).filter(Boolean)); // (stat only candidates: the disk is slow while Strata generates)
+  return set.every((x) => here.has(x));
 }
 const strataModels = () => localModels().filter(strataLocal);
 const isStrata = (engineId) => llama.byId(engineId)?.type === "strata";
@@ -343,7 +370,7 @@ function strataArgs(l, models) {
   if (!m) return null;
   // Inkling-2-Mini: the model file itself (one file per size; a folder holding two sizes, SQ-10 and SQ-15 from the same repo, is
   // refused by Strata as "multiple models"). Strata finds the Vision shard, mmproj or DSpark drafter beside it. Others: the folder.
-  const f = strataIndex()?.byBase.get(path.basename(m.model).toLowerCase());
+  const f = strataFileOf(m);
   const a = ["--model-path", STRATA_FILE.test(m.model) || f?.family === "inkling-2-mini" ? m.model : path.dirname(m.model)];
   const load = l.load || {};
   if (load["ctx-size"]) a.push("--context", String(load["ctx-size"]));

@@ -1677,11 +1677,10 @@ async function loadFiles(repo, box) {
       if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
       if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
       const own = /\.strata$/i.test(f.name); // Strata's own format: no other engine reads it
-      if (f.strata?.extra) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : f.strata.extra === "vision" ? "Strata · picture reader" : "Strata · drafter")).title =
+      if (f.strata?.extra) line.appendChild(el("span", "tag strata", f.strata.extra === "vision" ? "Strata · picture reader" : "Strata · drafter")).title =
         f.strata.extra === "vision" ? "Lets a .strata model read pictures. Strata finds it beside the model file." : "Makes answers faster for the GGUF sizes on Strata. Strata finds it beside the model file.";
-      else if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
-        f.strata.different ? `${f.strata.title}: Strata knows these files, but at another size than it tested, so its check would refuse them.${own ? "" : " llama.cpp can still use them."}`
-          : `${f.strata.title}: Strata can run ${own ? "this file (only Strata can: it's Strata's own format)" : "these files"}${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
+      else if (f.strata) line.appendChild(el("span", "tag strata", "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
+        `${f.strata.title}: Strata can run ${own ? "this file (only Strata can: it's Strata's own format)" : "these files"}${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
       else if (own) line.appendChild(el("span", "tag strata diff", "Strata only")).title = "Strata's own format: only the Strata engine reads it, and this Strata's catalog doesn't list this file.";
       line.appendChild(el("span", "size", fmtBytes(f.size)));
       if (f.installed) { line.appendChild(el("span", "tag ok", "installed")); continue; }

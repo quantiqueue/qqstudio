@@ -371,7 +371,7 @@ function updateChat(file, fn) {
 }
 // A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
-const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => (loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model), liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
@@ -890,7 +890,7 @@ async function handleHf(req, res) {
     }
     if (req.method === "GET" && u.pathname === "/api/hf/files") {
       const repo = u.searchParams.get("repo");
-      return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; return t ? { ...g, strata: t } : g; }) });
+      return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; delete g.shas; return t ? { ...g, strata: t } : g; }) });
     }
     if (req.method === "GET" && u.pathname === "/api/hf/downloads") return sendJson(res, 200, { jobs: hf.list() });
     if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: await hf.startDownload(JSON.parse(await readBody(req))) });
@@ -935,7 +935,7 @@ async function handleChat(req, res) {
     upstream = await fetch(`${llama.url()}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, stream: true }),
+      body: JSON.stringify({ ...payload, stream: true, ...(loadouts.isStrata(loadouts.get(payload.model)?.engine) ? { model: undefined } : {}) }), // Strata: no model name (see runs.js wire)
       signal: controller.signal,
     });
   } catch (e) {

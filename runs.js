@@ -69,7 +69,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -242,6 +242,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (signal?.aborted) throw new Error("stopped");
     return text;
   }
+  // The request as the engine gets it: `model` is the loadout id (llama-server's --alias), or left out where engineModel says
+  // so (Strata serves one model per launch and refuses a name that looks like one of its IDs but isn't the loaded one, #6621).
+  const wire = (b) => { const n = engineModel(b.model); if (n === b.model) return b; const { model, ...rest } = b; return n ? { ...rest, model: n } : rest; };
+  const noRender = new Set(); // engines (by command line) that answered /apply-template with 404
   async function answerFirst(b, signal, thinkCap = 0, thinkStop = []) {
     if (b.messages.some((m) => Array.isArray(m.content) && m.content.some((x) => x && x.type && !/^(input_)?text$/.test(x.type)))) return null;
     const render = async (messages) => {
@@ -275,12 +279,19 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (body._answerFirst !== undefined) {
       const { _answerFirst, _thinkCap = 0, _thinkStop = [], ...b } = body;
       body = b;
-      if (_answerFirst) {
-        const out = await answerFirst(b, signal, _thinkCap, _thinkStop).catch((e) => { if (signal?.aborted) throw e; console.error(`[run] answer-first request failed, asking normally: ${e.message}`); return null; });
+      const eng = llama.current?.().sig || llama.url();
+      if (_answerFirst && !noRender.has(eng)) {
+        const out = await answerFirst(b, signal, _thinkCap, _thinkStop).catch((e) => {
+          if (signal?.aborted) throw e;
+          // An engine without /apply-template (Strata) can't do answer-first at all: said once, then hidden turns just ask normally
+          if (/apply-template: HTTP 404/.test(e.message)) { noRender.add(eng); console.log("[run] this engine has no /apply-template: hidden turns ask normally (no answer-first)"); }
+          else console.error(`[run] answer-first request failed, asking normally: ${e.message}`);
+          return null;
+        });
         if (out) return out;
       }
     }
-    const r = await fetch(`${llama.url()}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, stream: true }), signal });
+    const r = await fetch(`${llama.url()}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(wire({ ...body, stream: true })), signal });
     if (!r.ok) { const t = await r.text().catch(() => ""); let m = t; try { const j = JSON.parse(t); m = j.error?.message || j.error || t; } catch {} throw new Error(m || r.statusText); }
     const dec = new TextDecoder(), calls = [];
     let buf = "", text = "", thought = "", ended = false;
@@ -350,6 +361,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     // Lines refused for what they say (over 200 characters, a secret) go back to the model once, like a tool error, instead
     // of being lost: its answer, then the refusals, then corrected lines. Same prompt plus a little, so the cache holds.
     let fixed = "";
+    const firstRefused = r.refused; // shown with the correction too: "no changes" alone hid why a second turn ran
     if (r.fixable?.length && !signal?.aborted) {
       const ask = "[From qqstudio] These lines were not saved:\n" + r.fixable.map((f) => `${f.line}\n  (${f.why})`).join("\n") +
         `\nAnswer only with these lines corrected (each entry at most ${memory.MAX_ENTRY} characters: shorten it, keep what matters), or with NONE.`;
@@ -359,13 +371,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       const ops2 = out2 ? memory.parseOps(out2.text) : [];
       if (ops2.length) {
         const r2 = await memory.apply(run.memWs, ops2, { cap });
-        fixed = ` · corrected: ${r2.done.join(", ") || "no changes"}${r2.refused.length ? ` (still refused: ${r2.refused.join("; ")})` : ""}`;
+        fixed = ` → corrected: ${r2.done.join(", ") || "no changes"}${r2.refused.length ? ` (still refused: ${r2.refused.join("; ")})` : ""}`;
         r = { ...r2, done: r.done }; // the first pass's changes; the corrected ones are in `fixed`
-      } else if (out2) fixed = " · corrected: none";
+      } else if (out2) fixed = " → corrected: none";
     }
     const total = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${fixed ? "" : r.refused.length ? ` · refused: ${r.refused.join("; ")}` : ""}${fixed} · memory ${r.tokens}/${cap} tokens (${total}s)`);
-    memory.log(run.memWs, `update ${run.id} ${total}s · ${r.done.join(", ") || "no changes"}${r.refused.length && !fixed ? ` · refused: ${r.refused.join("; ")}` : ""}${fixed} · answer: ${said}${why}`);
+    const refusedNote = (fixed ? firstRefused : r.refused).length ? ` · refused: ${(fixed ? firstRefused : r.refused).join("; ")}` : "";
+    console.log(`[memory] ${run.id} ${r.done.join(", ") || "no changes"}${refusedNote}${fixed} · memory ${r.tokens}/${cap} tokens (${total}s)`);
+    memory.log(run.memWs, `update ${run.id} ${total}s · ${r.done.join(", ") || "no changes"}${refusedNote}${fixed} · answer: ${said}${why}`);
   }
   // Past 80% of the cap: a request with only the memory merges and removes entries. A result that throws away most of
   // the memory is not applied.
@@ -590,13 +603,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (st === "failed") phase("Model failed to load (Settings > Loadouts > Log)");
           else if (st === "loading") phase("Loading model");
           // An engine that serves one request at a time (Strata) takes this one only after a sub-agent's step ends
-          else if (sent && !gotChunk) phase(oneAtATime(model) && [...run.subs.values()].some((s) => s.status === "running" && s.run?.cur) ? "Waiting for sub-agent to accept request update" : "Reading prompt");
+          else if (sent && !gotChunk && !cur.gen?.live) phase(oneAtATime(model) && [...run.subs.values()].some((s) => s.status === "running" && s.run?.cur) ? "Waiting for sub-agent to accept request update" : "Reading prompt");
         } catch {}
         await sleep(1000);
       }
     })();
 
     run.abort = new AbortController();
+    let watch = null; // the live count from Strata's /metrics while the stream is quiet (see below)
     try {
       // The loadout must be the one running: loading it (and unloading another) if needed, or waiting while another
       // loadout is mid-reply. Held until this request ends.
@@ -614,9 +628,29 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (run.slot !== undefined) body.id_slot = run.slot;
       changed = promptChange(run, body);
       const r = await fetch(`${llama.url()}/v1/chat/completions`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: run.abort.signal,
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(wire(body)), signal: run.abort.signal,
       });
       if (!r.ok) { const t = await r.text(); let msg = t; try { const j = JSON.parse(t); msg = j.error?.message || j.error || t; } catch {} throw new Error(msg || r.statusText); }
+      // Strata holds back a tool call's text (with Inkling even its name) and releases it whole at the end, and its prompt
+      // progress stops before the prompt is fully read: the stream says nothing for minutes. When it has been quiet for a
+      // second, its /metrics "live" block gives the real state and count: the step shows "Generating" and Strata's own
+      // number of generated tokens instead of "Reading prompt" (the page's "≈" estimate stays the fallback elsewhere).
+      if (liveGen(model)) {
+        let busy = false;
+        watch = setInterval(async () => {
+          if (busy || !run.stepping || run.abort?.signal.aborted || Date.now() - (cur.gen?.sent || cur.t0) < 1000) return;
+          busy = true;
+          try {
+            const L = (await fetch(`${llama.url()}/metrics`, { signal: AbortSignal.timeout(1500) }).then((x) => (x.ok ? x.json() : null)))?.live;
+            if (!run.stepping || !L || L.state !== "generating" || !(L.generated > 0)) return;
+            const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
+            if (L.generated <= g.total) return;
+            g.total = L.generated; g.live = true; g.n = g.total - g.base;
+            if (!cur.content && !cur.reasoning) phase("Generating");
+            emit(run, { type: "delta", n: g.n, tot: run.genDone + g.total, tool: g.tool || "" });
+          } catch {} finally { busy = false; }
+        }, 1000);
+      }
       const dec = new TextDecoder();
       let buf = "";
       run.stream = r.body; // Stop cancels it too: aborting the fetch alone doesn't end a body that's already streaming on older Node 18
@@ -634,7 +668,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
           if (j.timings) timings = j.timings;
           if (j.usage) { usage = { prompt: j.usage.prompt_tokens, completion: j.usage.completion_tokens }; emit(run, { type: "usage", ...usage, model }); }
-          if (!gotChunk) { gotChunk = true; polling = false; if (!cur.content) phase("Reading prompt"); }
+          if (!gotChunk) { gotChunk = true; polling = false; if (!cur.content && !cur.gen?.live) phase("Reading prompt"); }
           const pp = j.prompt_progress;
           if (pp && pp.total && pp.total !== ppTotal) { ppTotal = pp.total; emit(run, { type: "usage", prompt: pp.total, completion: 0, model, reading: true }); } // exact prompt size, early
           if (pp && pp.total && cached === null) cached = { cache: pp.cache || 0, total: pp.total };
@@ -650,7 +684,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const ev = { type: "delta" };
           if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
-            if (timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.exactRun = true; } else g.total += chunkTokens(d); // exactRun: the engine counts as it goes
+            if (timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.exactRun = true; } else if (!g.live) g.total += chunkTokens(d); // g.live: the count already came from Strata's /metrics // exactRun: the engine counts as it goes
             if (d.reasoning_content && !d.content && !d.tool_calls) g.thinking = true;
             else if (g.thinking) { g.thinking = false; g.base = g.total - 1; g.t0 = Date.now(); } // count and time the reply from where thinking ended
             g.n = g.total - g.base;
@@ -728,6 +762,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (run.loopStop && !run.stopped) looped = true; // also when the loop above ended by itself (no error thrown)
       if (run.interrupt && !run.stopped && !looped) interrupted = true; // also when the loop above ended by itself
       run.stepping = false;
+      if (watch) clearInterval(watch);
       polling = false;
       run.abort = null; run.stream = null;
       if (release) release();
@@ -759,7 +794,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       g.n = g.base > 0 && !g.exactRun ? est : Math.max(0, g.total - g.base);
     }
     run.genDone += g ? g.total : 0; // the whole reply's count (all steps, thinking included) for the footer
-    const secs = ((Date.now() - (replied ? g.t0 : t0)) / 1000).toFixed(1);
+    // A reply that came in one burst at the end (Strata holds back a tool call's text, then sends it whole) took 0.0 s by the clock:
+    // with no thinking before it, the engine's own generation time is the reply's (4,988 tokens showed "0.0s" at 28.0 tok/s).
+    const engineSecs = replied && g.base === 0 && timings?.predicted_ms > 0 ? timings.predicted_ms / 1000 : 0;
+    const secs = Math.max((Date.now() - (replied ? g.t0 : t0)) / 1000, engineSecs).toFixed(1);
     const meta = `${model} · ${secs}s` +
       (replied ? ` · ${g.n} tok` + (timings?.predicted_per_second ? ` @ ${timings.predicted_per_second.toFixed(1)} tok/s` : "") : "") +
       (run.stopped ? " · stopped" : interrupted ? " · interrupted" : looped ? " · stopped: repeating" : runaway ? " · stopped: repeated tool calls" : finish === "length" ? " · cut off (length limit)" : "");
@@ -1508,7 +1546,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     // Times go out as ages (ms ago), so the page's clock doesn't matter: a page that comes back keeps the running timers.
     const c = run.cur, now = Date.now();
     const cur = c && { model: c.model, content: c.content, reasoning: c.reasoning, phase: c.phase, pct: c.pct,
-      gen: c.gen && { n: c.gen.n, ms: now - c.gen.t0, tool: c.gen.tool },
+      gen: c.gen && { n: c.gen.n, ms: now - c.gen.t0, tool: c.gen.tool, idle: c.gen.sent ? now - c.gen.sent : null }, // idle: ms since the last token went out (a held-back tool call: the page estimates)
       age: c.t0 ? now - c.t0 : null, phaseAge: c.phaseAt ? now - c.phaseAt : null,
       thinkAge: c.think0 ? now - c.think0 : null, thinkMs: c.think0 && c.think1 ? c.think1 - c.think0 : null };
     const stat = { ms: Date.now() - run.t0, tokens: run.genDone + (run.cur?.gen?.total || 0), sub: subTokens(run) };

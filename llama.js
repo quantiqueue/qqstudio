@@ -841,8 +841,8 @@ async function strataStatus() {
 const catalogs = new Map(); // engine id -> {at, rows, computer, error} | Promise
 function strataCatalogFile(e) { return path.join(P.enginesDir, e.id, "catalog.json"); }
 // What a cached catalog was made from: Strata's Terminal and engine versions, and the shape of strata_catalog.py's answer
-// (2: Inkling-2-Mini's files and extras). A list made by another Strata or an older script is read again.
-const CATALOG_SHAPE = 2;
+// (2: Inkling-2-Mini's files and extras; 3: each file's pinned SHA-256). A list made by another Strata or an older script is read again.
+const CATALOG_SHAPE = 3;
 const catalogStamp = (e) => `${CATALOG_SHAPE}|${e.build || ""}|${e.engineVersion || ""}|${strataControl(e)}`;
 const catalogStale = (e, c) => !c || c instanceof Promise || Date.now() - c.at > 24 * 3600e3 || c.stamp !== catalogStamp(e) || !c.files?.[0]?.sizes;
 function strataCatalogStale(id) { const e = byId(id); return !e || catalogStale(e, strataCatalogCached(id)); }

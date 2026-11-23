@@ -25,7 +25,8 @@ def inkling_files(r) -> list:
     if not m:
         return []
     repo, sub = m.group(1), (m.group(2).strip("/") + "/" if m.group(2).strip("/") else "")
-    out = [{"repo": repo, "path": sub + name, "sizes": [inkling_family.size_of(name)], "family": r.family, "model": r.model}]
+    sha = lambda n: [inkling_family.sha256_of(n)] if inkling_family.sha256_of(n) else []
+    out = [{"repo": repo, "path": sub + name, "sizes": [inkling_family.size_of(name)], "shas": sha(name), "family": r.family, "model": r.model}]
     # a GGUF size reads pictures with the repo's own mmproj (Strata takes it from beside the model); a .strata size with the Vision shard
     extras = [inkling_family.DSPARK_GGUF_FILE] if inkling_family.is_gguf_build(r.model) else [inkling_family.VISION_FILE]
     for x in extras:
@@ -33,7 +34,7 @@ def inkling_files(r) -> list:
         xm = re.match(HF_BASE, xs.get("base") or "")
         if xm:
             xsub = xm.group(2).strip("/") + "/" if xm.group(2).strip("/") else ""
-            out.append({"repo": xm.group(1), "path": xsub + x, "sizes": [inkling_family.size_of(x)], "family": r.family,
+            out.append({"repo": xm.group(1), "path": xsub + x, "sizes": [inkling_family.size_of(x)], "shas": sha(x), "family": r.family,
                         "model": r.model, "extra": "vision" if x == inkling_family.VISION_FILE else "drafter"})
     return out
 
@@ -73,8 +74,11 @@ def main() -> int:
                     pin = setup.file_pin(base + name)
                     # every size Strata accepts for this file: its pin, and the other layouts it also knows (sha256_alt:
                     # e.g. UD-Q4_K_XL re-uploaded at another commit)
-                    sizes = ([pin[0]] if pin else []) + [alt[0] for alt in (fam.get("sha256_alt") or {}).get(name, [])]
-                    files.append({"repo": m.group(1), "path": m.group(2) + name, "sizes": sizes,
+                    alts = list((fam.get("sha256_alt") or {}).get(name, []))
+                    sizes = ([pin[0]] if pin else []) + [alt[0] for alt in alts]
+                    # the SHA-256 of each accepted file: qqstudio also finds a pinned file the uploader has moved or renamed
+                    shas = [x[1] for x in ([pin] if pin else []) + alts if len(x) > 1 and x[1]]
+                    files.append({"repo": m.group(1), "path": m.group(2) + name, "sizes": sizes, "shas": shas,
                                   "family": r.family, "model": r.model})
         except Exception as e:                  # noqa: BLE001 - tags are a convenience; the list still shows
             files = []
