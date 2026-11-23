@@ -1,4 +1,4 @@
-// Hugging Face model search + GGUF downloader.
+// Hugging Face model search + GGUF (and .strata) downloader.
 // Optional: set HF_TOKEN env var for gated/private repos.
 const fs = require("fs");
 const path = require("path");
@@ -11,7 +11,8 @@ const REPO_RX = /^(?!\.{1,2}\/)[\w.-]+\/(?!\.{1,2}$)[\w.-]+$/; // owner/name, no
 const jobs = new Map(); // id -> job
 // Model files: .gguf, and .gguf_file, which Unsloth uses for its Mainline_Support copies (the same weights in the layout
 // mainline llama.cpp reads; the ending keeps tools from listing them beside the root files of the same name). Saved as .gguf.
-const GGUF_RX = /\.gguf(?:_file)?$/i;
+// And .strata: Strata's own format (Inkling-2-Mini's SQ builds in strata-engine's repos), which only the Strata engine runs.
+const GGUF_RX = /\.(?:gguf(?:_file)?|strata)$/i;
 const trees = new Map(); // repo -> {at, paths}: the repo's model files, from the last listing (for the names downloads are saved under)
 
 function hfHeaders(extra = {}) {
@@ -19,7 +20,7 @@ function hfHeaders(extra = {}) {
 }
 
 function quantOf(name) {
-  const m = name.match(/(?:^|[-_.])((?:UD-)?(?:IQ\d_[A-Z0-9_]+|Q\d(?:_[A-Z0-9]+)*|TQ\d_\d|BF16|F16|FP16|F32|MXFP4(?:_MOE)?))(?=[-_.]|$)/i);
+  const m = name.match(/(?:^|[-_.])((?:UD-)?(?:SQ-\d+|IQ\d_[A-Z0-9_]+|Q\d(?:_[A-Z0-9]+)*|TQ\d_\d|BF16|F16|FP16|F32|MXFP4(?:_MOE)?))(?=[-_.]|$)/i);
   return m ? m[1].toUpperCase() : "";
 }
 
@@ -53,14 +54,21 @@ function saveNames(paths) {
   return out;
 }
 
-async function search(q, limit = 30) {
-  const url = `${HF}/api/models?search=${encodeURIComponent(q || "")}&filter=gguf&sort=downloads&direction=-1&limit=${limit}&full=false`;
-  const r = await fetch(url, { headers: hfHeaders(), signal: AbortSignal.timeout(20000) });
-  if (!r.ok) throw new Error(`Hugging Face search failed: HTTP ${r.status}`);
-  return (await r.json()).map((m) => ({
-    id: m.id || m.modelId, downloads: m.downloads || 0, likes: m.likes || 0,
-    updated: m.lastModified || m.createdAt || null, gated: !!m.gated,
-  }));
+// GGUF repos, plus the repos of `owners` that `keep` accepts (Strata's own .strata builds, which carry no GGUF tag: only the
+// repos Strata's catalog lists), most downloaded first.
+async function search(q, limit = 30, owners = [], keep = () => true) {
+  const ask = async (extra) => {
+    const url = `${HF}/api/models?search=${encodeURIComponent(q || "")}${extra}&sort=downloads&direction=-1&limit=${limit}&full=false`;
+    const r = await fetch(url, { headers: hfHeaders(), signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error(`Hugging Face search failed: HTTP ${r.status}`);
+    return r.json();
+  };
+  const [gguf, ...own] = await Promise.all([ask("&filter=gguf"), ...owners.map((o) => ask(`&author=${encodeURIComponent(o)}`).catch(() => []))]);
+  const seen = new Set();
+  return [...gguf, ...own.flat().filter((m) => keep(m.id || m.modelId))]
+    .map((m) => ({ id: m.id || m.modelId, downloads: m.downloads || 0, likes: m.likes || 0, updated: m.lastModified || m.createdAt || null, gated: !!m.gated }))
+    .filter((m) => m.id && !seen.has(m.id) && seen.add(m.id))
+    .sort((a, b) => b.downloads - a.downloads);
 }
 
 function targetDir(folder, repo) {
@@ -88,7 +96,7 @@ async function files(repo, folder) {
       g.paths.sort();
       g.parts = g.paths.length;
       g.quant = quantOf(g.name);
-      g.mmproj = /mmproj/i.test(g.name);
+      g.mmproj = /mmproj/i.test(g.name) || /vision\.strata$/i.test(g.name); // Strata's Vision shard is a .strata model's picture reader
       g.saveAs = g.paths.map((p) => names.get(p));
       // The folder it's in, as a tag, unless it's only the quant's own folder (split files: UD-Q4_K_XL/…)
       const folder = path.posix.dirname(g.paths[0]);

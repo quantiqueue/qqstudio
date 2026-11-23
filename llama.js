@@ -825,12 +825,18 @@ async function strataStatus() {
 // or when older than a day. Rows: {family, model, title, about, downloadGb, verdict, words, installed, recommended, …}.
 const catalogs = new Map(); // engine id -> {at, rows, computer, error} | Promise
 function strataCatalogFile(e) { return path.join(P.enginesDir, e.id, "catalog.json"); }
+// What a cached catalog was made from: Strata's Terminal and engine versions, and the shape of strata_catalog.py's answer
+// (2: Inkling-2-Mini's files and extras). A list made by another Strata or an older script is read again.
+const CATALOG_SHAPE = 2;
+const catalogStamp = (e) => `${CATALOG_SHAPE}|${e.build || ""}|${e.engineVersion || ""}`;
+const catalogStale = (e, c) => !c || c instanceof Promise || Date.now() - c.at > 24 * 3600e3 || c.stamp !== catalogStamp(e) || !c.files?.[0]?.sizes;
+function strataCatalogStale(id) { const e = byId(id); return !e || catalogStale(e, strataCatalogCached(id)); }
 function strataCatalog(id, fresh = false) {
   const e = byId(id);
   if (!e || e.type !== "strata") return Promise.reject(Object.assign(new Error("No such Strata engine"), { status: 404 }));
   let c = catalogs.get(id);
   if (!c) { try { c = JSON.parse(fs.readFileSync(strataCatalogFile(e), "utf8")); catalogs.set(id, c); } catch {} }
-  if (c && !(c instanceof Promise) && !fresh && Date.now() - c.at < 24 * 3600e3) return Promise.resolve(c);
+  if (c && !(c instanceof Promise) && !fresh && !catalogStale(e, c)) return Promise.resolve(c);
   if (c instanceof Promise) return c;
   const job = new Promise((resolve) => {
     const py = strataPython(e.root);
@@ -838,7 +844,7 @@ function strataCatalog(id, fresh = false) {
       (err, stdout, stderr) => {
         let j = null;
         try { j = JSON.parse(String(stdout).trim().split(/\r?\n/).pop()); } catch {}
-        const out = j && j.ok ? { at: Date.now(), rows: j.rows || [], files: j.files || [], computer: j.computer || "", unavailable: j.unavailable || [], error: null }
+        const out = j && j.ok ? { at: Date.now(), stamp: catalogStamp(e), rows: j.rows || [], files: j.files || [], computer: j.computer || "", unavailable: j.unavailable || [], error: null }
           : { at: Date.now(), rows: [], computer: "", error: j?.error || (err ? err.message : String(stderr).trim().split(/\r?\n/).pop() || "no answer") };
         if (out.error && c && c.rows?.length) { catalogs.set(id, c); return resolve({ ...c, error: out.error, stale: true }); } // keep the last good list
         catalogs.set(id, out);
@@ -1121,7 +1127,7 @@ async function init() {
 
 module.exports = { setInUse,
   init, launch, stop, status, current, list, log, url, add, update, remove, setOptions, releases, download, cancel, clearJobs, unzip, untar, extract, parseAsset, backendsOf, pickBackend, gpus,
-  strataRelease, downloadStrata, updateStrata, updateLlama, checkLlama, checkStrata, strataCatalog, strataCatalogCached,
+  strataRelease, downloadStrata, updateStrata, updateLlama, checkLlama, checkStrata, strataCatalog, strataCatalogCached, strataCatalogStale,
   byId, all: () => data.engines, defaultEngine, subcmd,
   settings: () => ({ autostart: data.autostart, last: data.last }),
 };

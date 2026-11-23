@@ -511,7 +511,7 @@ async function handleLoadouts(req, res) {
       const engs = [];
       for (const e of llama.all()) engs.push({ id: e.id, name: e.name, type: e.type || "llama.cpp", active: e.id === llama.defaultEngine()?.id, support: await loadouts.fieldSupport(e) });
       return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
-        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model) })),
+        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model), ...(m.strata ? { strata: true } : {}) })),
         external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: await llama.status(),
         strataFields: loadouts.STRATA_FIELDS, strataModels: (strataCatalogNow(), loadouts.strataModels().map((m) => m.name)) });
     }
@@ -641,7 +641,7 @@ function strataCatalogNow() {
   const e = llama.all().find((x) => x.type === "strata");
   if (!e) return null;
   const c = llama.strataCatalogCached(e.id);
-  if (!c || !c.files?.[0]?.sizes || Date.now() - c.at > 24 * 3600e3) llama.strataCatalog(e.id, !!c).catch(() => {}); // (an older cache has no file list)
+  if (llama.strataCatalogStale(e.id)) llama.strataCatalog(e.id, !!c).catch(() => {}); // (a day old, made by another Strata or an older strata_catalog.py)
   return c ? { engine: e.id, rows: c.rows, files: c.files || [], computer: c.computer, error: c.error } : { engine: e.id, rows: [], files: [], loading: true };
 }
 // Strata answers /props in llama-server's shape too (the context it actually fitted, its batch slots); its loadout's
@@ -834,7 +834,7 @@ async function handleLocalModels(req, res) {
   const all = presets.list(root);
   const off = presets.visionOff();
   if (req.method === "GET" && req.url === "/api/models/local")
-    return sendJson(res, 200, { folder: root, models: all.map((m) => ({ id: m.name, path: m.model, mmproj: !!m.mmproj, vision: !!m.mmproj && !off.has(m.name), ...modelFiles(m, all) })) });
+    return sendJson(res, 200, { folder: root, models: all.map((m) => ({ id: m.name, path: m.model, mmproj: !!m.mmproj, ...(m.strata ? { strata: true } : {}), vision: !!m.mmproj && !off.has(m.name), ...modelFiles(m, all) })) });
   if (req.method === "POST" && req.url === "/api/models/vision") {
     let b; try { b = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
     const m = all.find((x) => x.name === b.id);
@@ -886,7 +886,7 @@ async function handleHf(req, res) {
     // Strata tags: repos its catalog downloads from, and the file sets it lists (exact paths and sizes, from strata_catalog.py).
     if (req.method === "GET" && u.pathname === "/api/hf/search") {
       strataCatalogNow();
-      return sendJson(res, 200, { models: (await hf.search(u.searchParams.get("q"))).map((m) => (loadouts.strataRepo(m.id) ? { ...m, strata: true } : m)) });
+      return sendJson(res, 200, { models: (await hf.search(u.searchParams.get("q"), 30, loadouts.strataOwners(), loadouts.strataRepo)).map((m) => (loadouts.strataRepo(m.id) ? { ...m, strata: true } : m)) });
     }
     if (req.method === "GET" && u.pathname === "/api/hf/files") {
       const repo = u.searchParams.get("repo");

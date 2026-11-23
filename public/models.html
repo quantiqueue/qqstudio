@@ -364,7 +364,7 @@
 <main>
   <section data-tab="engine">
     <h2>Engines</h2>
-    <div class="lead">What loadouts run on: llama.cpp builds, which run any GGUF model, and Strata, a faster engine for a few models (Qwen3.8-Flash-Next and Qwen3.6-35B-A3B). There's nothing to start here: a loadout loads when a session uses it (or with Load on the Loadouts tab).</div>
+    <div class="lead">What loadouts run on: llama.cpp builds, which run any GGUF model, and Strata, a faster engine for a few models (Qwen3.8-Flash-Next, Qwen3.6-35B-A3B and Inkling 2 Mini, including its .strata builds). There's nothing to start here: a loadout loads when a session uses it (or with Load on the Loadouts tab).</div>
     <div id="engList"><div class="srv muted">checking…</div></div>
 
     <h3 class="eng-h">Add an engine</h3>
@@ -655,7 +655,9 @@ function render() {
     const idRow = name.appendChild(el("div", "idrow"));
     idRow.appendChild(el("div", "id", m.id)).title = m.id;
     if (m.external) idRow.appendChild(el("span", "tag ext", "external")).title = "Not in the models folder: llama.cpp downloaded it with -hf into its own cache";
-    if ((loMeta?.strataModels || []).includes(m.id)) idRow.appendChild(el("span", "tag strata", "Strata")).title = "Strata can run this file too: make a loadout with the Strata engine";
+    const onlyStrata = (loMeta?.models || []).some((x) => x.name === m.id && x.strata);
+    if ((loMeta?.strataModels || []).includes(m.id)) idRow.appendChild(el("span", "tag strata", onlyStrata ? "Strata only" : "Strata")).title = onlyStrata ? "A .strata file: only the Strata engine runs it. Make a loadout with the Strata engine" : "Strata can run this file too: make a loadout with the Strata engine";
+    else if (onlyStrata) idRow.appendChild(el("span", "tag strata diff", "Strata only")).title = "A .strata file that this Strata's catalog doesn't list: no engine here can run it";
     const lf = local.get(m.id);
     if (lf || m.external) { // which loadouts use this file; create one
       const uses = loList.filter((l) => l.model === m.id);
@@ -1182,7 +1184,7 @@ function loEditOpen(id, base) {
   if (v.model && !loMeta.models.some((m) => m.name === v.model) && !ext.some((m) => m.name === v.model)) ext.push({ name: v.model });
   const modelIn = strata
     ? sel(loMeta.models.filter((m) => (loMeta.strataModels || []).includes(m.name)).map((m) => ({ label: m.name, value: m.name })), v.model, (loMeta.strataModels || []).length ? null : "no Strata model in the models folder")
-    : sel([...loMeta.models.map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
+    : sel([...loMeta.models.filter((m) => !m.strata || m.name === v.model).map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
   row(basics, "Model", modelIn, strata ? "Files Strata can run (tagged Strata on the Models tab). Get more on Install Models: results Strata runs are tagged there too." : LO_HELP.model);
   const visIn = chk(v.vision);
   const visR = row(basics, "Vision", visIn, LO_HELP.vision, "--mmproj");
@@ -1650,7 +1652,7 @@ async function loadFiles(repo, box) {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
     box.textContent = "";
-    if (!j.files.length) { box.textContent = "No .gguf files in this repo."; return; }
+    if (!j.files.length) { box.textContent = "No model files (.gguf or .strata) in this repo."; return; }
     // Offer the repo's vision projector alongside the model (F16 preferred, then BF16, then whatever there is).
     // The repo's own projector (top level) before a copy in a subfolder (e.g. a runtime-specific folder with the same file names)
     const projs = j.files.filter((f) => f.mmproj), topProjs = projs.filter((f) => !f.paths[0].includes("/")), pool = topProjs.length ? topProjs : projs;
@@ -1659,7 +1661,7 @@ async function loadFiles(repo, box) {
     if (proj && !proj.installed && j.files.some((f) => !f.mmproj)) {
       const opt = box.appendChild(el("label", "vis-opt"));
       withVision = opt.appendChild(el("input")); withVision.type = "checkbox"; withVision.checked = true;
-      opt.appendChild(el("span", null, "＋ Vision: also download the image projector"));
+      opt.appendChild(el("span", null, /\.strata$/i.test(proj.name) ? "＋ Vision: also download Strata's picture reader" : "＋ Vision: also download the image projector"));
       opt.appendChild(el("span", "muted", `${proj.name} · ${fmtBytes(proj.size)}`));
     } else if (proj && proj.installed) {
       box.appendChild(el("div", "vis-opt", "👁 Vision projector already installed for this repo"));
@@ -1674,9 +1676,13 @@ async function loadFiles(repo, box) {
         + (saved.length ? `: ${saved[0]}${saved.length > 1 ? ` and ${saved.length - 1} more part${saved.length > 2 ? "s" : ""}` : ""}` : "");
       if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
       if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
-      if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
-        f.strata.different ? `${f.strata.title}: Strata knows these files, but at another size than it tested, so its check would refuse them. llama.cpp can still use them.`
-          : `${f.strata.title}: Strata can run these files${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
+      const own = /\.strata$/i.test(f.name); // Strata's own format: no other engine reads it
+      if (f.strata?.extra) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : f.strata.extra === "vision" ? "Strata · picture reader" : "Strata · drafter")).title =
+        f.strata.extra === "vision" ? "Lets a .strata model read pictures. Strata finds it beside the model file." : "Makes answers faster for the GGUF sizes on Strata. Strata finds it beside the model file.";
+      else if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
+        f.strata.different ? `${f.strata.title}: Strata knows these files, but at another size than it tested, so its check would refuse them.${own ? "" : " llama.cpp can still use them."}`
+          : `${f.strata.title}: Strata can run ${own ? "this file (only Strata can: it's Strata's own format)" : "these files"}${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
+      else if (own) line.appendChild(el("span", "tag strata diff", "Strata only")).title = "Strata's own format: only the Strata engine reads it, and this Strata's catalog doesn't list this file.";
       line.appendChild(el("span", "size", fmtBytes(f.size)));
       if (f.installed) { line.appendChild(el("span", "tag ok", "installed")); continue; }
       const btn = line.appendChild(el("button", "load", "Download"));

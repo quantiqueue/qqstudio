@@ -35,6 +35,22 @@ function scan(root, depth = 0, out = []) {
       });
     }
   }
+  // Strata's own .strata builds (Inkling-2-Mini's SQ sizes): models only Strata runs (strata: true), with the Vision shard
+  // beside them as their picture reader. Never in the llama-server preset.
+  const stratas = entries.filter((e) => e.isFile() && /\.strata$/i.test(e.name)).map((e) => e.name);
+  if (stratas.length) {
+    const vision = stratas.find((n) => /vision/i.test(n));
+    for (const n of stratas) {
+      if (/vision|engram/i.test(n)) continue;
+      out.push({
+        base: n.replace(/\.strata$/i, ""),
+        model: path.join(root, n),
+        mmproj: vision ? path.join(root, vision) : null,
+        size: (() => { try { return fs.statSync(path.join(root, n)).size; } catch { return 0; } })(),
+        strata: true,
+      });
+    }
+  }
   for (const e of entries) if (e.isDirectory() && !e.name.startsWith(".")) scan(path.join(root, e.name), depth + 1, out);
   return out;
 }
@@ -91,6 +107,7 @@ function generate(folder) {
   ];
   if (old.has("*")) { lines.push("[*]"); for (const [k, v] of old.get("*")) lines.push(`${k} = ${v}`); lines.push(""); }
   for (const m of models) {
+    if (m.strata) continue; // llama-server can't read .strata files
     lines.push(`[${m.name}]`);
     lines.push(`model = ${m.model}`);
     if (m.mmproj && !off.has(m.name)) lines.push(`mmproj = ${m.mmproj}`);

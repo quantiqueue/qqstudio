@@ -58,7 +58,8 @@ const STRATA_MAC_OFF = new Set(["kv", "gpu", "vram-reserve"]);
 if (process.platform === "darwin") STRATA_FIELDS.splice(0, STRATA_FIELDS.length, ...STRATA_FIELDS.filter((f) => !STRATA_MAC_OFF.has(f.key)));
 // Model files Strata can run: exactly the files its installer lists (Hugging Face repo, path, byte size, per catalog size),
 // from its catalog (strata_catalog.py). Until that list has been read, a loose name match stands in.
-const STRATA_MODEL = /flash[-_ ]?next/i;
+const STRATA_MODEL = /flash[-_ ]?next|inkling[-_ ]?2/i;
+const STRATA_FILE = /\.strata$/i; // Strata's own format (Inkling-2-Mini's SQ builds): only Strata runs these
 const strataEngine = () => llama.all().find((e) => e.type === "strata");
 let strataIdx = { at: -1 };
 function strataIndex() {
@@ -67,23 +68,30 @@ function strataIndex() {
   if (strataIdx.at === c.at) return strataIdx;
   const byPath = new Map(), byBase = new Map(), sets = new Map(), rows = new Map();
   for (const r of c.rows || []) rows.set(r.family + "/" + r.model, r);
+  const extras = new Map(); // repo/path -> {repo, path, sizes, extra: "vision"|"drafter"}: optional files beside a set, not part of it
   for (const f of c.files) {
+    if (f.extra) { extras.set(f.repo + "/" + f.path, f); continue; }
     const k = f.family + "/" + f.model;
     byPath.set(f.repo + "/" + f.path, f);
     byBase.set(path.posix.basename(f.path).toLowerCase(), f);
     if (!sets.has(k)) sets.set(k, []);
     sets.get(k).push(f);
   }
-  strataIdx = { at: c.at, byPath, byBase, sets, rows, repos: new Set(c.files.map((f) => f.repo)) };
+  // owners: who publishes Strata's own .strata builds (strata-engine): a GGUF search doesn't find those repos, so search asks them too
+  strataIdx = { at: c.at, byPath, byBase, sets, rows, extras, repos: new Set(c.files.map((f) => f.repo)),
+    owners: [...new Set(c.files.filter((f) => STRATA_FILE.test(f.path)).map((f) => f.repo.split("/")[0]))] };
   return strataIdx;
 }
 // A Hugging Face search result: is it one of the repos Strata's catalog downloads from?
 const strataRepo = (repo) => !!strataIndex()?.repos.has(repo);
+const strataOwners = () => strataIndex()?.owners || [];
 // A file group of a Hugging Face repo ({paths, sizes: {path: bytes}}): null, or {title, words} when it is a full set Strata lists,
 // with different: true when a file's size isn't the one Strata pinned (the repo changed it since: Strata's check would refuse it).
 function strataFiles(repo, g) {
   const ix = strataIndex();
   if (!ix || !ix.repos.has(repo)) return null;
+  const x = g.paths.length === 1 && ix.extras.get(repo + "/" + g.paths[0]);
+  if (x) return { extra: x.extra, title: x.extra === "vision" ? "Strata's picture reader" : "Strata's DSpark drafter", words: "", different: !!(x.sizes?.length && g.sizes?.[repo + "/" + x.path] && !x.sizes.includes(g.sizes[repo + "/" + x.path])) };
   const hits = g.paths.map((p) => ix.byPath.get(repo + "/" + p));
   if (!hits.length || hits.some((h) => !h)) return null;
   const k = hits[0].family + "/" + hits[0].model, set = ix.sets.get(k) || [];
@@ -266,10 +274,11 @@ function clean(input, prev = {}) {
   if (!l.name) throw Object.assign(new Error("The loadout needs a name"), { status: 400 });
   if (!llama.byId(l.engine)) throw Object.assign(new Error("Pick an engine"), { status: 400 });
   if (isStrata(l.engine)) { // Strata runs files from the models folder that it supports
-    if (!strataModels().some((m) => m.name === l.model)) throw Object.assign(new Error("Strata runs the Qwen3.8-Flash-Next files its catalog lists (they're tagged Strata on the Models tab); pick one of those"), { status: 400 });
+    if (!strataModels().some((m) => m.name === l.model)) throw Object.assign(new Error("Strata runs the model files its catalog lists (they're tagged Strata on the Models tab); pick one of those"), { status: 400 });
     delete l.modelPath; delete l.hfRepo;
     return l;
   }
+  if (localModels().some((m) => m.name === l.model && m.strata)) throw Object.assign(new Error("This is a .strata file: only Strata runs it. Pick the Strata engine for this loadout"), { status: 400 });
   if (!l.model || !(localModels().some((m) => m.name === l.model) || l.modelPath || l.hfRepo)) throw Object.assign(new Error("Pick a model from the models folder, or one the engine lists"), { status: 400 });
   if (l.load?.["model-draft"] && !localModels().some((m) => m.name === l.load["model-draft"])) throw Object.assign(new Error("The draft model isn't in the models folder"), { status: 400 });
   return l;
@@ -283,9 +292,11 @@ function newId(name) {
 function create(input) {
   const m = localModels().find((x) => x.name === input.model);
   const max = m ? trainedContext(m.model) : null;
+  // a .strata file runs only on Strata: its loadout starts on the Strata engine
+  const engine = input.engine || (m?.strata && strataEngine()?.id) || llama.defaultEngine()?.id || "";
   // Blank would mean the model's full context for llama.cpp (or as little as --fit-ctx when it doesn't fit); Strata fits the context to the PC itself, so it starts blank.
-  const defaults = isStrata(input.engine) ? {} : { "ctx-size": String(max ? Math.min(max, DEFAULT_CTX) : DEFAULT_CTX) };
-  const l = clean({ name: input.name || input.model, engine: input.engine || llama.defaultEngine()?.id || "", vision: m ? !!m.mmproj : false, sampling: {}, other: "", ...input,
+  const defaults = isStrata(engine) ? {} : { "ctx-size": String(max ? Math.min(max, DEFAULT_CTX) : DEFAULT_CTX) };
+  const l = clean({ name: input.name || input.model, engine, vision: m ? !!m.mmproj : false, sampling: {}, other: "", ...input,
     load: input.load && Object.keys(input.load).length ? input.load : defaults });
   l.id = newId(input.name || input.model);
   list().push(l);
@@ -330,7 +341,10 @@ function argsFor(l, models = localModels()) {
 function strataArgs(l, models) {
   const m = models.find((x) => x.name === l.model);
   if (!m) return null;
-  const a = ["--model-path", path.dirname(m.model)];
+  // Inkling-2-Mini: the model file itself (one file per size; a folder holding two sizes, SQ-10 and SQ-15 from the same repo, is
+  // refused by Strata as "multiple models"). Strata finds the Vision shard, mmproj or DSpark drafter beside it. Others: the folder.
+  const f = strataIndex()?.byBase.get(path.basename(m.model).toLowerCase());
+  const a = ["--model-path", STRATA_FILE.test(m.model) || f?.family === "inkling-2-mini" ? m.model : path.dirname(m.model)];
   const load = l.load || {};
   if (load["ctx-size"]) a.push("--context", String(load["ctx-size"]));
   const mac = process.platform === "darwin";
@@ -455,4 +469,4 @@ function visionOf(id) {
   return !!(l.vision && m && m.mmproj);
 }
 
-module.exports = { FIELDS, STRATA_FIELDS, strataModels, strataRepo, strataFiles, isStrata, SAMPLING, DEFAULT_CTX, trainedContext, list, get, create, update, remove, removeForModel, argsFor, spec, commandLine, cachedModels, fieldSupport, samplingFor, visionOf, localModels, load };
+module.exports = { FIELDS, STRATA_FIELDS, strataModels, strataRepo, strataOwners, strataFiles, isStrata, SAMPLING, DEFAULT_CTX, trainedContext, list, get, create, update, remove, removeForModel, argsFor, spec, commandLine, cachedModels, fieldSupport, samplingFor, visionOf, localModels, load };

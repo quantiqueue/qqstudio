@@ -10,6 +10,34 @@ import json
 import sys
 
 
+HF_BASE = r"https?://huggingface\.co/([^/]+/[^/]+)/resolve/[^/]+/?(.*)$"
+
+
+def inkling_files(r) -> list:
+    """Inkling-2-Mini (Strata 0.1.65+): one file per size, either Strata's own .strata build or an Unsloth GGUF, from the
+    repos Strata downloads them from (data/inkling-sources.json). The .strata sizes' picture reader (Inkling-2-Mini-Vision.strata)
+    and the GGUFs' DSpark drafter are optional extras ("extra": not part of the set; Strata finds them beside the model)."""
+    import re
+    from strata_control import inkling_family
+    name = inkling_family.build_file(r.model)
+    src = (inkling_family.sources_for(name) or [{}])[0]
+    m = re.match(HF_BASE, src.get("base") or "")
+    if not m:
+        return []
+    repo, sub = m.group(1), (m.group(2).strip("/") + "/" if m.group(2).strip("/") else "")
+    out = [{"repo": repo, "path": sub + name, "sizes": [inkling_family.size_of(name)], "family": r.family, "model": r.model}]
+    # a GGUF size reads pictures with the repo's own mmproj (Strata takes it from beside the model); a .strata size with the Vision shard
+    extras = [inkling_family.DSPARK_GGUF_FILE] if inkling_family.is_gguf_build(r.model) else [inkling_family.VISION_FILE]
+    for x in extras:
+        xs = (inkling_family.sources_for(x) or [{}])[0]
+        xm = re.match(HF_BASE, xs.get("base") or "")
+        if xm:
+            xsub = xm.group(2).strip("/") + "/" if xm.group(2).strip("/") else ""
+            out.append({"repo": xm.group(1), "path": xsub + x, "sizes": [inkling_family.size_of(x)], "family": r.family,
+                        "model": r.model, "extra": "vision" if x == inkling_family.VISION_FILE else "drafter"})
+    return out
+
+
 def main() -> int:
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     sys.path.insert(0, root)
@@ -30,6 +58,9 @@ def main() -> int:
             import re
             setup = cat.strata.setup_module()
             for r in cat.rows(hw):
+                if r.family == "inkling-2-mini":
+                    files += inkling_files(r)
+                    continue
                 fam = setup.FAMILIES.get(r.family) or {}
                 if "hf" not in fam:             # not GGUF files on the Hub (NVFP4 packs): not something a GGUF search finds
                     continue
