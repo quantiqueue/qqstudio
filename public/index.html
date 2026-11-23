@@ -2720,8 +2720,8 @@ function pendingBubble(p) {
   // same quiet button. An image-only message has no box, so the line goes above it.
   const box = w.querySelector(".msg.user"), meta = el("div", "meta pmeta");
   meta.appendChild(el("span", "pwhy"));
-  const ca = meta.appendChild(el("div", "acts")), x = ca.appendChild(el("button", null, "✕ Cancel")); x.type = "button"; x.title = "Don't send it";
-  x.onclick = () => pendingAction(p.id, "cancel");
+  if (p.agent) w.classList.add("from-agent"); // from the main assistant to this sub-agent: a steer, with no buttons (like Retry here)
+  else { const ca = meta.appendChild(el("div", "acts")), x = ca.appendChild(el("button", null, "✕ Cancel")); x.type = "button"; x.title = "Don't send it"; x.onclick = () => pendingAction(p.id, "cancel"); }
   if (box) box.appendChild(meta); else w.prepend(meta);
   log.appendChild(w); // below the live footer and everything the reply adds meanwhile
   pendingEls.set(p.id, w);
@@ -2735,6 +2735,7 @@ function setPendingMode(id, mode) {
   w.querySelector(".pwhy").textContent = MODE_WHY[mode] || MODE_WHY.steer;
   const acts = w.querySelector(":scope > .acts");
   acts.replaceChildren();
+  if (w.classList.contains("from-agent")) return;
   for (const act of ["steer", "interrupt", "queue"]) {
     if (act === mode) continue;
     const [ic, label, tip] = MODE_BTN[act], b = acts.appendChild(el("button", null, `${ic} ${label}`));

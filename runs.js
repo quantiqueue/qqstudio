@@ -69,7 +69,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -589,7 +589,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (!polling) break;
           if (st === "failed") phase("Model failed to load (Settings > Loadouts > Log)");
           else if (st === "loading") phase("Loading model");
-          else if (sent && !gotChunk) phase("Reading prompt");
+          // An engine that serves one request at a time (Strata) takes this one only after a sub-agent's step ends
+          else if (sent && !gotChunk) phase(oneAtATime(model) && [...run.subs.values()].some((s) => s.status === "running" && s.run?.cur) ? "Waiting for sub-agent to accept request update" : "Reading prompt");
         } catch {}
         await sleep(1000);
       }
@@ -967,7 +968,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     s.status = "running"; s.t0 = Date.now();
     try { s.run = await start(s.body, { parentRun: run }); }
     catch (e) { s.status = "halted"; s.reason = "it couldn't start: " + e.message; s.end = Date.now(); relay(s); console.error(`[run] ${run.id} sub-agent ${s.alias}: ${e.message}`); return; }
-    for (const text of s.notes) steer(s.run, { text: `[Message from the main assistant] ${text}` });
+    for (const text of s.notes) steer(s.run, { text: `[Message from the main assistant] ${text}`, agent: true });
     relay(s);
     markTask(run, s.title, "in_progress");
     console.log(`[run] ${run.id} started sub-agent ${s.alias} (${s.id}): ${s.title}`);
@@ -1054,7 +1055,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (name === "message_agent") {
       const text = String(args.text || args.message || "").trim();
       if (!text) return { status: "bad arguments", text: "ERROR: message_agent needs text." };
-      steer(s.run, { text: `[Message from the main assistant] ${text}` });
+      steer(s.run, { text: `[Message from the main assistant] ${text}`, agent: true, mode: "interrupt" }); // a correction shouldn't wait out a long think
       return { status: "done", text: `Sent to ${s.alias}; it sees the message after its current step.` };
     }
     // stop_agent. Not while it waits for the user's approval: the user answers that (or stops it), not the main assistant.
@@ -1253,6 +1254,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const id = String(b.id || ""), act = String(b.action || "");
     const from = run.pending.find((i) => i.id === id && !i.report) || run.queue.find((i) => i.id === id);
     if (!from) throw Object.assign(new Error("No such pending message"), { status: 409 }); // it was just applied
+    if (from.agent) throw Object.assign(new Error("Messages from the main assistant can't be changed"), { status: 403 });
     run.pending = run.pending.filter((i) => i !== from); run.queue = run.queue.filter((i) => i !== from);
     if (act === "cancel") { emit(run, { type: "pending_cancel", id }); interruptCheck(run); return; }
     if (!MODES.includes(act)) { (from.mode === "queue" ? run.queue : run.pending).push(from); throw Object.assign(new Error("Unknown action"), { status: 400 }); }
@@ -1284,8 +1286,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const text = String(b.text || "").trim();
     const images = (Array.isArray(b.images) ? b.images : []).filter((i) => i && typeof i.src === "string").map((i) => ({ src: i.src, full: i.full || i.src }));
     if (!text && !images.length) throw Object.assign(new Error("Empty message"), { status: 400 });
-    const mode = MODES.includes(b.mode) ? b.mode : "steer";
-    const item = { id: String(b.id || Date.now().toString(36)), text, images, mode, seq: ++run.msgSeq }; // seq: they join in the order they were sent, whatever mode each was changed to since
+    // agent: from the main assistant to its sub-agent. message_agent interrupts (notes for one that hadn't started join as a
+    // steer); only the user's own messages can be changed.
+    const mode = b.agent ? (b.mode === "interrupt" ? "interrupt" : "steer") : MODES.includes(b.mode) ? b.mode : "steer";
+    const item = { id: String(b.id || Date.now().toString(36)), text, images, mode, seq: ++run.msgSeq, ...(b.agent ? { agent: true } : {}) }; // seq: they join in the order they were sent, whatever mode each was changed to since
     (mode === "queue" ? run.queue : run.pending).push(item);
     emit(run, { type: "steer_pending", ...item });
     if (mode === "interrupt") interruptNow(run);
@@ -1530,7 +1534,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (id && action === "steer" && req.method === "POST") {
         const run = runs.get(id);
         if (!run || run.stopped) return sendJson(res, 409, { error: "No reply in progress" }); // the page sends it as a normal message
-        return sendJson(res, 200, { ok: true, id: steer(run, JSON.parse(await readBody(req))).id });
+        return sendJson(res, 200, { ok: true, id: steer(run, { ...JSON.parse(await readBody(req)), agent: false }).id }); // agent: only the main assistant's own messages
       }
       if (id && action === "pending" && req.method === "POST") { // change a pending message's mode or cancel it: {id, action}
         const run = runs.get(id);

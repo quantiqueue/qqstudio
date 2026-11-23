@@ -403,7 +403,7 @@ const schemas = [
       title: { type: "string", description: "A few words naming the work, shown to the user, e.g. \"Update file 23\"" },
       task: { type: "string", description: "Complete instructions: the goal, the files or facts involved, and what to report back" } }, required: ["title", "task"] } },
   { name: "message_agent", approval: false,
-    description: "Send a message to a running sub-agent (e.g. a correction or an extra detail); it sees it after its current step.",
+    description: "Send a message to a running sub-agent (e.g. a correction or an extra detail); it sees it right away (its current step is cut short; a running tool finishes first).",
     parameters: { type: "object", properties: {
       id: { type: "string", description: "The sub-agent, e.g. a1" },
       text: { type: "string", description: "The message" } }, required: ["id", "text"] } },
