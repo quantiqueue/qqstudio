@@ -61,7 +61,7 @@ No admin rights and nothing to install first: it uses your Node.js if it's 18 or
 - **Tools:** list, read (also PDF and Office documents), search, write, edit, move and delete files; search the web and read pages; run commands and scripts, also long-running ones in the background; ask you multiple-choice questions; keep a task list you can see.
 - **Sub-agents** take separate pieces of work and report back. Past the limit they wait their turn instead of failing.
 - **MCP servers** (stdio and Streamable HTTP, in the Claude Desktop `mcp.json` format) and **skills** (`SKILL.md` folders).
-- **Thinking** is shown in folds, with effort and thinking budgets per session. Long sessions are compacted, you can steer a reply while it runs, and secrets in tool results are masked before they're saved.
+- **Thinking** is shown in folds, with effort and thinking budgets per session. Long sessions are compacted, messages you send during a reply can steer it, wait for it to finish or interrupt it, and secrets in tool results are masked before they're saved.
 - **Guards** stop a model that loops or repeats the same tool call.
 
 ### Workspaces and memory
