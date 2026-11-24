@@ -178,6 +178,49 @@ async function unloadLoadout(id) {
   if (busyCount()) throw Object.assign(new Error("A reply is using it; stop the reply first"), { status: 409 });
   await llama.stop();
 }
+// Eject from the loadout card. When nothing uses the loadout it ejects now. Otherwise it waits for the reply using it, or for
+// the memory update or title worked out after a reply, and ejects when that ends; meanwhile the card says what it waits for
+// (running.ejecting: "reply" | "memory") with Force Eject. A new reply started meanwhile cancels the eject: the loadout is being
+// used again. Force Eject stops the reply (like Stop), drops the memory update and ejects now ("force" while it does).
+let ejecting = null;
+const busyOn = (lo) => (inflight.get(lo) || 0) > 0;
+const ejectWaitsFor = (lo) => (runs.activeOn(lo).length ? "reply" : busyOn(lo) || runs.settlingAny() ? "memory" : null);
+async function ejectLoadout(id, force) {
+  const lo = llama.current().loadout;
+  if (!lo || (id && lo !== id)) return;
+  if (force) return forceEject(lo);
+  if (ejecting?.loadout === lo) return;
+  if (!ejectWaitsFor(lo) && !busyCount()) return unloadLoadout(lo);
+  const mine = ejecting = { loadout: lo, n0: runs.started() };
+  console.log(`[eject] ${lo}: after the ${ejectWaitsFor(lo) || "request"}`);
+  const again = () => runs.started() !== mine.n0 || llama.current().loadout !== lo; // a reply started since: in use again
+  (async () => {
+    try {
+      while (ejectWaitsFor(lo) || busyCount()) {
+        if (ejecting !== mine) return; // Force Eject took over
+        if (again()) { console.log(`[eject] ${lo}: cancelled (in use again)`); return; }
+        await sleepMs(250);
+      }
+      if (ejecting !== mine) return;
+      if (again()) { console.log(`[eject] ${lo}: cancelled (in use again)`); return; } // (a new reply makes the memory update give way first)
+      await llama.stop();
+      console.log(`[eject] ${lo}: ejected`);
+    } catch (e) { console.error(`[eject] ${lo}: ${e.message}`); }
+    finally { if (ejecting === mine) ejecting = null; }
+  })();
+}
+async function forceEject(lo) {
+  const mine = ejecting = { loadout: lo, force: true };
+  try {
+    const ids = runs.activeOn(lo);
+    for (const id of ids) runs.stop(id);
+    runs.stopSettling();
+    console.log(`[eject] ${lo}: forced${ids.length ? ` (stopped ${ids.length} repl${ids.length === 1 ? "y" : "ies"})` : ""}`);
+    for (let t = Date.now(); busyOn(lo) && Date.now() - t < 5000;) await sleepMs(100); // stopped requests let go of it (on Node 18 at their next chunk)
+    await llama.stop();
+  } finally { if (ejecting === mine) ejecting = null; }
+}
+const withEjecting = (s) => (ejecting && s && s.loadout === ejecting.loadout ? { ...s, ejecting: ejecting.force ? "force" : ejectWaitsFor(ejecting.loadout) || "memory" } : s);
 // Whether a loadout is loaded / loading / failed (null: not running).
 async function modelState(id) {
   const s = await llama.status();
@@ -444,7 +487,7 @@ async function handleEngines(req, res) {
   const body = async () => JSON.parse((await readBody(req)) || "{}");
   try {
     if (!a) {
-      if (req.method === "GET") return sendJson(res, 200, await llama.list());
+      if (req.method === "GET") { const j = await llama.list(); return sendJson(res, 200, { ...j, running: withEjecting(j.running) }); }
       if (req.method === "POST") return sendJson(res, 200, { engine: llama.add(await body()) });
     }
     if (a === "options" && req.method === "PUT") { llama.setOptions(await body()); return sendJson(res, 200, await llama.list()); }
@@ -512,12 +555,12 @@ async function handleLoadouts(req, res) {
       for (const e of llama.all()) engs.push({ id: e.id, name: e.name, type: e.type || "llama.cpp", active: e.id === llama.defaultEngine()?.id, support: await loadouts.fieldSupport(e) });
       return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
         models: loadouts.localModels().map((m) => ({ name: m.name, label: m.label, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model), ...(m.strata ? { strata: true } : {}) })),
-        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: await llama.status(),
+        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: withEjecting(await llama.status()),
         strataFields: loadouts.STRATA_FIELDS, strataModels: (strataCatalogNow(), loadouts.strataModels().map((m) => m.name)) });
     }
     if (id && sub === "preview" && req.method === "GET") { const l = loadouts.get(id); if (!l) return sendJson(res, 404, { error: "No such loadout" }); return sendJson(res, 200, { cmd: loadouts.commandLine(l) }); }
     if (id && sub === "log" && req.method === "GET") { res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(llama.log(id)); }
-    if (id && (sub === "load" || sub === "unload") && req.method === "POST") { if (sub === "load") await preload(id); else await unloadLoadout(id); return sendJson(res, 200, { ok: true, running: await llama.status() }); }
+    if (id && (sub === "load" || sub === "unload") && req.method === "POST") { if (sub === "load") await preload(id); else await ejectLoadout(id, new URL(req.url, "http://x").searchParams.get("force") === "1"); return sendJson(res, 200, { ok: true, running: withEjecting(await llama.status()) }); }
     const apply = async () => { const r = await regenPresets(); return { restarted: r.restarted, restartNeeded: r.restartNeeded }; }; // reloads the running loadout if it changed
     if (!id && req.method === "POST") { const l = loadouts.create(await withSource(JSON.parse((await readBody(req)) || "{}"))); return sendJson(res, 200, { loadout: l, ...(await apply(l.engine)) }); }
     if (id && !sub && req.method === "PUT") {

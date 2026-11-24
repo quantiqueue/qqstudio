@@ -216,6 +216,8 @@
   /* "Load Engine" / "Eject Engine" and "Show logs" as text links on the card's last line */
   .lo-card .lo-links { display:flex; gap:14px; align-items:baseline; }
   .lo-card .lo-links .lo-logs { margin-top:4px; }
+  .lo-card .lo-links .lo-logs.busy { opacity:.35; cursor:default; } /* "Ejecting…": dimmed from the click until the loadout is unloaded */
+  .lo-card .lo-links .lo-wait { color:var(--muted); cursor:default; } /* "Ejecting after the reply…": a note, not a link (Force Eject beside it) */
   .lo-card.loaded .lo-st { color:var(--green); } .lo-card.loading .lo-st { color:var(--amber); } .lo-card.failed .lo-st { color:var(--red); }
   .opt-line { display:flex; align-items:flex-start; gap:10px; cursor:pointer; color:var(--text); font-size:14px; width:max-content; max-width:100%; }
   .opt-line input { margin-top:2px; }
@@ -1083,10 +1085,18 @@ function loRender() {
     if (st === "failed" && run.error) info.appendChild(el("div", "err-text", run.error));
     if (st === "loading" && run.progress?.text) info.appendChild(el("div", "sub lo-prog", run.progress.text + (run.progress.pct != null ? ` (${Math.floor(run.progress.pct)}%)` : "")));
     const open = loLogsOpen.has(l.id), links = info.appendChild(el("div", "lo-links"));
-    const on = st === "loaded" || st === "loading";
-    const ld = links.appendChild(el("button", "lo-logs", on ? "Eject Engine" : "Load Engine")); ld.type = "button";
+    // ejecting: "reply" | "memory" (waits for it, then ejects; Force Eject beside it) | "force" (ejecting now)
+    const on = st === "loaded" || st === "loading", ej = on ? run.ejecting : null, waits = ej === "reply" || ej === "memory";
+    const ld = links.appendChild(el(waits ? "span" : "button", "lo-logs" + (ej === "force" ? " busy" : waits ? " lo-wait" : ""),
+      ej === "reply" ? "Ejecting after the reply…" : ej === "memory" ? "Ejecting after memory is saved…" : ej ? "Ejecting…" : on ? "Eject Engine" : "Load Engine"));
+    if (ej === "force") ld.disabled = true;
+    if (waits) {
+      const fe = links.appendChild(el("button", "lo-logs", "Force Eject")); fe.type = "button";
+      fe.title = ej === "reply" ? "Stop the reply and eject now" : "Eject now, without saving this reply's memory";
+      fe.onclick = () => { fe.textContent = "Ejecting…"; fe.classList.add("busy"); loAct(l.id, "unload?force=1"); };
+    }
     ld.title = on ? "Unload to free memory" : run.loadout && run.state !== "stopped" && run.state !== "failed" ? `Unloads ${loList.find((x) => x.id === run.loadout)?.name || run.loadout} and loads this one` : "Load now, so the first reply doesn't wait";
-    ld.onclick = () => loAct(l.id, on ? "unload" : "load");
+    if (!waits) ld.onclick = () => { if (on) { ld.textContent = "Ejecting…"; ld.classList.add("busy"); } loAct(l.id, on ? "unload" : "load"); };
     const lk = links.appendChild(el("button", "lo-logs", open ? "Hide logs" : "Show logs")); lk.type = "button";
     lk.title = "This loadout's server log (llama-server or Strata output; written each time it loads)";
     lk.onclick = () => { open ? loLogsOpen.delete(l.id) : loLogsOpen.add(l.id); loRender(); if (!open) loRefreshLogs(); };
@@ -1348,7 +1358,7 @@ async function srvRefresh() {
   const t = $("tabLoadouts");
   t.textContent = run.state === "loaded" || run.state === "loading" ? "●" : run.state === "failed" ? "!" : "";
   t.style.color = run.state === "loaded" ? "var(--green)" : run.state === "loading" ? "var(--amber)" : run.state === "failed" ? "var(--red)" : "";
-  const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text]);
+  const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text, run.ejecting]); // ejecting: the card's "Ejecting after…" line
   if (sig !== srvRefresh.last) { srvRefresh.last = sig; loRender(); } // the cards' state
   loRefreshLogs();
 }

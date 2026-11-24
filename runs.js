@@ -1456,7 +1456,12 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     return budget === 0 ? reply : budget > 0 ? budget + reply : reply * 4;
   }
 
+  let starting = 0, started = 0; // replies between their request and runs.set (anyActive counts them: a memory update has already given way to them); replies ever started
   async function start(body, opts = {}) {
+    starting++; if (!opts.parentRun) started++; // (a sub-agent is part of its reply, not a new one)
+    try { return await startRun(body, opts); } finally { starting--; }
+  }
+  async function startRun(body, opts) {
     const id = body.chatId;
     if (!id || !chatFile(id)) throw Object.assign(new Error("Bad chat id"), { status: 400 });
     if (runs.has(id)) throw Object.assign(new Error("This chat already has a reply in progress."), { status: 409 });
@@ -1615,7 +1620,11 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     handle,
     has: (id) => runs.has(id),
     settling: (id) => memJobs.has(id), // a memory update or title is being worked out after its reply
-    anyActive: () => runs.size > 0,
+    settlingAny: () => memJobs.size > 0,
+    anyActive: () => runs.size > 0 || starting > 0,
+    started: () => started,
+    activeOn: (lo) => [...runs.values()].filter((r) => !r.parentRun && r.model === lo).map((r) => r.id), // replies on a loadout (sub-agents go with theirs)
+    stopSettling: () => yieldMemory(), // Force Eject: the memory update or title after a reply is dropped
     waiting: (id) => { const r = runs.get(id); if (r?.loopWarn || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.loopWarn)) return "loop"; return r?.approval || [...(r?.subs?.values() || [])].some((s) => s.status === "running" && s.run?.approval) ? "approval" : r?.question ? "question" : false; }, // the sidebar's yellow dot
     stop: (id) => { const p = !runs.get(id) && pendingSub(id); if (p) cancelPending(p[0], p[1], "the user cancelled it"); else stop(runs.get(id)); },
     deleted: (id) => { const r = runs.get(id); if (r) { r.deleted = true; stop(r); } },
