@@ -215,7 +215,14 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       const b = noThink(run, false);
       return { ...b, chat_template_kwargs: { ...b.chat_template_kwargs, reasoning_effort: MEMORY_EFFORT } };
     }
-    return { ...noThink(run, true), _thinkCap: MEMORY_THINK, _thinkStop: MEMORY_ANSWER };
+    // Where answer-first can't run (an engine without /apply-template, e.g. Strata; images), the chat request keeps the session's
+    // own effort: these templates write the effort level ahead of the conversation, so turning thinking off there changed the
+    // prompt near its top and the engine read the whole session again (Strata 0.1.67, Inkling: 11-16k tokens, 6-9 s per update,
+    // and again on the next message). The thinking is capped by the turn's budget instead, which Strata enforces.
+    const sess = run.think?.body || {};
+    const plain = sess.chat_template_kwargs?.enable_thinking === false ? null
+      : { chat_template_kwargs: { ...(sess.chat_template_kwargs || {}) }, reasoning_budget_tokens: MEMORY_THINK, thinking_budget_tokens: MEMORY_THINK };
+    return { ...noThink(run, true), _thinkCap: MEMORY_THINK, _thinkStop: MEMORY_ANSWER, ...(plain ? { _plain: plain } : {}) };
   }
   const MEMORY_THINK = 256; // memory updates and tidy-ups on such models: tokens of thinking before the answer (titles and compaction: none)
   // The think ends where the model starts writing the answer lines in it (Inkling 2 Mini drafts them there, then wrote them
@@ -277,8 +284,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   // One non-thinking completion, streamed (closing the stream stops the engine at once). Returns the text and any calls.
   async function complete(body, signal) {
     if (body._answerFirst !== undefined) {
-      const { _answerFirst, _thinkCap = 0, _thinkStop = [], ...b } = body;
-      body = b;
+      const { _answerFirst, _thinkCap = 0, _thinkStop = [], _plain, ...b } = body;
+      body = _plain ? { ...b, ..._plain } : b; // what the chat request sends when answer-first doesn't run (see memoryThink)
       const eng = llama.current?.().sig || llama.url();
       if (_answerFirst && !noRender.has(eng)) {
         const out = await answerFirst(b, signal, _thinkCap, _thinkStop).catch((e) => {
