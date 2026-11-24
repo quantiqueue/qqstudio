@@ -62,19 +62,36 @@ const invalidate = () => scans.invalidate();
 function list(folder) {
   return scans.get(path.resolve(folder)).map((m) => ({ ...m })); // callers may change their copies
 }
+// A size's name inside its file name (Qwen3.6-35B-A3B-UD-Q4_K_XL -> UD-Q4_K_XL), to tell apart two files of one repo folder.
+const QUANT = /[-_.]((?:UD-)?(?:I?Q\d\w*|TQ\d\w*|MXFP4\w*|BF16|F16|F32|SQ-\d+))$/i;
 function listNow(root) {
   const found = scan(root);
-  const names = new Map();
+  const byBase = new Map(), byDir = new Map();
   for (const m of found) {
-    const parts = path.relative(root, path.dirname(m.model)).split(path.sep).filter(Boolean);
-    m.vendor = parts[0] || "";
+    const rel = path.relative(root, path.dirname(m.model)).split(path.sep).filter(Boolean);
+    m.vendor = rel[0] || "";
+    m.dir = rel.join("/");
     m.name = m.base;
-    const prev = names.get(m.name);
-    if (prev) { // same file name from two vendors: qualify both
-      if (!prev.name.includes("/")) prev.name = (prev.vendor ? prev.vendor + "/" : "") + prev.base;
-      m.name = (m.vendor ? m.vendor + "/" : "") + m.base;
+    if (!byBase.has(m.base)) byBase.set(m.base, []);
+    byBase.get(m.base).push(m);
+    if (!byDir.has(m.dir)) byDir.set(m.dir, []);
+    byDir.get(m.dir).push(m);
+  }
+  // The name is what a loadout stores, so it stays the file's own name; the same file name in two places gets its vendor in front,
+  // or its whole folder when one vendor has it twice (unsloth's Qwen3.6-35B-A3B-GGUF and Qwen3.6-35B-A3B-MTP-GGUF).
+  for (const same of byBase.values()) {
+    if (same.length < 2) continue;
+    const byVendor = new Set(same.map((m) => m.vendor)).size === same.length;
+    for (const m of same) m.name = (byVendor ? m.vendor : m.dir) ? (byVendor ? m.vendor : m.dir) + "/" + m.base : m.base;
+  }
+  // What the pickers show: vendor/model (the models folder's own layout, as LM Studio shows it), with the size when that folder
+  // holds more than one model.
+  for (const [dir, ms] of byDir) {
+    for (const m of ms) {
+      const q = (m.base.match(QUANT) || [])[1];
+      const several = ms.length > 1 && !(q && ms.filter((x) => (x.base.match(QUANT) || [])[1] === q).length > 1);
+      m.label = !dir ? m.base : ms.length === 1 ? dir : dir + " · " + (several && q ? q : m.base);
     }
-    names.set(m.base, m);
   }
   return found.sort((a, b) => a.name.localeCompare(b.name));
 }

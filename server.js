@@ -511,7 +511,7 @@ async function handleLoadouts(req, res) {
       const engs = [];
       for (const e of llama.all()) engs.push({ id: e.id, name: e.name, type: e.type || "llama.cpp", active: e.id === llama.defaultEngine()?.id, support: await loadouts.fieldSupport(e) });
       return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
-        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model), ...(m.strata ? { strata: true } : {}) })),
+        models: loadouts.localModels().map((m) => ({ name: m.name, label: m.label, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model), ...(m.strata ? { strata: true } : {}) })),
         external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: await llama.status(),
         strataFields: loadouts.STRATA_FIELDS, strataModels: (strataCatalogNow(), loadouts.strataModels().map((m) => m.name)) });
     }

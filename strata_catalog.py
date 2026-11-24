@@ -39,6 +39,31 @@ def inkling_files(r) -> list:
     return out
 
 
+def own_path_files(setup, fam, r) -> list:
+    """Qwen3.6-35B-A3B and the other own-path families (setup.OWN_PATH_FAMILIES, which Strata's model feed also fills): one GGUF
+    per size, read in place by the engine, with the family's picture reader (mmproj) beside it as an optional extra. The names,
+    folders and pins are the ones Strata's own installer uses (install_own_path: fam["file"], fam["hf"], fam["sha256"])."""
+    import re
+
+    def entry(base, name, extra=None):
+        m = re.match(r"https?://[^/]+/([^/]+/[^/]+)/resolve/[^/]+/?(.*)$", base)
+        if not m or not name:
+            return None
+        sub = m.group(2).strip("/")
+        pin = (fam.get("sha256") or {}).get(name) or setup.file_pin(base + name)
+        e = {"repo": m.group(1), "path": (sub + "/" if sub else "") + name, "sizes": [pin[0]] if pin else [],
+             "shas": [pin[1]] if pin and len(pin) > 1 and pin[1] else [], "family": r.family, "model": r.model}
+        if extra:
+            e["extra"] = extra
+        return e
+
+    base = fam["hf"].format(q=r.model)
+    out = [entry(base, fam["file"].format(q=r.model))]
+    if fam.get("mmproj"):
+        out.append(entry(fam.get("mmproj_hf") or base, fam["mmproj"], "vision"))
+    return [e for e in out if e]
+
+
 def main() -> int:
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     sys.path.insert(0, root)
@@ -58,9 +83,14 @@ def main() -> int:
         try:
             import re
             setup = cat.strata.setup_module()
+            own = getattr(setup, "OWN_PATH_FAMILIES", None) or {}
             for r in cat.rows(hw):
+              try:                              # one family that can't be read leaves the others' tags alone
                 if r.family == "inkling-2-mini":
                     files += inkling_files(r)
+                    continue
+                if r.family in own:
+                    files += own_path_files(setup, own[r.family], r)
                     continue
                 fam = setup.FAMILIES.get(r.family) or {}
                 if "hf" not in fam:             # not GGUF files on the Hub (NVFP4 packs): not something a GGUF search finds
@@ -80,6 +110,8 @@ def main() -> int:
                     shas = [x[1] for x in ([pin] if pin else []) + alts if len(x) > 1 and x[1]]
                     files.append({"repo": m.group(1), "path": m.group(2) + name, "sizes": sizes, "shas": shas,
                                   "family": r.family, "model": r.model})
+              except Exception as e:            # noqa: BLE001
+                print(f"files: {r.family} {r.model}: {type(e).__name__}: {e}", file=sys.stderr)
         except Exception as e:                  # noqa: BLE001 - tags are a convenience; the list still shows
             files = []
             print(f"files: {type(e).__name__}: {e}", file=sys.stderr)

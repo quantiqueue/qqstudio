@@ -1173,6 +1173,7 @@ function loEditOpen(id, base) {
   const txt = (val, ph) => { const i = el("input"); i.type = "text"; i.value = val ?? ""; if (ph) i.placeholder = ph; i.spellcheck = false; return i; };
   const sel = (opts, val, blank) => { const s2 = el("select"); if (blank) s2.appendChild(el("option", null, blank)).value = ""; for (const o of opts) { const op = s2.appendChild(el("option", null, o.label ?? o)); op.value = o.value ?? o; } s2.value = val ?? ""; return s2; };
   const chk = (on) => { const i = el("input"); i.type = "checkbox"; i.checked = !!on; return i; };
+  const byLabel = (ms) => [...ms].sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name)); // the picker shows vendor/model
   const basics = form.appendChild(el("div", "lo-rows"));
   const nameIn = txt(v.name, "e.g. Flash-Next 64K"); row(basics, "Name", nameIn, LO_HELP.name);
   const engIn = sel(loMeta.engines.map((e) => ({ label: e.name, value: e.id })), v.engine);
@@ -1183,8 +1184,8 @@ function loEditOpen(id, base) {
   const ext = [...(loMeta.external || [])];
   if (v.model && !loMeta.models.some((m) => m.name === v.model) && !ext.some((m) => m.name === v.model)) ext.push({ name: v.model });
   const modelIn = strata
-    ? sel(loMeta.models.filter((m) => (loMeta.strataModels || []).includes(m.name)).map((m) => ({ label: m.name, value: m.name })), v.model, (loMeta.strataModels || []).length ? null : "no Strata model in the models folder")
-    : sel([...loMeta.models.filter((m) => !m.strata || m.name === v.model).map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
+    ? sel(byLabel(loMeta.models.filter((m) => (loMeta.strataModels || []).includes(m.name))).map((m) => ({ label: m.label || m.name, value: m.name })), v.model, (loMeta.strataModels || []).length ? null : "no Strata model in the models folder")
+    : sel([...byLabel(loMeta.models.filter((m) => !m.strata || m.name === v.model)).map((m) => ({ label: m.label || m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
   row(basics, "Model", modelIn, strata ? "Files Strata can run (tagged Strata on the Models tab). Get more on Install Models: results Strata runs are tagged there too." : LO_HELP.model);
   const visIn = chk(v.vision);
   const visR = row(basics, "Vision", visIn, LO_HELP.vision, "--mmproj");
