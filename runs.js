@@ -645,7 +645,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
             if (!run.stepping || !L || L.state !== "generating" || !(L.generated > 0)) return;
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
             if (L.generated <= g.total) return;
-            g.total = L.generated; g.live = true; g.n = g.total - g.base;
+            g.liveN = L.generated; g.live = true; g.total = Math.max(g.total, g.liveN); g.n = g.total - g.base;
             if (!cur.content && !cur.reasoning) phase("Generating");
             emit(run, { type: "delta", n: g.n, tot: run.genDone + g.total, tool: g.tool || "" });
           } catch {} finally { busy = false; }
@@ -684,7 +684,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           const ev = { type: "delta" };
           if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
-            if (timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.exactRun = true; } else if (!g.live) g.total += chunkTokens(d); // g.live: the count already came from Strata's /metrics // exactRun: the engine counts as it goes
+            g.chunks = (g.chunks || 0) + chunkTokens(d);
+            // the streamed count, or Strata's own from /metrics when that's higher (held-back text arrives later): never both added
+            if (timings?.predicted_n > g.total) { g.total = timings.predicted_n; g.exactRun = true; } else if (g.live) g.total = Math.max(g.chunks, g.liveN, g.total); else g.total += chunkTokens(d); // exactRun: the engine counts as it goes
             if (d.reasoning_content && !d.content && !d.tool_calls) g.thinking = true;
             else if (g.thinking) { g.thinking = false; g.base = g.total - 1; g.t0 = Date.now(); } // count and time the reply from where thinking ended
             g.n = g.total - g.base;
