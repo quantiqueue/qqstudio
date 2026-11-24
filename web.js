@@ -1,4 +1,4 @@
-// Web tools: search (DuckDuckGo HTML, then Bing; no key), fetch page as text, download to disk.
+// Web tools: search and image search (DuckDuckGo, then Bing; no key), fetch page as text, download to disk.
 const fs = require("fs");
 const path = require("path");
 const { pipeline } = require("stream/promises");
@@ -140,10 +140,11 @@ function ddgBlocked(status, html) {
   if ([202, 403, 418, 429].includes(status)) return true;
   return /anomaly-modal|anomaly\.js|unusual traffic|are you a (?:robot|human)|captcha|challenge-form/i.test(html.slice(0, 60000)) && !/class="result__a"/.test(html);
 }
-function bingBlocked(status, html) {
+// results: what a page with results has (web: b_algo; images: iusc). A page with results is never "blocked".
+function bingBlocked(status, html, results = /\bclass="[^"]*\bb_algo\b/) {
   if ([403, 429, 503].includes(status)) return true;
   const t = html.slice(0, 80000);
-  if (/\bclass="[^"]*\bb_algo\b/.test(t)) return false;
+  if (results.test(t)) return false;
   return /captcha|unusual traffic|are you a robot|verify you are (?:a )?human|\bcf-chl|challenge-platform/i.test(t);
 }
 
@@ -240,31 +241,71 @@ async function web_search({ query, max_results = 8 }) {
   return `Results for "${query}"${hit.from === "Bing" ? " (from Bing)" : ""}:\n\n${list}\n\nUse fetch_url to read a result.`;
 }
 
-async function image_search({ query, max_results = 8 }) {
-  if (!query) throw new Error("query is required");
-  const q = encodeURIComponent(query), s = SOURCES.ddg;
-  const limited = "Image search is unavailable right now: DuckDuckGo is refusing automated searches for a few minutes. Don't retry it. Tell the user in one sentence that image search was unavailable.";
-  // Same source as web_search: its turn, its cool-down after a refusal.
-  if (cooling(s) || !(await turn(s))) return limited;
-  const p = await get(`https://duckduckgo.com/?q=${q}&iax=images&ia=images`);
-  const page = await p.text();
-  const m = page.match(/vqd=["']?([\d-]+)["']?/);
-  if (!m) { if (ddgBlocked(p.status, page) || p.status < 500) refuse(s, p); return limited; }
-  if (!(await turn(s))) return limited;
-  const r = await fetch(`https://duckduckgo.com/i.js?l=us-en&o=json&q=${q}&vqd=${m[1]}&f=,,,,,&p=1`, {
-    headers: { "User-Agent": UA, Referer: "https://duckduckgo.com/", Accept: "application/json" },
-    signal: AbortSignal.timeout(20000),
-  });
-  if ([202, 403, 418, 429].includes(r.status)) { refuse(s, r); return limited; }
-  if (!r.ok) throw new Error(`image search failed: HTTP ${r.status}`);
+// Image search: DuckDuckGo's image results (a search token from its page, then its image list), with Bing's image page as
+// the second source. Same sources as web_search: their turns and their cool-downs after a refusal.
+const IMAGES_LIMITED = "Image search is unavailable right now: DuckDuckGo and Bing are refusing automated searches for a few minutes. Don't retry it. Tell the user in one sentence that image search was unavailable.";
+const IMAGES_UNREACHABLE = "Image search couldn't reach DuckDuckGo or Bing (network error or timeout). Don't retry it now. Tell the user in one sentence that image search was unavailable.";
+// Each returns {items: [{title, image, thumb, page, width, height}]}, {refused}, {limited} or {failure}.
+async function imagesDdg(query) {
+  const s = SOURCES.ddg, q = encodeURIComponent(query);
+  const p = await ask(s, `https://duckduckgo.com/?q=${q}&iax=images&ia=images`, { headers: browserHeaders(null) });
+  if (p.limited || p.failure) return p;
+  const m = p.html.match(/vqd=["']?([\d-]+)["']?/);
+  if (!m) { refuse(s, p.res); return { refused: true }; } // no search token: the page was a refusal
+  const r = await ask(s, `https://duckduckgo.com/i.js?l=us-en&o=json&q=${q}&vqd=${m[1]}&f=,,,,,&p=1`,
+    { headers: { "User-Agent": UA, Referer: "https://duckduckgo.com/", Accept: "application/json" } });
+  if (r.limited || r.failure) return r;
+  if ([202, 403, 418, 429].includes(r.status)) { refuse(s, r.res); return { refused: true }; }
+  if (r.status !== 200) return { failure: new Error(`HTTP ${r.status}`) };
+  let j; try { j = JSON.parse(r.html); } catch { refuse(s, r.res); return { refused: true }; }
   accepted(s);
-  const items = ((await r.json()).results || []).slice(0, Math.min(Number(max_results) || 8, 24));
+  return { items: (j.results || []).map((it) => ({ title: it.title, image: it.image, thumb: it.thumbnail, page: it.url, width: it.width, height: it.height })) };
+}
+// Bing lists each picture as <a class="iusc" m="{murl, turl, purl, t, …}" href="…&expw=<w>&exph=<h>…">.
+function parseBingImages(html) {
+  const out = [], seen = new Set();
+  for (const a of html.matchAll(/<a\b[^>]*\bclass="iusc"[^>]*>/gi)) {
+    const m = /\sm="([^"]*)"/.exec(a[0]);
+    if (!m) continue;
+    let j; try { j = JSON.parse(decode(m[1])); } catch { continue; }
+    if (!j.murl || !/^https?:/.test(j.murl) || seen.has(j.murl)) continue;
+    seen.add(j.murl);
+    const href = decode((/\shref="([^"]*)"/.exec(a[0]) || [])[1] || "");
+    const w = (href.match(/[?&]expw=(\d+)/) || [])[1], h = (href.match(/[?&]exph=(\d+)/) || [])[1];
+    out.push({ title: decode(j.t || "").trim(), image: j.murl, thumb: j.turl, page: j.purl, width: w ? +w : null, height: h ? +h : null });
+  }
+  return out;
+}
+async function imagesBing(query) {
+  const s = SOURCES.bing;
+  const p = await ask(s, "https://www.bing.com/images/search?" + new URLSearchParams({ q: query, setlang: "en" }), { headers: browserHeaders(null) });
+  if (p.limited || p.failure) return p;
+  if (bingBlocked(p.status, p.html, /\bclass="iusc"/)) { refuse(s, p.res); return { refused: true }; }
+  accepted(s);
+  return { items: parseBingImages(p.html) };
+}
+
+async function image_search({ query, max_results = 8 }) {
+  query = String(query || "").trim().slice(0, 400);
+  if (!query) throw new Error("query is required");
+  const want = Math.min(Number(max_results) || 8, 24);
+  let items = null, from = "", unreachable = false;
+  for (const [s, run] of [[SOURCES.ddg, imagesDdg], [SOURCES.bing, imagesBing]]) {
+    if (cooling(s)) continue; // asking again during a block only extends it
+    const r = await run(query);
+    if (r.failure) { unreachable = true; continue; }
+    if (r.refused || r.limited) continue;
+    items = r.items; from = s.name;
+    break;
+  }
+  if (!items) return unreachable ? IMAGES_UNREACHABLE : IMAGES_LIMITED;
+  items = items.slice(0, want);
   if (!items.length) return "No images found.";
   const text = items.map((it, i) =>
-    `${i + 1}. ${it.title || "(untitled)"} — ${it.width}x${it.height}\n   image: ${it.image}\n   page: ${it.url}`).join("\n");
+    `${i + 1}. ${it.title || "(untitled)"}${it.width && it.height ? ` — ${it.width}x${it.height}` : ""}\n   image: ${it.image}\n   page: ${it.page}`).join("\n");
   return {
-    text: `Image results for "${query}" are now shown to the user as thumbnails:\n\n${text}\n\nReply with a short sentence (the user already sees the images). Only call show_image if the user wants one shown large.`,
-    images: items.map((it) => ({ src: it.thumbnail || it.image, full: it.image, link: it.url, caption: it.title })),
+    text: `Image results for "${query}"${from === "Bing" ? " (from Bing)" : ""} are now shown to the user as thumbnails:\n\n${text}\n\nReply with a short sentence (the user already sees the images). Only call show_image if the user wants one shown large.`,
+    images: items.map((it) => ({ src: it.thumb || it.image, full: it.image, link: it.page, caption: it.title })),
   };
 }
 
