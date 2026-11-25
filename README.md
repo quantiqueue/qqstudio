@@ -52,7 +52,7 @@ No admin rights and nothing to install first: it uses your Node.js if it's 18 or
 ### Engines and loadouts
 
 - **llama.cpp builds** for your system (Windows, Linux, macOS; x64 and arm64) and graphics card: CUDA, Vulkan, ROCm, SYCL, Metal or CPU. Each installed build checks for newer ones and updates in place, keeping its loadouts.
-- **Strata** runs Qwen3.8-Flash-Next and a few related models much faster than llama.cpp (about 4× on the same files in our tests: 59–70 tok/s instead of 15). qqstudio keeps its copy of Strata separate from a Strata app you installed yourself.
+- **Strata** runs Qwen3.8-Flash-Next and a few related models much faster than llama.cpp (about 4× on the same files in our tests: 59–70 tok/s instead of 15). It also runs Inkling 2 Mini (including its own `.strata` builds) and Qwen3.6-35B-A3B. qqstudio keeps its copy of Strata separate from a Strata app you installed yourself.
 - **Loadouts** hold everything model- or server-related: context size, GPU layers, KV cache, draft model, sampling and more, each with help text. Several loadouts can share a model, for example a long-context one and a fast one.
 
 ### Sessions and the agent
