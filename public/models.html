@@ -216,6 +216,8 @@
   /* "Load Engine" / "Eject Engine" and "Show logs" as text links on the card's last line */
   .lo-card .lo-links { display:flex; gap:14px; align-items:baseline; }
   .lo-card .lo-links .lo-logs { margin-top:4px; }
+  .lo-card .lo-links .lo-logs.busy { opacity:.35; cursor:default; } /* "Ejecting…": dimmed from the click until the loadout is unloaded */
+  .lo-card .lo-links .lo-wait { color:var(--muted); cursor:default; } /* "Ejecting after the reply…": a note, not a link (Force Eject beside it) */
   .lo-card.loaded .lo-st { color:var(--green); } .lo-card.loading .lo-st { color:var(--amber); } .lo-card.failed .lo-st { color:var(--red); }
   .opt-line { display:flex; align-items:flex-start; gap:10px; cursor:pointer; color:var(--text); font-size:14px; width:max-content; max-width:100%; }
   .opt-line input { margin-top:2px; }
@@ -364,7 +366,7 @@
 <main>
   <section data-tab="engine">
     <h2>Engines</h2>
-    <div class="lead">What loadouts run on: llama.cpp builds, which run any GGUF model, and Strata, a faster engine for a few models (Qwen3.8-Flash-Next and Qwen3.6-35B-A3B). There's nothing to start here: a loadout loads when a session uses it (or with Load on the Loadouts tab).</div>
+    <div class="lead">What loadouts run on: llama.cpp builds, which run any GGUF model, and Strata, a faster engine for a few models (Qwen3.8-Flash-Next, Qwen3.6-35B-A3B and Inkling 2 Mini, including its .strata builds). There's nothing to start here: a loadout loads when a session uses it (or with Load on the Loadouts tab).</div>
     <div id="engList"><div class="srv muted">checking…</div></div>
 
     <h3 class="eng-h">Add an engine</h3>
@@ -655,7 +657,9 @@ function render() {
     const idRow = name.appendChild(el("div", "idrow"));
     idRow.appendChild(el("div", "id", m.id)).title = m.id;
     if (m.external) idRow.appendChild(el("span", "tag ext", "external")).title = "Not in the models folder: llama.cpp downloaded it with -hf into its own cache";
-    if ((loMeta?.strataModels || []).includes(m.id)) idRow.appendChild(el("span", "tag strata", "Strata")).title = "Strata can run this file too: make a loadout with the Strata engine";
+    const onlyStrata = (loMeta?.models || []).some((x) => x.name === m.id && x.strata);
+    if ((loMeta?.strataModels || []).includes(m.id)) idRow.appendChild(el("span", "tag strata", onlyStrata ? "Strata only" : "Strata")).title = onlyStrata ? "A .strata file: only the Strata engine runs it. Make a loadout with the Strata engine" : "Strata can run this file too: make a loadout with the Strata engine";
+    else if (onlyStrata) idRow.appendChild(el("span", "tag strata diff", "Strata only")).title = "A .strata file that this Strata's catalog doesn't list: no engine here can run it";
     const lf = local.get(m.id);
     if (lf || m.external) { // which loadouts use this file; create one
       const uses = loList.filter((l) => l.model === m.id);
@@ -1081,10 +1085,18 @@ function loRender() {
     if (st === "failed" && run.error) info.appendChild(el("div", "err-text", run.error));
     if (st === "loading" && run.progress?.text) info.appendChild(el("div", "sub lo-prog", run.progress.text + (run.progress.pct != null ? ` (${Math.floor(run.progress.pct)}%)` : "")));
     const open = loLogsOpen.has(l.id), links = info.appendChild(el("div", "lo-links"));
-    const on = st === "loaded" || st === "loading";
-    const ld = links.appendChild(el("button", "lo-logs", on ? "Eject Engine" : "Load Engine")); ld.type = "button";
+    // ejecting: "reply" | "memory" (waits for it, then ejects; Force Eject beside it) | "force" (ejecting now)
+    const on = st === "loaded" || st === "loading", ej = on ? run.ejecting : null, waits = ej === "reply" || ej === "memory";
+    const ld = links.appendChild(el(waits ? "span" : "button", "lo-logs" + (ej === "force" ? " busy" : waits ? " lo-wait" : ""),
+      ej === "reply" ? "Ejecting after the reply…" : ej === "memory" ? "Ejecting after memory is saved…" : ej ? "Ejecting…" : on ? "Eject Engine" : "Load Engine"));
+    if (ej === "force") ld.disabled = true;
+    if (waits) {
+      const fe = links.appendChild(el("button", "lo-logs", "Force Eject")); fe.type = "button";
+      fe.title = ej === "reply" ? "Stop the reply and eject now" : "Eject now, without saving this reply's memory";
+      fe.onclick = () => { fe.textContent = "Ejecting…"; fe.classList.add("busy"); loAct(l.id, "unload?force=1"); };
+    }
     ld.title = on ? "Unload to free memory" : run.loadout && run.state !== "stopped" && run.state !== "failed" ? `Unloads ${loList.find((x) => x.id === run.loadout)?.name || run.loadout} and loads this one` : "Load now, so the first reply doesn't wait";
-    ld.onclick = () => loAct(l.id, on ? "unload" : "load");
+    if (!waits) ld.onclick = () => { if (on) { ld.textContent = "Ejecting…"; ld.classList.add("busy"); } loAct(l.id, on ? "unload" : "load"); };
     const lk = links.appendChild(el("button", "lo-logs", open ? "Hide logs" : "Show logs")); lk.type = "button";
     lk.title = "This loadout's server log (llama-server or Strata output; written each time it loads)";
     lk.onclick = () => { open ? loLogsOpen.delete(l.id) : loLogsOpen.add(l.id); loRender(); if (!open) loRefreshLogs(); };
@@ -1171,6 +1183,7 @@ function loEditOpen(id, base) {
   const txt = (val, ph) => { const i = el("input"); i.type = "text"; i.value = val ?? ""; if (ph) i.placeholder = ph; i.spellcheck = false; return i; };
   const sel = (opts, val, blank) => { const s2 = el("select"); if (blank) s2.appendChild(el("option", null, blank)).value = ""; for (const o of opts) { const op = s2.appendChild(el("option", null, o.label ?? o)); op.value = o.value ?? o; } s2.value = val ?? ""; return s2; };
   const chk = (on) => { const i = el("input"); i.type = "checkbox"; i.checked = !!on; return i; };
+  const byLabel = (ms) => [...ms].sort((a, b) => (a.label || a.name).localeCompare(b.label || b.name)); // the picker shows vendor/model
   const basics = form.appendChild(el("div", "lo-rows"));
   const nameIn = txt(v.name, "e.g. Flash-Next 64K"); row(basics, "Name", nameIn, LO_HELP.name);
   const engIn = sel(loMeta.engines.map((e) => ({ label: e.name, value: e.id })), v.engine);
@@ -1181,8 +1194,8 @@ function loEditOpen(id, base) {
   const ext = [...(loMeta.external || [])];
   if (v.model && !loMeta.models.some((m) => m.name === v.model) && !ext.some((m) => m.name === v.model)) ext.push({ name: v.model });
   const modelIn = strata
-    ? sel(loMeta.models.filter((m) => (loMeta.strataModels || []).includes(m.name)).map((m) => ({ label: m.name, value: m.name })), v.model, (loMeta.strataModels || []).length ? null : "no Strata model in the models folder")
-    : sel([...loMeta.models.map((m) => ({ label: m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
+    ? sel(byLabel(loMeta.models.filter((m) => (loMeta.strataModels || []).includes(m.name))).map((m) => ({ label: m.label || m.name, value: m.name })), v.model, (loMeta.strataModels || []).length ? null : "no Strata model in the models folder")
+    : sel([...byLabel(loMeta.models.filter((m) => !m.strata || m.name === v.model)).map((m) => ({ label: m.label || m.name, value: m.name })), ...ext.map((m) => ({ label: m.name + " · external", value: m.name }))], v.model);
   row(basics, "Model", modelIn, strata ? "Files Strata can run (tagged Strata on the Models tab). Get more on Install Models: results Strata runs are tagged there too." : LO_HELP.model);
   const visIn = chk(v.vision);
   const visR = row(basics, "Vision", visIn, LO_HELP.vision, "--mmproj");
@@ -1345,7 +1358,7 @@ async function srvRefresh() {
   const t = $("tabLoadouts");
   t.textContent = run.state === "loaded" || run.state === "loading" ? "●" : run.state === "failed" ? "!" : "";
   t.style.color = run.state === "loaded" ? "var(--green)" : run.state === "loading" ? "var(--amber)" : run.state === "failed" ? "var(--red)" : "";
-  const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text]);
+  const sig = JSON.stringify([run.loadout, run.state, run.error, run.progress?.text, run.ejecting]); // ejecting: the card's "Ejecting after…" line
   if (sig !== srvRefresh.last) { srvRefresh.last = sig; loRender(); } // the cards' state
   loRefreshLogs();
 }
@@ -1650,7 +1663,7 @@ async function loadFiles(repo, box) {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
     box.textContent = "";
-    if (!j.files.length) { box.textContent = "No .gguf files in this repo."; return; }
+    if (!j.files.length) { box.textContent = "No model files (.gguf or .strata) in this repo."; return; }
     // Offer the repo's vision projector alongside the model (F16 preferred, then BF16, then whatever there is).
     // The repo's own projector (top level) before a copy in a subfolder (e.g. a runtime-specific folder with the same file names)
     const projs = j.files.filter((f) => f.mmproj), topProjs = projs.filter((f) => !f.paths[0].includes("/")), pool = topProjs.length ? topProjs : projs;
@@ -1659,7 +1672,7 @@ async function loadFiles(repo, box) {
     if (proj && !proj.installed && j.files.some((f) => !f.mmproj)) {
       const opt = box.appendChild(el("label", "vis-opt"));
       withVision = opt.appendChild(el("input")); withVision.type = "checkbox"; withVision.checked = true;
-      opt.appendChild(el("span", null, "＋ Vision: also download the image projector"));
+      opt.appendChild(el("span", null, /\.strata$/i.test(proj.name) ? "＋ Vision: also download Strata's picture reader" : "＋ Vision: also download the image projector"));
       opt.appendChild(el("span", "muted", `${proj.name} · ${fmtBytes(proj.size)}`));
     } else if (proj && proj.installed) {
       box.appendChild(el("div", "vis-opt", "👁 Vision projector already installed for this repo"));
@@ -1674,9 +1687,12 @@ async function loadFiles(repo, box) {
         + (saved.length ? `: ${saved[0]}${saved.length > 1 ? ` and ${saved.length - 1} more part${saved.length > 2 ? "s" : ""}` : ""}` : "");
       if (f.mmproj) line.appendChild(el("span", "tag vis", "vision projector"));
       if (f.parts > 1) line.appendChild(el("span", "tag", `${f.parts} parts`));
-      if (f.strata) line.appendChild(el("span", "tag strata" + (f.strata.different ? " diff" : ""), f.strata.different ? "Strata · different version" : "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
-        f.strata.different ? `${f.strata.title}: Strata knows these files, but at another size than it tested, so its check would refuse them. llama.cpp can still use them.`
-          : `${f.strata.title}: Strata can run these files${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
+      const own = /\.strata$/i.test(f.name); // Strata's own format: no other engine reads it
+      if (f.strata?.extra) line.appendChild(el("span", "tag strata", f.strata.extra === "vision" ? "Strata · picture reader" : "Strata · drafter")).title =
+        f.strata.extra === "vision" ? "Lets a .strata model read pictures. Strata finds it beside the model file." : "Makes answers faster for the GGUF sizes on Strata. Strata finds it beside the model file.";
+      else if (f.strata) line.appendChild(el("span", "tag strata", "Strata" + (f.strata.words ? " · " + f.strata.words : ""))).title =
+        `${f.strata.title}: Strata can run ${own ? "this file (only Strata can: it's Strata's own format)" : "these files"}${f.strata.words ? ` (${f.strata.words} on this PC)` : ""}. Make a loadout with the Strata engine.`;
+      else if (own) line.appendChild(el("span", "tag strata diff", "Strata only")).title = "Strata's own format: only the Strata engine reads it, and this Strata's catalog doesn't list this file.";
       line.appendChild(el("span", "size", fmtBytes(f.size)));
       if (f.installed) { line.appendChild(el("span", "tag ok", "installed")); continue; }
       const btn = line.appendChild(el("button", "load", "Download"));

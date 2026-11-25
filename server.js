@@ -178,6 +178,49 @@ async function unloadLoadout(id) {
   if (busyCount()) throw Object.assign(new Error("A reply is using it; stop the reply first"), { status: 409 });
   await llama.stop();
 }
+// Eject from the loadout card. When nothing uses the loadout it ejects now. Otherwise it waits for the reply using it, or for
+// the memory update or title worked out after a reply, and ejects when that ends; meanwhile the card says what it waits for
+// (running.ejecting: "reply" | "memory") with Force Eject. A new reply started meanwhile cancels the eject: the loadout is being
+// used again. Force Eject stops the reply (like Stop), drops the memory update and ejects now ("force" while it does).
+let ejecting = null;
+const busyOn = (lo) => (inflight.get(lo) || 0) > 0;
+const ejectWaitsFor = (lo) => (runs.activeOn(lo).length ? "reply" : busyOn(lo) || runs.settlingAny() ? "memory" : null);
+async function ejectLoadout(id, force) {
+  const lo = llama.current().loadout;
+  if (!lo || (id && lo !== id)) return;
+  if (force) return forceEject(lo);
+  if (ejecting?.loadout === lo) return;
+  if (!ejectWaitsFor(lo) && !busyCount()) return unloadLoadout(lo);
+  const mine = ejecting = { loadout: lo, n0: runs.started() };
+  console.log(`[eject] ${lo}: after the ${ejectWaitsFor(lo) || "request"}`);
+  const again = () => runs.started() !== mine.n0 || llama.current().loadout !== lo; // a reply started since: in use again
+  (async () => {
+    try {
+      while (ejectWaitsFor(lo) || busyCount()) {
+        if (ejecting !== mine) return; // Force Eject took over
+        if (again()) { console.log(`[eject] ${lo}: cancelled (in use again)`); return; }
+        await sleepMs(250);
+      }
+      if (ejecting !== mine) return;
+      if (again()) { console.log(`[eject] ${lo}: cancelled (in use again)`); return; } // (a new reply makes the memory update give way first)
+      await llama.stop();
+      console.log(`[eject] ${lo}: ejected`);
+    } catch (e) { console.error(`[eject] ${lo}: ${e.message}`); }
+    finally { if (ejecting === mine) ejecting = null; }
+  })();
+}
+async function forceEject(lo) {
+  const mine = ejecting = { loadout: lo, force: true };
+  try {
+    const ids = runs.activeOn(lo);
+    for (const id of ids) runs.stop(id);
+    runs.stopSettling();
+    console.log(`[eject] ${lo}: forced${ids.length ? ` (stopped ${ids.length} repl${ids.length === 1 ? "y" : "ies"})` : ""}`);
+    for (let t = Date.now(); busyOn(lo) && Date.now() - t < 5000;) await sleepMs(100); // stopped requests let go of it (on Node 18 at their next chunk)
+    await llama.stop();
+  } finally { if (ejecting === mine) ejecting = null; }
+}
+const withEjecting = (s) => (ejecting && s && s.loadout === ejecting.loadout ? { ...s, ejecting: ejecting.force ? "force" : ejectWaitsFor(ejecting.loadout) || "memory" } : s);
 // Whether a loadout is loaded / loading / failed (null: not running).
 async function modelState(id) {
   const s = await llama.status();
@@ -371,7 +414,7 @@ function updateChat(file, fn) {
 }
 // A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
-const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => (loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model), liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
@@ -444,7 +487,7 @@ async function handleEngines(req, res) {
   const body = async () => JSON.parse((await readBody(req)) || "{}");
   try {
     if (!a) {
-      if (req.method === "GET") return sendJson(res, 200, await llama.list());
+      if (req.method === "GET") { const j = await llama.list(); return sendJson(res, 200, { ...j, running: withEjecting(j.running) }); }
       if (req.method === "POST") return sendJson(res, 200, { engine: llama.add(await body()) });
     }
     if (a === "options" && req.method === "PUT") { llama.setOptions(await body()); return sendJson(res, 200, await llama.list()); }
@@ -511,13 +554,13 @@ async function handleLoadouts(req, res) {
       const engs = [];
       for (const e of llama.all()) engs.push({ id: e.id, name: e.name, type: e.type || "llama.cpp", active: e.id === llama.defaultEngine()?.id, support: await loadouts.fieldSupport(e) });
       return sendJson(res, 200, { loadouts: loadouts.list(), fields: loadouts.FIELDS, sampling: loadouts.SAMPLING, engines: engs,
-        models: loadouts.localModels().map((m) => ({ name: m.name, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model) })),
-        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: await llama.status(),
+        models: loadouts.localModels().map((m) => ({ name: m.name, label: m.label, mmproj: !!m.mmproj, size: m.size, maxCtx: loadouts.trainedContext(m.model), ...(m.strata ? { strata: true } : {}) })),
+        external: (await externalModels()).map((m) => ({ name: m.name, external: true })), defaultCtx: loadouts.DEFAULT_CTX, running: withEjecting(await llama.status()),
         strataFields: loadouts.STRATA_FIELDS, strataModels: (strataCatalogNow(), loadouts.strataModels().map((m) => m.name)) });
     }
     if (id && sub === "preview" && req.method === "GET") { const l = loadouts.get(id); if (!l) return sendJson(res, 404, { error: "No such loadout" }); return sendJson(res, 200, { cmd: loadouts.commandLine(l) }); }
     if (id && sub === "log" && req.method === "GET") { res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }); return res.end(llama.log(id)); }
-    if (id && (sub === "load" || sub === "unload") && req.method === "POST") { if (sub === "load") await preload(id); else await unloadLoadout(id); return sendJson(res, 200, { ok: true, running: await llama.status() }); }
+    if (id && (sub === "load" || sub === "unload") && req.method === "POST") { if (sub === "load") await preload(id); else await ejectLoadout(id, new URL(req.url, "http://x").searchParams.get("force") === "1"); return sendJson(res, 200, { ok: true, running: withEjecting(await llama.status()) }); }
     const apply = async () => { const r = await regenPresets(); return { restarted: r.restarted, restartNeeded: r.restartNeeded }; }; // reloads the running loadout if it changed
     if (!id && req.method === "POST") { const l = loadouts.create(await withSource(JSON.parse((await readBody(req)) || "{}"))); return sendJson(res, 200, { loadout: l, ...(await apply(l.engine)) }); }
     if (id && !sub && req.method === "PUT") {
@@ -641,7 +684,7 @@ function strataCatalogNow() {
   const e = llama.all().find((x) => x.type === "strata");
   if (!e) return null;
   const c = llama.strataCatalogCached(e.id);
-  if (!c || !c.files?.[0]?.sizes || Date.now() - c.at > 24 * 3600e3) llama.strataCatalog(e.id, !!c).catch(() => {}); // (an older cache has no file list)
+  if (llama.strataCatalogStale(e.id)) llama.strataCatalog(e.id, !!c).catch(() => {}); // (a day old, made by another Strata or an older strata_catalog.py)
   return c ? { engine: e.id, rows: c.rows, files: c.files || [], computer: c.computer, error: c.error } : { engine: e.id, rows: [], files: [], loading: true };
 }
 // Strata answers /props in llama-server's shape too (the context it actually fitted, its batch slots); its loadout's
@@ -834,7 +877,7 @@ async function handleLocalModels(req, res) {
   const all = presets.list(root);
   const off = presets.visionOff();
   if (req.method === "GET" && req.url === "/api/models/local")
-    return sendJson(res, 200, { folder: root, models: all.map((m) => ({ id: m.name, path: m.model, mmproj: !!m.mmproj, vision: !!m.mmproj && !off.has(m.name), ...modelFiles(m, all) })) });
+    return sendJson(res, 200, { folder: root, models: all.map((m) => ({ id: m.name, path: m.model, mmproj: !!m.mmproj, ...(m.strata ? { strata: true } : {}), vision: !!m.mmproj && !off.has(m.name), ...modelFiles(m, all) })) });
   if (req.method === "POST" && req.url === "/api/models/vision") {
     let b; try { b = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: "Invalid JSON" }); }
     const m = all.find((x) => x.name === b.id);
@@ -886,11 +929,11 @@ async function handleHf(req, res) {
     // Strata tags: repos its catalog downloads from, and the file sets it lists (exact paths and sizes, from strata_catalog.py).
     if (req.method === "GET" && u.pathname === "/api/hf/search") {
       strataCatalogNow();
-      return sendJson(res, 200, { models: (await hf.search(u.searchParams.get("q"))).map((m) => (loadouts.strataRepo(m.id) ? { ...m, strata: true } : m)) });
+      return sendJson(res, 200, { models: (await hf.search(u.searchParams.get("q"), 30, loadouts.strataOwners(), loadouts.strataRepo)).map((m) => (loadouts.strataRepo(m.id) ? { ...m, strata: true } : m)) });
     }
     if (req.method === "GET" && u.pathname === "/api/hf/files") {
       const repo = u.searchParams.get("repo");
-      return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; return t ? { ...g, strata: t } : g; }) });
+      return sendJson(res, 200, { files: (await hf.files(repo, u.searchParams.get("folder"))).map((g) => { const t = loadouts.strataFiles(repo, g); delete g.sizes; delete g.shas; return t ? { ...g, strata: t } : g; }) });
     }
     if (req.method === "GET" && u.pathname === "/api/hf/downloads") return sendJson(res, 200, { jobs: hf.list() });
     if (req.method === "POST" && u.pathname === "/api/hf/download") return sendJson(res, 200, { ids: await hf.startDownload(JSON.parse(await readBody(req))) });
@@ -935,7 +978,7 @@ async function handleChat(req, res) {
     upstream = await fetch(`${llama.url()}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, stream: true }),
+      body: JSON.stringify({ ...payload, stream: true, ...(loadouts.isStrata(loadouts.get(payload.model)?.engine) ? { model: undefined } : {}) }), // Strata: no model name (see runs.js wire)
       signal: controller.signal,
     });
   } catch (e) {

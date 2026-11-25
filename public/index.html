@@ -661,10 +661,12 @@ function footDrawSoon() { if (!footRaf) footRaf = requestAnimationFrame(() => { 
 // The reply's count to show: real, or "≈" (approx) while a tool call is being prepared and no text has arrived for 1.2 s
 // (or an estimate is being carried on). Speed: the engine's own figure for the latest finished step ("… @ 43.0 tok/s",
 // this reply or an earlier one), else this reply's average so far (not the bursts between chunks).
+// Also when a step that has started streaming goes quiet for 1.2 s with no tool call announced: Strata's Inkling engine holds
+// back a whole tool call, name included (2026-11-23: "Generating 13 tokens for 1m 05s" while Strata had written 5,284).
 function footGuess() {
   if (!foot) return { n: 0, approx: false };
   const now = performance.now(), a = foot.anchor, real = foot.tokens;
-  if (!foot.prep || !a || (!a.carried && now - foot.lastAt < 1200)) return { n: real, approx: false };
+  if (!(foot.prep || foot.streaming) || !a || (!a.carried && now - foot.lastAt < 1200)) return { n: real, approx: false };
   let rate = 0;
   for (let i = chat.messages.length - 1; i >= 0 && !rate; i--) { const m = /@ ([\d.]+) tok\/s/.exec(chat.messages[i]._meta || ""); if (m) rate = +m[1]; }
   const span = (foot.lastAt - foot.firstAt) / 1000;
@@ -1524,7 +1526,7 @@ function assistantBox() {
   const drawAct = () => {
     if (!actEl) return;
     const secs = Math.floor((performance.now() - actT0) / 1000);
-    const extra = foot && foot.prep && foot.shown > foot.tokens ? foot.shown - foot.tokens : 0, n = actN + extra; // the footer's "≈" (see footTokens)
+    const extra = foot && (foot.prep || foot.streaming) && foot.shown > foot.tokens ? foot.shown - foot.tokens : 0, n = actN + extra; // the footer's "≈" (see footTokens, footGuess)
     actEl.lastChild.textContent = `Generating ${extra ? "≈ " : ""}${n.toLocaleString()} token${n === 1 ? "" : "s"} for ${fmtSecs(secs)}` + (actTool ? ` · ${actTool}` : "");
   };
   const drawPhase = () => {
@@ -2571,6 +2573,10 @@ function onRunEvent(ev, id) {
       if (live.box && live.content) promote(live.box.node); // text streaming right now
       if (fold && lastChild() === fold.el) foldLive(fold, true);
       if (ev.stat) footStart(ev.stat.ms, ev.stat.tokens);
+      if (foot && ev.cur?.gen) { // a step was generating when the page (re)attached: estimate from its last token, as if it had been watched (footGuess)
+        const at = performance.now() - (ev.cur.gen.idle || 0);
+        foot.streaming = true; foot.prep = ev.cur.gen.tool || ""; foot.lastAt = at; foot.lastTok = foot.tokens; foot.anchor = { n: foot.tokens, at, carried: false };
+      }
       for (const a of ev.agents || []) agentChip(a);
       if (ev.waiting && foot) { foot.waiting = ev.waiting; foot.draw(); }
       showLoopWarn(ev.loopWarn?.id || null, id);
@@ -2586,6 +2592,7 @@ function onRunEvent(ev, id) {
       if (ev.r) { live.reasoning += ev.r; b.thinking(live.reasoning); }
       if (ev.c) { live.content += ev.c; b.content(live.content); b.clearPhase(); promote(b.node); } // text is always shown
       if (ev.n) b.activity(ev.n, ev.tool || "");
+      if (foot) foot.streaming = true; // a step is generating (see footGuess)
       if (ev.tot != null) footTokens(ev.tot, ev.r || ev.c ? "" : ev.tool || "");
       follow();
       break;
@@ -2599,11 +2606,12 @@ function onRunEvent(ev, id) {
       b.finish(m.content || "", m._meta);
       if (m.content) promote(b.node);
       live.box = null;
+      if (foot) foot.streaming = false;
       if (ev.tot != null) footTokens(ev.tot);
       break;
     }
-    case "failed": { const b = live?.box || liveStep(); b.error(ev.text); promote(b.node); if (live) live.box = null; break; }
-    case "tool": if (foot) foot.prep = ""; liveTool(ev.tc, ev.status); break;
+    case "failed": { if (foot) foot.streaming = false; const b = live?.box || liveStep(); b.error(ev.text); promote(b.node); if (live) live.box = null; break; }
+    case "tool": if (foot) { foot.prep = ""; foot.streaming = false; } liveTool(ev.tc, ev.status); break;
     case "question": liveQuestion(ev); break;
     case "todo": chat.todo = ev.items; renderTodo(); break;
     case "agent": agentChip(ev); loadList(); break;

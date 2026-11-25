@@ -1,10 +1,10 @@
-// Web tools: search (DuckDuckGo HTML, no key), fetch page as text, download to disk.
+// Web tools: search and image search (DuckDuckGo, then Bing; no key), fetch page as text, download to disk.
 const fs = require("fs");
 const path = require("path");
 const { pipeline } = require("stream/promises");
 const { Readable } = require("stream");
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const PAGE_CHARS = 12000;          // chars of page text per fetch_url call
 const MAX_DOWNLOAD = 2 * 1024 ** 3; // 2 GB
 
@@ -62,54 +62,250 @@ async function get(url, ms = 20000) {
   return fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9" }, redirect: "follow", signal: AbortSignal.timeout(ms) });
 }
 
-async function web_search({ query, max_results = 8 }) {
-  if (!query) throw new Error("query is required");
-  const r = await fetch("https://html.duckduckgo.com/html/", {
-    method: "POST",
-    headers: { "User-Agent": UA, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ q: query }).toString(),
-    signal: AbortSignal.timeout(20000),
+// Keyless search, done the way Strata does it (app/host/server/web-search-ddg.mjs): DuckDuckGo's HTML page with Bing's
+// result page as the second source, asked politely. DuckDuckGo refuses a program that asks fast (two searches in about a
+// second pass, the third gets an "anomaly" page, then every page is refused for minutes), so:
+//   - the request has a browser's shape (Accept, Accept-Language, Referer/Origin, Sec-Fetch-*; nothing hidden);
+//   - one request at a time per source, 2.5-4 s apart, at most 8 a minute;
+//   - the same question within 30 minutes is answered from a cache;
+//   - a source that refuses is left alone for 1, 2, 4 ... up to 10 minutes (or its Retry-After), since asking again only
+//     extends the block, and the next source is tried;
+//   - a timeout or server error gets one retry after a pause;
+//   - when every source refuses, the model is told plainly not to retry.
+const PACE = { gap: 2500, jitter: 1500, perMinute: 8, cooldown: 60000, cooldownMax: 600000, retryPause: 1500 };
+const CACHE_MS = 30 * 60 * 1000, CACHE_SIZE = 120;
+const SEARCH_LIMITED = "Web search is unavailable right now: DuckDuckGo and Bing are refusing automated searches for a few minutes. Don't retry this search. Carry on with what you know and tell the user in one sentence that web search was unavailable.";
+const SEARCH_UNREACHABLE = "The search couldn't reach DuckDuckGo or Bing (network error or timeout). Don't retry this search now. Carry on with what you know and say that web search was unavailable.";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const source = (name) => ({ name, chain: Promise.resolve(), last: 0, starts: [], until: 0, strikes: 0 });
+const SOURCES = { ddg: source("DuckDuckGo"), bing: source("Bing") };
+const searchCache = new Map();
+
+// Waits for this source's turn. Returns false when the wait would be over 30 s (8 a minute already used).
+function turn(s) {
+  const run = s.chain.then(async () => {
+    const spacing = PACE.gap + Math.floor(Math.random() * PACE.jitter);
+    for (;;) {
+      const t = Date.now();
+      while (s.starts.length && t - s.starts[0] > 60000) s.starts.shift();
+      const wait = s.last ? Math.max(spacing - (t - s.last), s.starts.length >= PACE.perMinute ? 60000 - (t - s.starts[0]) : 0) : 0;
+      if (wait <= 0) break;
+      if (wait > 30000) return false;
+      await sleep(wait);
+    }
+    s.last = Date.now();
+    s.starts.push(s.last);
+    return true;
   });
-  if (!r.ok) throw new Error(`search failed: HTTP ${r.status}`);
-  const html = await r.text();
-  const results = [];
-  const blocks = html.split(/class="result\s/).slice(1);
-  for (const b of blocks) {
-    if (results.length >= Math.min(Number(max_results) || 8, 20)) break;
+  s.chain = run.catch(() => {});
+  return run;
+}
+function refuse(s, res) {
+  s.strikes++;
+  const ra = Number(res && res.headers && res.headers.get("retry-after"));
+  const after = Number.isFinite(ra) && ra > 0 ? Math.min(ra * 1000, PACE.cooldownMax) : 0;
+  s.until = Date.now() + Math.max(after, Math.min(PACE.cooldown * 2 ** (s.strikes - 1), PACE.cooldownMax));
+}
+function accepted(s) { s.strikes = 0; s.until = 0; }
+const cooling = (s) => s.until > Date.now();
+
+function browserHeaders(origin, extra) {
+  return {
+    "User-Agent": UA, Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9",
+    "Upgrade-Insecure-Requests": "1", "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin", "Sec-Fetch-User": "?1",
+    ...(origin ? { Referer: origin + "/", Origin: origin } : {}), ...(extra || {}),
+  };
+}
+
+// One page request in the source's turn, with one retry after a timeout, network error or server error.
+// Returns {res, status, html}, {limited: true} (no turn within 30 s) or {failure}.
+async function ask(s, url, init) {
+  let failure;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!(await turn(s))) return { limited: true };
+    try {
+      const res = await fetch(url, { redirect: "follow", ...init, signal: AbortSignal.timeout(15000) });
+      const html = await res.text();
+      if (res.status < 500) return { res, status: res.status, html };
+      failure = new Error(`HTTP ${res.status}`);
+    } catch (e) { failure = e; }
+    if (attempt === 0) await sleep(PACE.retryPause + Math.floor(Math.random() * 1000));
+  }
+  return { failure };
+}
+
+function ddgBlocked(status, html) {
+  if ([202, 403, 418, 429].includes(status)) return true;
+  return /anomaly-modal|anomaly\.js|unusual traffic|are you a (?:robot|human)|captcha|challenge-form/i.test(html.slice(0, 60000)) && !/class="result__a"/.test(html);
+}
+// results: what a page with results has (web: b_algo; images: iusc). A page with results is never "blocked".
+function bingBlocked(status, html, results = /\bclass="[^"]*\bb_algo\b/) {
+  if ([403, 429, 503].includes(status)) return true;
+  const t = html.slice(0, 80000);
+  if (results.test(t)) return false;
+  return /captcha|unusual traffic|are you a robot|verify you are (?:a )?human|\bcf-chl|challenge-platform/i.test(t);
+}
+
+function parseDdg(html) {
+  const out = [];
+  for (const b of html.split(/class="result\s/).slice(1)) {
     const a = b.match(/class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/);
     if (!a) continue;
     let url = decode(a[1]);
     const uddg = url.match(/[?&]uddg=([^&]+)/);
     if (uddg) url = decodeURIComponent(uddg[1]);
     if (url.startsWith("//")) url = "https:" + url;
-    if (/duckduckgo\.com\/y\.js/.test(url)) continue; // ads
-    const title = decode(a[2].replace(/<[^>]+>/g, "")).trim();
+    if (/duckduckgo\.com\/y\.js/.test(url) || /^result--ad/.test(b)) continue; // ads
     const sn = b.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/(a|div)>/);
-    const snippet = sn ? decode(sn[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim() : "";
-    results.push(`${results.length + 1}. ${title}\n   ${url}\n   ${snippet}`);
+    out.push({ url, title: decode(a[2].replace(/<[^>]+>/g, "")).trim(), snippet: sn ? decode(sn[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim() : "" });
   }
-  if (!results.length) return /anomaly|captcha/i.test(html) ? "Search was blocked by DuckDuckGo (rate limit). Try again shortly." : "No results.";
-  return `Results for "${query}":\n\n${results.join("\n\n")}\n\nUse fetch_url to read a result.`;
+  return out;
+}
+
+// Bing wraps result links in its own redirect (/ck/a?...&u=a1<base64url of the real address>).
+function bingTarget(href) {
+  try {
+    const url = new URL(decode(href).trim(), "https://www.bing.com/");
+    if (/(^|\.)bing\.com$/i.test(url.hostname)) {
+      const u = url.searchParams.get("u");
+      if (!u || !/^a1/.test(u)) return null;
+      const real = new URL(Buffer.from(u.slice(2).replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+      return /^https?:$/.test(real.protocol) ? real.href : null;
+    }
+    return /^https?:$/.test(url.protocol) ? url.href : null;
+  } catch { return null; }
+}
+function parseBing(html) {
+  const out = [];
+  for (const block of html.split(/<li\b[^>]*\bclass="[^"]*\bb_algo\b[^"]*"/i).slice(1)) {
+    const end = block.search(/<li\b[^>]*\bclass="[^"]*\bb_(?:algo|ans|ad|pag)\b/i);
+    const body = end > 0 ? block.slice(0, end) : block;
+    const h2 = /<h2\b[^>]*>\s*<a\b([^>]*)>([\s\S]*?)<\/a>/i.exec(body);
+    if (!h2) continue;
+    const href = (/\bhref="([^"]*)"/i.exec(h2[1]) || [])[1];
+    const url = href ? bingTarget(href) : null;
+    const title = decode(h2[2].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    if (!url || !title) continue;
+    const sn = /<p\b[^>]*class="[^"]*\bb_lineclamp\d*\b[^"]*"[^>]*>([\s\S]*?)<\/p>/i.exec(body)
+      || /<div\b[^>]*class="[^"]*\bb_caption\b[^"]*"[^>]*>[\s\S]*?<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(body);
+    out.push({ url, title, snippet: sn ? decode(sn[1].replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim() : "" });
+  }
+  return out;
+}
+
+// Each returns {rows}, {refused}, {limited} or {failure}.
+async function searchDdg(query) {
+  const s = SOURCES.ddg, origin = "https://html.duckduckgo.com";
+  const p = await ask(s, origin + "/html/", { method: "POST", headers: browserHeaders(origin, { "Content-Type": "application/x-www-form-urlencoded" }),
+    body: new URLSearchParams({ q: query, b: "", kl: "wt-wt", df: "" }).toString() });
+  if (p.limited || p.failure) return p;
+  if (ddgBlocked(p.status, p.html)) { refuse(s, p.res); return { refused: true }; }
+  accepted(s);
+  return { rows: parseDdg(p.html) };
+}
+async function searchBing(query) {
+  const s = SOURCES.bing;
+  const p = await ask(s, "https://www.bing.com/search?" + new URLSearchParams({ q: query, setlang: "en" }), { headers: browserHeaders(null) });
+  if (p.limited || p.failure) return p;
+  if (bingBlocked(p.status, p.html)) { refuse(s, p.res); return { refused: true }; }
+  accepted(s);
+  return { rows: parseBing(p.html) };
+}
+
+async function web_search({ query, max_results = 8 }) {
+  query = String(query || "").trim().slice(0, 400);
+  if (!query) throw new Error("query is required");
+  const want = Math.min(Number(max_results) || 8, 20);
+  const key = query.toLowerCase().replace(/\s+/g, " ");
+  let hit = searchCache.get(key);
+  if (!hit || Date.now() - hit.at > CACHE_MS) {
+    hit = null;
+    let unreachable = false;
+    for (const [s, run] of [[SOURCES.ddg, searchDdg], [SOURCES.bing, searchBing]]) {
+      if (cooling(s)) continue; // asking again during a block only extends it
+      const r = await run(query);
+      if (r.failure) { unreachable = true; continue; }
+      if (r.refused || r.limited) continue;
+      hit = { at: Date.now(), rows: r.rows, from: s.name };
+      searchCache.set(key, hit);
+      if (searchCache.size > CACHE_SIZE) searchCache.delete(searchCache.keys().next().value);
+      break;
+    }
+    if (!hit) return unreachable ? SEARCH_UNREACHABLE : SEARCH_LIMITED;
+  }
+  const rows = hit.rows.slice(0, want);
+  if (!rows.length) return "No results.";
+  const list = rows.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join("\n\n");
+  return `Results for "${query}"${hit.from === "Bing" ? " (from Bing)" : ""}:\n\n${list}\n\nUse fetch_url to read a result.`;
+}
+
+// Image search: DuckDuckGo's image results (a search token from its page, then its image list), with Bing's image page as
+// the second source. Same sources as web_search: their turns and their cool-downs after a refusal.
+const IMAGES_LIMITED = "Image search is unavailable right now: DuckDuckGo and Bing are refusing automated searches for a few minutes. Don't retry it. Tell the user in one sentence that image search was unavailable.";
+const IMAGES_UNREACHABLE = "Image search couldn't reach DuckDuckGo or Bing (network error or timeout). Don't retry it now. Tell the user in one sentence that image search was unavailable.";
+// Each returns {items: [{title, image, thumb, page, width, height}]}, {refused}, {limited} or {failure}.
+async function imagesDdg(query) {
+  const s = SOURCES.ddg, q = encodeURIComponent(query);
+  const p = await ask(s, `https://duckduckgo.com/?q=${q}&iax=images&ia=images`, { headers: browserHeaders(null) });
+  if (p.limited || p.failure) return p;
+  const m = p.html.match(/vqd=["']?([\d-]+)["']?/);
+  if (!m) { refuse(s, p.res); return { refused: true }; } // no search token: the page was a refusal
+  const r = await ask(s, `https://duckduckgo.com/i.js?l=us-en&o=json&q=${q}&vqd=${m[1]}&f=,,,,,&p=1`,
+    { headers: { "User-Agent": UA, Referer: "https://duckduckgo.com/", Accept: "application/json" } });
+  if (r.limited || r.failure) return r;
+  if ([202, 403, 418, 429].includes(r.status)) { refuse(s, r.res); return { refused: true }; }
+  if (r.status !== 200) return { failure: new Error(`HTTP ${r.status}`) };
+  let j; try { j = JSON.parse(r.html); } catch { refuse(s, r.res); return { refused: true }; }
+  accepted(s);
+  return { items: (j.results || []).map((it) => ({ title: it.title, image: it.image, thumb: it.thumbnail, page: it.url, width: it.width, height: it.height })) };
+}
+// Bing lists each picture as <a class="iusc" m="{murl, turl, purl, t, …}" href="…&expw=<w>&exph=<h>…">.
+function parseBingImages(html) {
+  const out = [], seen = new Set();
+  for (const a of html.matchAll(/<a\b[^>]*\bclass="iusc"[^>]*>/gi)) {
+    const m = /\sm="([^"]*)"/.exec(a[0]);
+    if (!m) continue;
+    let j; try { j = JSON.parse(decode(m[1])); } catch { continue; }
+    if (!j.murl || !/^https?:/.test(j.murl) || seen.has(j.murl)) continue;
+    seen.add(j.murl);
+    const href = decode((/\shref="([^"]*)"/.exec(a[0]) || [])[1] || "");
+    const w = (href.match(/[?&]expw=(\d+)/) || [])[1], h = (href.match(/[?&]exph=(\d+)/) || [])[1];
+    out.push({ title: decode(j.t || "").trim(), image: j.murl, thumb: j.turl, page: j.purl, width: w ? +w : null, height: h ? +h : null });
+  }
+  return out;
+}
+async function imagesBing(query) {
+  const s = SOURCES.bing;
+  const p = await ask(s, "https://www.bing.com/images/search?" + new URLSearchParams({ q: query, setlang: "en" }), { headers: browserHeaders(null) });
+  if (p.limited || p.failure) return p;
+  if (bingBlocked(p.status, p.html, /\bclass="iusc"/)) { refuse(s, p.res); return { refused: true }; }
+  accepted(s);
+  return { items: parseBingImages(p.html) };
 }
 
 async function image_search({ query, max_results = 8 }) {
+  query = String(query || "").trim().slice(0, 400);
   if (!query) throw new Error("query is required");
-  const q = encodeURIComponent(query);
-  const page = await (await get(`https://duckduckgo.com/?q=${q}&iax=images&ia=images`)).text();
-  const m = page.match(/vqd=["']?([\d-]+)["']?/);
-  if (!m) throw new Error("Image search unavailable (DuckDuckGo did not return a search token; possibly rate-limited)");
-  const r = await fetch(`https://duckduckgo.com/i.js?l=us-en&o=json&q=${q}&vqd=${m[1]}&f=,,,,,&p=1`, {
-    headers: { "User-Agent": UA, Referer: "https://duckduckgo.com/", Accept: "application/json" },
-    signal: AbortSignal.timeout(20000),
-  });
-  if (!r.ok) throw new Error(`image search failed: HTTP ${r.status}`);
-  const items = ((await r.json()).results || []).slice(0, Math.min(Number(max_results) || 8, 24));
+  const want = Math.min(Number(max_results) || 8, 24);
+  let items = null, from = "", unreachable = false;
+  for (const [s, run] of [[SOURCES.ddg, imagesDdg], [SOURCES.bing, imagesBing]]) {
+    if (cooling(s)) continue; // asking again during a block only extends it
+    const r = await run(query);
+    if (r.failure) { unreachable = true; continue; }
+    if (r.refused || r.limited) continue;
+    items = r.items; from = s.name;
+    break;
+  }
+  if (!items) return unreachable ? IMAGES_UNREACHABLE : IMAGES_LIMITED;
+  items = items.slice(0, want);
   if (!items.length) return "No images found.";
   const text = items.map((it, i) =>
-    `${i + 1}. ${it.title || "(untitled)"} — ${it.width}x${it.height}\n   image: ${it.image}\n   page: ${it.url}`).join("\n");
+    `${i + 1}. ${it.title || "(untitled)"}${it.width && it.height ? ` — ${it.width}x${it.height}` : ""}\n   image: ${it.image}\n   page: ${it.page}`).join("\n");
   return {
-    text: `Image results for "${query}" are now shown to the user as thumbnails:\n\n${text}\n\nReply with a short sentence (the user already sees the images). Only call show_image if the user wants one shown large.`,
-    images: items.map((it) => ({ src: it.thumbnail || it.image, full: it.image, link: it.url, caption: it.title })),
+    text: `Image results for "${query}"${from === "Bing" ? " (from Bing)" : ""} are now shown to the user as thumbnails:\n\n${text}\n\nReply with a short sentence (the user already sees the images). Only call show_image if the user wants one shown large.`,
+    images: items.map((it) => ({ src: it.thumb || it.image, full: it.image, link: it.page, caption: it.title })),
   };
 }
 
@@ -183,4 +379,4 @@ async function http_request({ url, method = "GET", headers = {}, json, body, tim
   return `HTTP ${r.status} ${r.statusText}${r.redirected ? ` (redirected to ${r.url})` : ""}${hdrs ? "\n" + hdrs : ""}\n\n${text || "(empty body)"}`;
 }
 
-module.exports = { web_search, image_search, fetch_url, download_file, htmlToText, http_request };
+module.exports = { web_search, image_search, fetch_url, download_file, htmlToText, http_request, _search: { PACE, SOURCES, searchCache } };
