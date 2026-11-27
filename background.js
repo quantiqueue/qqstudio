@@ -37,6 +37,18 @@ function check(id, tail) {
   return `${p.id}: ${state(p)} · ${p.command}\n--- ${tail ? "last output" : "new output"} ---\n${text || "(none)"}`;
 }
 
+// Resolves when the command has finished, after ms, or when signal aborts (whichever comes first).
+function waitFor(id, ms, signal) {
+  const p = procs.get(id);
+  if (!p || p.exit || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); clearInterval(tick); signal?.removeEventListener("abort", done); resolve(); };
+    const timer = setTimeout(done, ms);
+    const tick = setInterval(() => { if (p.exit) done(); }, 250);
+    signal?.addEventListener("abort", done);
+  });
+}
+
 function stop(id) {
   const p = procs.get(id);
   if (!p) return Promise.resolve(`ERROR: no background command "${id}".`);
@@ -58,4 +70,4 @@ function stopAll() {
 }
 procTree.onExit(stopAll);
 
-module.exports = { start, check, stop, list, stopAll };
+module.exports = { start, check, waitFor, stop, list, stopAll };

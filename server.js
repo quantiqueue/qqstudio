@@ -484,7 +484,8 @@ function updateChat(file, fn) {
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
 const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, keepImages, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => (loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model), liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
-  memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
+  memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; },
+  continuousWs: (sid) => ws.continuousOf(ws.workspaceOf(sid) || ws.DEFAULT), externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
 // A sub-agent's session (runs.js run_agent): in its main session's workspace, marked with parent so the sidebar hides it.
 async function newSubSession(parentId, data) {

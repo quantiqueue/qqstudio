@@ -69,7 +69,15 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, keepImages = null, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+// Continuous Work (a workspace setting): the user may not be watching. Fixed text, so the prompt's top doesn't change
+// between messages. It must not say "you are alone": messages from the user still come, and they take priority.
+const CW_PROMPT = "\n\nContinuous Work is on in this workspace: the user may not be watching. Don't stop to ask questions or to wait for confirmation; keep working until the task is done. Before you finish, check the result where you can (run it, run its tests). When the task is done, call task_complete with a short summary. Messages from the user can still arrive while you work: they take priority over the original task.";
+const COMPLETE_SPEC = { type: "function", function: { name: "task_complete",
+  description: "Call this when the whole task is done (and checked), with a short summary for the user. Don't call it to report progress or to ask something: keep working instead.",
+  parameters: { type: "object", properties: { summary: { type: "string", description: "What you did and the result, in a few sentences" } }, required: ["summary"] } } };
+const REPEAT_NOTE = "\n\n[Note from qqstudio, not the user: this is the same call with the same result 3 steps in a row. If you're waiting for a background command, use check_background with wait; otherwise try something different.]";
+
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, keepImages = null, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, continuousWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -998,6 +1006,31 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
 
   // The reply is about to end with tasks still not done on its list: models often say "all done" without updating it.
   // Once per reply, ask it to update the list (a hidden note, not shown as your message), then let it end.
+  // Continuous Work: the model says the task is done; the reply ends after this step's tool results.
+  function taskComplete(run, args) {
+    const summary = String(args.summary || args.text || "").trim().slice(0, 4000) || "(no summary)";
+    run.completed = summary;
+    emit(run, { type: "complete", summary });
+    return { status: "done", complete: summary, text: "Marked complete. End your turn now (no more tool calls). If the user sends another message, work on it." };
+  }
+  // Continuous Work: a step with no tool call doesn't end the task. Up to 2 notes in a row, then the reply stops.
+  async function workNudge(run) {
+    if (run.cwNudges >= 2) return false;
+    run.cwNudges++;
+    let open = [];
+    try { open = ((await readChat(run.id)).todo || []).filter((t) => t.status !== "done"); } catch {}
+    run.messages.push({ role: "user", _hidden: true, content: `[Note from qqstudio, not the user] Continuous Work is on: your last step had no tool call, so the task isn't marked done.${open.length ? ` Your task list still has ${open.length} open: ${open.map((t) => `"${t.text}"`).join(", ")}.` : ""} If the task is done (and checked), call task_complete with a short summary. Otherwise carry on with the next step.` });
+    await save(run);
+    console.log(`[run] ${run.id} continuous work: nudged (${run.cwNudges}/2)`);
+    return true;
+  }
+  // Continuous Work's optional limits per task (the reply, its sub-agents included): time and generated tokens.
+  function limitHit(run) {
+    const root = run.parentRun || run, { limitMin, limitTokens } = run.cw;
+    if (limitMin && Date.now() - root.t0 >= limitMin * 60000) return `the task's time limit (${limitMin} min) was reached`;
+    if (limitTokens && root.genDone + subTokens(root) >= limitTokens) return `the task's token limit (${limitTokens.toLocaleString("en-US")} generated tokens) was reached`;
+    return null;
+  }
   async function todoNudge(run) {
     if (run.todoNudged || run.parentRun || !(run.allowed.has("todo") || run.lazy.has("todo"))) return false;
     let chat = null; try { chat = await readChat(run.id); } catch {}
@@ -1193,6 +1226,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     }
     if (name === "memory" && run.memWs) return memoryTool(run, args);
     if (name === "read_session" && run.memWs) return readSession(run, args);
+    if (name === "task_complete" && run.cw && !run.parentRun) return taskComplete(run, args);
     if (!isEnabled(name)) return { status: "error", text: `ERROR: the tool "${name}" is disabled in Settings > Tools.` };
     if (name === "ask_user") return askUser(run, tc, args);
     if (name === "todo") return todoTool(run, args);
@@ -1201,7 +1235,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (spec && spec.approval) {
       let mode = "manual";
       try { mode = (await readChat(run.parentRun ? run.parentRun.id : run.id)).mode || "manual"; } catch {} // a sub-agent follows its main session
-      if (mode !== "auto") {
+      if (mode !== "auto" && !run.cw) { // Continuous Work: every tool runs without asking
         run.tool = { tc, status: "approval" };
         emit(run, { type: "tool", tc, status: "approval" });
         const ok = await new Promise((resolve) => (run.approval = { id: tc.id, resolve }));
@@ -1223,7 +1257,9 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     }
     const fixed = workspacePaths(run, name, callArgs);
     callArgs = fixed.args;
-    const out = await runTool(name, callArgs, { base: filesDirOf(run.id) });
+    run.toolAbort = new AbortController(); // Stop ends a tool that waits (check_background with wait)
+    const out = await runTool(name, callArgs, { base: filesDirOf(run.id), signal: run.toolAbort.signal });
+    run.toolAbort = null;
     console.log(`[tool] ${name} ${JSON.stringify(args).slice(0, 200)} (${Date.now() - t0}ms)`);
     let text = String(out.text), images = out.images || [];
     if (fixed.moved.length) text += `\n(File names were taken as being in the workspace folder: ${fixed.moved.join(", ")}.)`;
@@ -1353,6 +1389,8 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         await applyPending(run);
         await maybeCompact(run);
         if (run.stopped) break;
+        const lim = run.cw && limitHit(run);
+        if (lim) { await halt(run, `Stopped: ${lim}`); break; }
         if (run.loopStop) { // Stop on the loop warning while tools ran: end before asking the model again
           run.endReason = "it kept repeating the same text";
           emit(run, { type: "notice", text: "Stopped: the model kept repeating itself. Try again, or lower its temperature / add a presence penalty in its loadout (Settings > Loadouts)." });
@@ -1381,10 +1419,16 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (run.pending.length && !run.stopped) continue; // a steer arrived as it finished: keep going
           if (liveSubs(run) && !run.stopped) { if (await idle(run)) continue; } // sub-agents still working: wait for a report or a message
           if (run.queue.length && !run.stopped && !liveSubs(run)) { releaseQueue(run); continue; } // the reply is complete: queued messages go in now, as one message
+          if (run.cw && !run.parentRun && !run.stopped && !liveSubs(run)) { // Continuous Work: a step with no tool call isn't the end
+            if (await workNudge(run)) continue;
+            await halt(run, "Stopped without task_complete: the model ended its turn with no tool call 3 times in a row");
+            break;
+          }
           if (!run.stopped && !liveSubs(run) && await todoNudge(run)) continue; // really ending: is its task list up to date?
           break;
         }
         const sig = [];
+        run.cwNudges = 0;
         for (const tc of r.toolCalls) { // every tool call needs a result, even if cancelled
           const res = run.stopped ? { status: "cancelled", text: "Cancelled by user." } : await callTool(run, tc);
           sig.push(tc.function.name, tc.function.arguments, res.text);
@@ -1401,6 +1445,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (res.images?.length) tm._images = run.vision && keepImages ? await keepImages(run.id, res.images, run.imgCache) : res.images;
           const saved = (tm._images || []).map((im, k) => im.file && `- ${tm._images.length > 1 ? `${k + 1}. ` : ""}${im.caption ? im.caption + ": " : ""}${im.file}`).filter(Boolean);
           if (saved.length) tm.content += `\n\n[Saved copies of ${saved.length > 1 ? "these pictures" : "this picture"}, exactly as you were shown ${saved.length > 1 ? "them" : "it"}. To work on ${saved.length > 1 ? "one" : "it"} (a script, an edit, a measurement), use the file below; don't download it again:\n${saved.join("\n")}]`;
+          if (res.complete) tm._complete = res.complete; // task_complete: the page shows "Task complete" under it
           if (res.answers) tm._answers = res.answers; // the card shows them when the session is opened again
           if (res.agent) tm._agent = res.agent; // run_agent: the chip for the sub-agent it started
           run.messages.push(tm);
@@ -1411,7 +1456,15 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         // The same calls with the same arguments giving the same results, 3 steps in a row: it's stuck.
         const k = JSON.stringify(sig);
         same = k === lastSig ? same + 1 : 1; lastSig = k;
-        if (same >= 3 && !run.stopped) { await halt(run, "Stopped: the same tool call gave the same result 3 times in a row"); break; }
+        if (same >= 3 && !run.stopped) {
+          if (!run.cw) { await halt(run, "Stopped: the same tool call gave the same result 3 times in a row"); break; }
+          // Continuous Work: nobody may be there to press Continue, so the model gets a note and the work goes on
+          const lastT = [...run.messages].reverse().find((m) => m.role === "tool");
+          if (lastT) { lastT.content += REPEAT_NOTE; await save(run); }
+          same = 0;
+          console.log(`[run] ${run.id} continuous work: same call 3 times, noted`);
+        }
+        if (run.completed) { if (!run.pending.length) break; run.completed = null; } // task_complete: done, unless a message arrived meanwhile
         // Sub-agents running: the reply waits here for a report (or a message from the user) before its next step, rather
         // than working alongside them. Working alongside led models to poll, give up on, or redo the sub-agent's work,
         // and every request competes with the sub-agent for the same model anyway.
@@ -1456,6 +1509,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     if (run.stream) try { run.stream.cancel().catch(() => {}); } catch {} // a locked (being read) body throws: the loop's own check ends it
     if (run.approval) run.approval.resolve(false);
     if (run.question) run.question.resolve(null);
+    if (run.toolAbort) run.toolAbort.abort();
     for (const s of run.subs?.values() || []) if (s.status === "running") stop(s.run); else if (s.status === "pending") cancelPending(run, s, "the reply was stopped"); // the main reply's Stop stops its sub-agents
     if (run.wake) run.wake();
   }
@@ -1486,6 +1540,13 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     for (const g of Array.isArray(body.deferred) ? body.deferred : [])
       if (g && g.key && g.name && Array.isArray(g.tools) && g.tools.length)
         deferred.set(g.key, { key: String(g.key), name: String(g.name), note: String(g.note || ""), tools: g.tools.filter((t) => t?.function?.name) });
+    // Continuous Work: nobody may be there to answer, so no ask_user (a sub-agent follows its main session's workspace)
+    const cw = continuousWs(opts.parentRun ? opts.parentRun.id : id);
+    if (cw) {
+      const noAsk = (t) => t.function.name !== "ask_user";
+      for (let i = tools.length - 1; i >= 0; i--) if (!noAsk(tools[i])) tools.splice(i, 1);
+      for (const [k, g] of deferred) { g.tools = g.tools.filter(noAsk); if (!g.tools.length) deferred.delete(k); }
+    }
     if (deferred.size) tools.push(enableSpec([...deferred.values()].map((g) => g.name)));
     // Tools on request (lazytools.js): large MCP servers are listed by name; details come from tool_info.
     const all = toolList(), byName = new Map(all.map((t) => [t.name, t]));
@@ -1527,11 +1588,13 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const memWs = opts.parentRun ? null : memoryWs(id);
     const memSnap = memWs ? (typeof chat.memory === "string" ? chat.memory : memory.text(memWs)) : null;
     if (memWs) tools.push(memory.SPEC(memCap()), READ_SESSION_SPEC);
+    if (cw && !opts.parentRun) tools.push(COMPLETE_SPEC);
     const pageSystem = String(body.system || "");
     const budget = body.think?.budget;
     const run = {
-      id, model: body.model, pageSystem, baseSystem: pageSystem + (memWs ? memory.section(memSnap) : ""), system: "", baseTools: tools, tools: [], allowed: new Set(),
+      id, model: body.model, pageSystem, baseSystem: pageSystem + (cw && !opts.parentRun ? CW_PROMPT : "") + (memWs ? memory.section(memSnap) : ""), system: "", baseTools: tools, tools: [], allowed: new Set(),
       memWs, memSnap,
+      cw, cwNudges: 0, completed: null, toolAbort: null, // Continuous Work: its limits, nudges in a row, task_complete's summary
       vision: visionOf(body.model), imgCache: new Map(),
       lazy: lazyPool, promoted, listed, used: new Set(), byName, order: new Map(all.map((t, i) => [t.name, i])),
       viaCall: lazyPool.size > 0 || deferred.size > 0, // tool_info / call_tool are offered

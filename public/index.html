@@ -93,6 +93,9 @@
   .dlg .opt .txt { display:flex; flex-direction:column; gap:3px; flex:1; min-width:0; }
   .dlg .opt .txt small { color:var(--muted); font-size:11px; line-height:1.4; white-space:normal; }
   .dlg .opt input { margin-top:1px; }
+  .dlg .cw-limits { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:12px; margin:-4px 0 0 34px; }
+  .dlg .cw-limits input { width:70px; }
+  .dlg .cw-limits[hidden] { display:none; }
   .wsview h3 { display:flex; align-items:center; gap:8px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; margin-top:28px; margin-bottom:8px; }
   .wsview h3 .sp { flex:1; }
   .wsview h3 button { text-transform:none; letter-spacing:0; font-weight:400; font-size:12px; padding:3px 10px; }
@@ -424,6 +427,7 @@
   .pm-empty a, .pm-foot a { color:var(--accent); }
   .pm-foot { border-top:1px solid var(--line); margin-top:6px; padding:8px 14px 4px; color:var(--muted); }
   .mode-menu { width:300px; left:auto; right:0; } /* opens leftwards so it stays inside the window */
+  .mode-menu .mm-note { color:var(--muted); font-size:12px; line-height:1.45; padding:4px 10px 8px; }
   .mm-row { display:flex; align-items:flex-start; gap:10px; width:100%; padding:8px 14px; border:none; border-radius:0; background:none; color:var(--text); text-align:left; font-size:13px; }
   .mm-row:hover { background:#1b1f27; }
   .mm-row.on { background:#1f2a3d; }
@@ -544,6 +548,8 @@
   <label>Name<input id="wsName" maxlength="80" autocomplete="off" required></label>
   <label>Description <small>(also given to the model as instructions for every session here)</small><textarea id="wsDesc" maxlength="4000" rows="5"></textarea></label>
   <label class="opt"><input type="checkbox" id="wsMem"><span class="txt">Memory<small>Sessions here keep what matters for later sessions: preferences, facts about the project, decisions. It happens by itself after each reply.</small></span></label>
+  <label class="opt"><input type="checkbox" id="wsCont"><span class="txt">Continuous Work<small>Tasks keep working until done or stopped, and you can still steer them with messages. Every tool runs without asking, and repeat checks only leave a note.</small></span></label>
+  <div class="cw-limits" id="wsLimits" hidden>Limit per task <input type="number" id="wsLimMin" min="0" placeholder="none"> minutes <input type="number" id="wsLimTok" min="0" placeholder="none"> thousand tokens</div>
   <div class="err" id="wsErr"></div>
   <div class="row"><button type="button" id="wsDel" class="danger" hidden>Delete workspace</button><span class="sp"></span>
     <button type="button" id="wsCancel">Cancel</button><button type="submit" class="primary" id="wsOk">Create</button></div>
@@ -895,10 +901,11 @@ const MODES = [
   ["auto", "⏩", "Auto", "Run all enabled tools without asking"],
 ];
 function renderMode() {
-  const m = chat.mode === "auto" ? "auto" : "manual";
+  const m = chat.mode === "auto" || contOn() ? "auto" : "manual";
   const [, ic, name, desc] = MODES.find((x) => x[0] === m);
   const b = $("modeBtn");
-  b.textContent = name; b.title = `Tool approval: ${name}. ${desc}`;
+  b.textContent = contOn() ? "Continuous" : name;
+  b.title = contOn() ? "Continuous Work is on in this workspace: every tool runs without asking (change it in the workspace's settings)" : `Tool approval: ${name}. ${desc}`;
   b.classList.toggle("auto", m === "auto");
   renderModeMenu();
 }
@@ -908,6 +915,7 @@ function renderModeMenu() {
   const cur = chat.mode === "auto" ? "auto" : "manual";
   menu.innerHTML = "";
   menu.appendChild(el("h4", null, "Tool approval"));
+  if (contOn()) { menu.appendChild(el("div", "mm-note", "Continuous Work is on in this workspace: every tool runs without asking. Turn it off in the workspace's settings to choose here.")); return; }
   for (const [v, ic, name, desc] of MODES) {
     const r = menu.appendChild(el("button", "mm-row" + (v === cur ? " on" : "")));
     r.type = "button";
@@ -1117,13 +1125,16 @@ const isLoaded = (key) => (chat.loaded || []).includes(key);
 const groupOn = (mode) => mode === "on";
 const mcpOn = (server) => groupOn(mcpMode(server), "mcp:" + server);
 const catOn = (cat) => groupOn(catMode(cat), "cat:" + cat);
+const contOn = () => !!curWs()?.continuous; // Continuous Work in this session's workspace
 function activeTools() {
   if (toolInfo.enabled === false) return [];
+  const cw = contOn();
   const autoSkills = skillList.some((s) => skillMode(s.name) === "auto");
   return toolInfo.tools.filter((t) => {
     if (!t.enabled) return false;
     if (t.server) return mcpOn(t.server);
     if (t.name === "load_skill") return autoSkills;
+    if (cw && t.name === "ask_user") return false;
     return catOn(t.category);
   });
 }
@@ -1150,7 +1161,7 @@ function deferredGroups() {
     Agents: "hand separate pieces of work to sub-agents that work in the background and report back",
   };
   for (const cat of CATS) {
-    if (catMode(cat) !== "auto") continue;
+    if (catMode(cat) !== "auto" || (cat === "Questions" && contOn())) continue;
     const tools = toolInfo.tools.filter((t) => t.enabled && !t.server && t.category === cat);
     if (!tools.length) continue;
     out.push({ key: "cat:" + cat, name: cat, desc: CAT_DESC[cat] || cat, tools,
@@ -1196,7 +1207,7 @@ function systemPrompt(specs = activeTools(), pinned = [], deferred = deferredGro
   if (servers.length) lines.push(`You also have tools from connected services: ${servers.join(", ")} (tool names start with the service name).`);
   if (on.size || deferred.length) {
     lines.push("Only use the tools listed to you. Never say you cannot do something a tool can do.");
-    if (specs.some((t) => t.approval) && chat.mode !== "auto") lines.push("Some actions ask the user for approval automatically, so just call the tool.");
+    if (specs.some((t) => t.approval) && chat.mode !== "auto" && !contOn()) lines.push("Some actions ask the user for approval automatically, so just call the tool.");
     lines.push("If a tool returns an error, read it and try a corrected call.");
   } else lines.push("You have no tools available; answer from your own knowledge.");
   lines.push("After you have what you need, answer concisely.");
@@ -1904,6 +1915,8 @@ function renderChat(live = false) {
   } finally { renderingHistory = false; }
   const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
   if (lastA?._stop && chat.messages[chat.messages.length - 1].role !== "user" && !live) add(stopLine(lastA._stop));
+  const lastM = chat.messages[chat.messages.length - 1];
+  if (lastM?._complete && !live) showDone(lastM._complete);
   toBottom();
 }
 // Where the session was compacted: everything above is replaced by this summary in what the model gets.
@@ -1919,6 +1932,12 @@ function summaryDivider(m) {
   return d;
 }
 // "Stopped after N steps" line with a Continue button: starts a new run that picks up where this one ended.
+// Continuous Work: the model called task_complete. Its summary is shown as a reply (it's otherwise inside the folded
+// tool calls), then the status line; the session waits for the user's next message.
+function showDone(summary) {
+  if (summary && summary !== "(no summary)") add(el("div", "msg assistant")).appendChild(el("div", "md")).innerHTML = mdRender(summary);
+  const d = add(el("div", "stopline")); d.appendChild(el("span", null, "Task complete · waiting for steering"));
+}
 function stopLine(text) {
   const d = el("div", "stopline");
   d.appendChild(el("span", null, text));
@@ -2325,7 +2344,10 @@ function wsDialog(w = null) {
   const d = $("wsDialog");
   $("wsDlgTitle").textContent = w ? "Edit workspace" : "New workspace";
   $("wsOk").textContent = w ? "Save" : "Create";
-  $("wsName").value = w ? w.name : ""; $("wsDesc").value = w ? w.description : ""; $("wsMem").checked = w ? !!w.memory : true; // new workspaces: memory on $("wsErr").textContent = "";
+  $("wsName").value = w ? w.name : ""; $("wsDesc").value = w ? w.description : ""; $("wsMem").checked = w ? !!w.memory : true; // new workspaces: memory on
+  $("wsErr").textContent = "";
+  $("wsCont").checked = !!w?.continuous; $("wsLimits").hidden = !$("wsCont").checked;
+  $("wsLimMin").value = w?.limitMin || ""; $("wsLimTok").value = w?.limitTokens ? Math.round(w.limitTokens / 1000) : "";
   const del = $("wsDel");
   del.hidden = !w || w.isDefault; del.classList.remove("armed"); del.textContent = "Delete workspace";
   del.onclick = async () => {
@@ -2342,7 +2364,8 @@ function wsDialog(w = null) {
   };
   $("wsForm").onsubmit = async (e) => {
     e.preventDefault();
-    const body = JSON.stringify({ name: $("wsName").value, description: $("wsDesc").value, memory: $("wsMem").checked });
+    const body = JSON.stringify({ name: $("wsName").value, description: $("wsDesc").value, memory: $("wsMem").checked,
+      continuous: $("wsCont").checked, limitMin: Number($("wsLimMin").value) || 0, limitTokens: (Number($("wsLimTok").value) || 0) * 1000 });
     const r = await fetch(w ? `/api/workspaces/${encodeURIComponent(w.id)}` : "/api/workspaces", { method: w ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) { $("wsErr").textContent = j.error || r.statusText; return; }
@@ -2356,6 +2379,7 @@ function wsDialog(w = null) {
   $("wsName").focus();
 }
 $("wsCancel").onclick = () => ($("wsDialog").hidden = true);
+$("wsCont").onchange = () => ($("wsLimits").hidden = !$("wsCont").checked);
 $("wsDialog").addEventListener("mousedown", (e) => { if (e.target === $("wsDialog")) $("wsDialog").hidden = true; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("wsDialog").hidden) $("wsDialog").hidden = true; });
 $("newWs").onclick = () => wsDialog();
@@ -2639,6 +2663,7 @@ function onRunEvent(ev, id) {
     }
     case "loaded": chat.loaded = ev.loaded; renderToolbarState(); renderPlus(); break;
     case "halted": add(stopLine(ev.text)); break;
+    case "complete": break; // task_complete: the status line is drawn when the reply ends (below its last tool result)
     case "steer_pending": if (!pendingEls.has(ev.id)) { pendingBubble(ev); follow(); } break; // sent from another tab
     case "pending_mode": setPendingMode(ev.id, ev.mode); break;
     case "pending_cancel": pendingEls.get(ev.id)?.remove(); pendingEls.delete(ev.id); break; // cancelled, or cleared by Stop
@@ -2659,6 +2684,7 @@ function onRunEvent(ev, id) {
       const lastA = [...chat.messages].reverse().find((m) => m.role === "assistant");
       if (lastA && ev.ms != null) lastA._run = { tokens: ev.tokens, ms: ev.ms, ...(ev.sub ? { sub: ev.sub } : {}) };
       footEnd(ev);
+      if (chat.messages[chat.messages.length - 1]?._complete) showDone(chat.messages[chat.messages.length - 1]._complete); // Continuous Work: the task is done
       showLoopWarn(null);
       for (const c of agentChips.values()) if (chipLive(c.info)) agentChip({ id: c.info.id, status: "stopped", tc: null }); // the reply ended: none of its sub-agents still runs
       if (es) { es.close(); es = null; } endRun(id, false); break;

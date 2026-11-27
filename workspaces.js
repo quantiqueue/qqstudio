@@ -63,7 +63,22 @@ function info(id) {
   if (sessSynced) for (const e of sessIndex.values()) { if (e.ws === id) sessions++; } // from the sessions index: no folder read
   else try { sessions = fs.readdirSync(sessionsDir(id)).filter((f) => f.endsWith(".json")).length; } catch {}
   return { id, name: m.name || id, description: m.description || "", created: m.created || 0, isDefault: id === DEFAULT, sessions, dir: filesDir(id),
-    memory: m.memory === true, memoryStats: m.memory === true ? memory.stats(id) : null };
+    memory: m.memory === true, memoryStats: m.memory === true ? memory.stats(id) : null,
+    continuous: m.continuous === true, limitMin: m.limitMin || 0, limitTokens: m.limitTokens || 0 };
+}
+// Continuous Work on? (read for every reply) -> { limitMin, limitTokens } or null. Limits 0 = none.
+function continuousOf(id) {
+  if (!exists(id)) return null;
+  const m = DATA.readJson(metaFile(id), {});
+  return m.continuous === true ? { limitMin: m.limitMin || 0, limitTokens: m.limitTokens || 0 } : null;
+}
+// Continuous Work fields from a create/update body: the toggle and its optional limits per task (minutes, tokens; 0 = none).
+function workFields(m, patch) {
+  if (typeof patch.continuous === "boolean") m.continuous = patch.continuous;
+  for (const k of ["limitMin", "limitTokens"]) if (k in patch) {
+    const v = Math.round(Number(patch[k]) || 0);
+    m[k] = v > 0 ? Math.min(v, k === "limitMin" ? 24 * 60 : 1e9) : 0;
+  }
 }
 // Workspace memory on? (read for every reply, so just the flag)
 function memoryOn(id) {
@@ -82,7 +97,9 @@ function create({ name, description, memory: mem }) {
   let id = /^[A-Za-z0-9]/.test(base) ? base : "w-" + base, n = 2;
   while (fs.existsSync(path.join(ROOT, id)) || id.toLowerCase() === DEFAULT.toLowerCase()) id = `${base}-${n++}`;
   ensure(id, name);
-  DATA.writeJson(metaFile(id), { name, description: String(description || "").slice(0, 4000), created: Date.now(), memory: mem === true });
+  const m = { name, description: String(description || "").slice(0, 4000), created: Date.now(), memory: mem === true };
+  workFields(m, arguments[0] || {});
+  DATA.writeJson(metaFile(id), m);
   return info(id);
 }
 function update(id, patch) {
@@ -96,6 +113,7 @@ function update(id, patch) {
   }
   if (typeof patch.description === "string") m.description = patch.description.slice(0, 4000);
   if (typeof patch.memory === "boolean") m.memory = patch.memory;
+  workFields(m, patch);
   DATA.writeJson(metaFile(id), m);
   return info(id);
 }
@@ -217,5 +235,5 @@ function freeName(id, name, dir = filesDir(id)) {
   return cand;
 }
 
-module.exports = { DEFAULT, ROOT, init, list, info, exists, memoryOn, create, update, remove, filesDir, filePath, files, invalidateFiles, freeName,
+module.exports = { DEFAULT, ROOT, init, list, info, exists, memoryOn, continuousOf, create, update, remove, filesDir, filePath, files, invalidateFiles, freeName,
   workspaceOf, sessionFile, placeSession, forgetSession, allSessions, listSessions, noteSession };

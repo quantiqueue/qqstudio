@@ -1,5 +1,5 @@
 # Runs when a GitHub release is published (tag vX.Y.Z): builds qqstudio.zip (Windows) and qqstudio.tar.gz
-# (macOS/Linux) and attaches them with install.ps1 and install.sh. The install lines download from
+# (macOS/Linux) and attaches them with install.ps1, install.sh and SHA256SUMS. The install lines download from
 # releases/latest/download/, so they always get the newest release. No npm publishing.
 name: Release
 on:
@@ -27,7 +27,11 @@ jobs:
         run: sed -i "s#quantiqueue/qqstudio#${GITHUB_REPOSITORY}#g" install/install.ps1 install/install.sh
       - name: Build qqstudio.zip and qqstudio.tar.gz
         run: bash .github/scripts/package.sh
+      - name: Checksums (SHA256SUMS, for pinned installs that check what they downloaded)
+        run: |
+          cp install/install.ps1 install/install.sh dist/
+          (cd dist && sha256sum qqstudio.zip qqstudio.tar.gz install.ps1 install.sh > SHA256SUMS && cat SHA256SUMS)
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/qqstudio.zip dist/qqstudio.tar.gz install/install.ps1 install/install.sh --clobber
+        run: gh release upload "$GITHUB_REF_NAME" dist/qqstudio.zip dist/qqstudio.tar.gz dist/install.ps1 dist/install.sh dist/SHA256SUMS --clobber

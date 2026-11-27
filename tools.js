@@ -309,7 +309,13 @@ const impl = {
     await new Promise((r) => setTimeout(r, 1500)); // early output (or an immediate failure) comes back with the start
     return `Started ${p.id} in the background.\n` + background.check(p.id) + `\n\nCheck it later with check_background {"id": "${p.id}"}; stop it with stop_background.`;
   },
-  check_background({ id, tail }) { return id ? background.check(id, tail) : background.list(); },
+  async check_background({ id, tail, wait }) {
+    if (!id) return background.list();
+    // wait: block (no model calls, no GPU) until the command finishes or the time is up; Stop ends the wait.
+    const secs = Math.min(Math.max(Number(wait) || 0, 0), 600);
+    if (secs) await background.waitFor(id, secs * 1000, ctx.getStore()?.signal);
+    return background.check(id, tail);
+  },
   stop_background({ id }) { if (!id) throw new Error("id is required"); return background.stop(id); },
 
   http_request: (a) => web.http_request(a),
@@ -446,9 +452,10 @@ const schemas = [
       command: { type: "string", description: "The command line to run" },
       cwd: { type: "string", description: "Working folder (optional)" } }, required: ["command"] } },
   { name: "check_background", approval: false,
-    description: "Show what a background command printed since you last checked, and whether it is still running. Without an id, lists the background commands.",
+    description: "Show what a background command printed since you last checked, and whether it is still running. Without an id, lists the background commands. To wait for one to finish (a build, a test run), pass wait instead of checking again and again.",
     parameters: { type: "object", properties: {
       id: { type: "string", description: "The id run_background returned, e.g. bg1" },
+      wait: { type: "integer", description: "Seconds to wait for it to finish before answering (max 600); it answers as soon as it finishes" },
       tail: { type: "integer", description: "Instead of new output, the last N characters of output" } } } },
   { name: "stop_background", approval: false,
     description: "Stop a background command (and anything it started).",
@@ -464,11 +471,11 @@ const schemas = [
 const mcp = require("./mcp");
 
 // ctx.base: the session's workspace files folder (relative paths and the default working folder).
-async function runTool(name, args, { base } = {}) {
+async function runTool(name, args, { base, signal } = {}) {
   const fn = impl[name] || (mcp.has(name) ? (a) => mcp.callTool(name, a) : null);
   if (!fn) return { text: `ERROR: unknown tool "${name}". Available: ${Object.keys(impl).join(", ")}` };
   try {
-    const out = await ctx.run({ base: base || null }, () => fn(args || {}));
+    const out = await ctx.run({ base: base || null, signal: signal || null }, () => fn(args || {}));
     return out && typeof out === "object" && "text" in out ? out : { text: String(out) };
   } catch (e) { return { text: `ERROR: ${e.message}` }; }
 }
