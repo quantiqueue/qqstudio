@@ -1,6 +1,6 @@
 # Checks every push and pull request: syntax on every supported Node version and OS (including the pages' inline
-# scripts), and that the server starts with a fresh data folder and serves the page and its API. No engine or model is
-# needed: qqstudio starts without one.
+# scripts), that the server starts with a fresh data folder and serves the page and its API, and that qqstudio run
+# finishes a task against a fake OpenAI-compatible endpoint. No engine or model is needed: qqstudio starts without one.
 name: CI
 on:
   push:
@@ -47,6 +47,8 @@ jobs:
           check /api/ping '"app":"qqstudio"'
           echo "--- server log"; cat server.log
           [ "$ok" = 1 ]
+      - name: Headless (qqstudio run against a fake endpoint)
+        run: node .github/scripts/headless-test.js
 
   # The release archives (built as the release workflow builds them) and the real installers on each OS:
   # install with a private Node.js, run on the default port, install again (must stop the running copy), run and
