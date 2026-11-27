@@ -77,7 +77,7 @@ const COMPLETE_SPEC = { type: "function", function: { name: "task_complete",
   parameters: { type: "object", properties: { summary: { type: "string", description: "What you did and the result, in a few sentences" } }, required: ["summary"] } } };
 const REPEAT_NOTE = "\n\n[Note from qqstudio, not the user: this is the same call with the same result 3 steps in a row. If you're waiting for a background command, use check_background with wait; otherwise try something different.]";
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, keepImages = null, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, continuousWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, keepImages = null, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, continuousWs = () => null, remoteOf = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -260,7 +260,25 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   }
   // The request as the engine gets it: `model` is the loadout id (llama-server's --alias), or left out where engineModel says
   // so (Strata serves one model per launch and refuses a name that looks like one of its IDs but isn't the loaded one, #6621).
-  const wire = (b) => { const n = engineModel(b.model); if (n === b.model) return b; const { model, ...rest } = b; return n ? { ...rest, model: n } : rest; };
+  const wire = (b) => {
+    const rm = remoteOf(b.model), n = engineModel(b.model);
+    let out = b;
+    if (n !== b.model) { const { model, ...rest } = b; out = n ? { ...rest, model: n } : rest; }
+    return rm ? forRemote(out) : out;
+  };
+  // An OpenAI-compatible endpoint (engine type "openai") gets only standard fields: llama.cpp's extras are dropped (routers
+  // may refuse unknown fields), the effort goes top-level as reasoning_effort, and the stream ends with a usage chunk.
+  function forRemote(b) {
+    const { id_slot, cache_prompt, return_progress, chat_template_kwargs, reasoning_budget_tokens, thinking_budget_tokens, timings_per_token, n_predict, ...rest } = b;
+    for (const k of Object.keys(rest)) if (k.startsWith("_")) delete rest[k];
+    const eff = chat_template_kwargs && chat_template_kwargs.reasoning_effort; // "Off" (enable_thinking false) sends no effort: not every provider takes "none"
+    if (eff && rest.reasoning_effort === undefined) rest.reasoning_effort = eff;
+    if (rest.stream) rest.stream_options = { include_usage: true, ...(rest.stream_options || {}) };
+    if (rest.max_tokens == null) delete rest.max_tokens;
+    return rest;
+  }
+  const chatUrl = (model) => remoteOf(model)?.chat || `${llama.url()}/v1/chat/completions`;
+  const reqHeaders = (model) => { const rm = remoteOf(model); return { "Content-Type": "application/json", ...(rm && rm.key ? { Authorization: "Bearer " + rm.key } : {}) }; };
   const noRender = new Set(); // engines (by command line) that answered /apply-template with 404
   async function answerFirst(b, signal, thinkCap = 0, thinkStop = []) {
     if (b.messages.some((m) => Array.isArray(m.content) && m.content.some((x) => x && x.type && !/^(input_)?text$/.test(x.type)))) return null;
@@ -307,7 +325,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
         if (out) return out;
       }
     }
-    const r = await fetch(`${llama.url()}/v1/chat/completions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(wire({ ...body, stream: true })), signal });
+    const r = await fetch(chatUrl(body.model), { method: "POST", headers: reqHeaders(body.model), body: JSON.stringify(wire({ ...body, stream: true })), signal });
     if (!r.ok) { const t = await r.text().catch(() => ""); let m = t; try { const j = JSON.parse(t); m = j.error?.message || j.error || t; } catch {} throw new Error(m || r.statusText); }
     const dec = new TextDecoder(), calls = [];
     let buf = "", text = "", thought = "", ended = false;
@@ -324,6 +342,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
           if (j.choices?.[0]?.finish_reason) ended = true;
           const d = j.choices?.[0]?.delta;
+          if (d && d.reasoning && !d.reasoning_content) d.reasoning_content = d.reasoning; // some endpoints name it "reasoning"
           if (d?.content) text += d.content;
           if (d?.reasoning_content) thought += d.reasoning_content;
           for (const tc of d?.tool_calls || []) {
@@ -643,10 +662,21 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       if (run.slot === undefined) run.slot = await pickSlot(run);
       if (run.slot !== undefined) body.id_slot = run.slot;
       changed = promptChange(run, body);
-      const r = await fetch(`${llama.url()}/v1/chat/completions`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(wire(body)), signal: run.abort.signal,
-      });
-      if (!r.ok) { const t = await r.text(); let msg = t; try { const j = JSON.parse(t); msg = j.error?.message || j.error || t; } catch {} throw new Error(msg || r.statusText); }
+      let r;
+      for (let tries = 0; ; tries++) { // a hosted endpoint: rate limits and server errors are retried a few times
+        const remote = !!remoteOf(model);
+        try {
+          r = await fetch(chatUrl(model), { method: "POST", headers: reqHeaders(model), body: JSON.stringify(wire(body)), signal: run.abort.signal });
+        } catch (e) { if (!remote || tries >= 3 || run.abort.signal.aborted) throw e; r = null; }
+        if (r && (r.ok || !remote || tries >= 3 || !(r.status === 429 || r.status >= 500))) break;
+        const ra = r ? Number(r.headers.get("retry-after")) : 0, wait = Math.min(ra > 0 ? ra * 1000 : 2000 * 2 ** tries, 30000);
+        if (r) await r.text().catch(() => {});
+        console.log(`[run] ${run.id} ${r ? "HTTP " + r.status : "no answer"} from the endpoint, trying again in ${Math.round(wait / 1000)}s`);
+        phase(`${r ? `The endpoint answered ${r.status}` : "No answer from the endpoint"}, trying again in ${Math.round(wait / 1000)}s`);
+        await sleep(wait);
+        if (run.stopped || run.abort.signal.aborted) throw new Error("stopped");
+      }
+      if (!r.ok) { const t = await r.text(); let msg = t; try { const j = JSON.parse(t); msg = j.error?.message || j.error || t; } catch {} throw new Error((remoteOf(model) ? `The endpoint answered HTTP ${r.status}: ` : "") + (msg || r.statusText)); }
       // Strata holds back a tool call's text (with Inkling even its name) and releases it whole at the end, and its prompt
       // progress stops before the prompt is fully read: the stream says nothing for minutes. When it has been quiet for a
       // second, its /metrics "live" block gives the real state and count: the step shows "Generating" and Strata's own
@@ -697,6 +727,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
           if (j.choices?.[0]?.finish_reason) finish = j.choices[0].finish_reason;
           const d = j.choices && j.choices[0] && j.choices[0].delta;
           if (!d) continue;
+          if (d.reasoning && !d.reasoning_content) d.reasoning_content = d.reasoning; // some endpoints name it "reasoning"
           const ev = { type: "delta" };
           if (d.reasoning_content || d.content || d.tool_calls) { // one streamed chunk = one token (llama-server); prefer its own count when sent
             const g = cur.gen = cur.gen || { n: 0, total: 0, base: 0, t0: Date.now(), tool: null, sent: 0, thinking: false };
@@ -774,7 +805,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       } else if (!run.stopped && !looped && !interrupted) {
         failed = true;
         run.endReason = "an error: " + (e.cause?.code === "ECONNREFUSED" ? "llama-server couldn't be reached" : e.message); // a sub-agent's report says so
-        emit(run, { type: "failed", text: (cur.content ? cur.content + "\n\n" : "") + "Error: " + (e.cause?.code === "ECONNREFUSED" ? `Cannot reach llama-server at ${llama.url()}` : e.message) });
+        emit(run, { type: "failed", text: (cur.content ? cur.content + "\n\n" : "") + "Error: " + (e.cause?.code === "ECONNREFUSED" ? `Cannot reach ${remoteOf(model) ? "the endpoint at " + remoteOf(model).base : "llama-server at " + llama.url()}` : e.message) });
       }
     } finally {
       if (run.loopStop && !run.stopped) looped = true; // also when the loop above ended by itself (no error thrown)

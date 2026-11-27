@@ -93,7 +93,17 @@ function visionMap() {
   return out;
 }
 // A loadout can see when vision is on for it and its model has an mmproj; ids that aren't loadouts: the old rule.
-const visionOf = (model) => { const v = loadouts.visionOf(model); return v === null ? !!visionMap().get(model) : v; };
+const visionOf = (model) => { if (remoteOf(model)) return !!loadouts.get(model)?.vision; const v = loadouts.visionOf(model); return v === null ? !!visionMap().get(model) : v; };
+// Engines qqstudio talks to but doesn't run: type "openai", an OpenAI-compatible endpoint (a hosted model, a router, a
+// server elsewhere): {id, type: "openai", url, keyEnv}. The API key is read from the environment variable keyEnv names,
+// never stored. Their loadouts carry {remoteModel, context?, vision?}. Nothing is loaded or ejected for them.
+function remoteOf(model) {
+  const lo = loadouts.get(model), e = lo && llama.byId(lo.engine);
+  if (!e || e.type !== "openai" || !e.url) return null;
+  const base = String(e.url).replace(/\/+$/, "");
+  return { chat: /\/v\d+$/.test(base) ? base + "/chat/completions" : base + "/v1/chat/completions", base,
+    key: (e.keyEnv && process.env[e.keyEnv]) || "", model: lo.remoteModel || lo.model || lo.id, context: Number(lo.context) || 0 };
+}
 // One loadout runs at a time, as its own llama-server process (llama.js). Model requests hold the running loadout
 // while they stream (inflight), so it is never stopped or swapped under a reply: a request for another loadout
 // waits until those finish, then switches.
@@ -119,7 +129,7 @@ async function regenPresets() {
 // function that releases it when the request ends. phase(text) shows progress in the reply; signal stops waiting.
 async function ensureEngine(model, phase, signal) {
   const lo = loadouts.get(model);
-  if (!lo || process.env.LLAMA_URL) return () => {};
+  if (!lo || process.env.LLAMA_URL || remoteOf(model)) return () => {};
   const job = switching.then(async () => {
     for (let shown = null; ; ) {
       if (signal?.aborted) throw new Error("stopped");
@@ -223,6 +233,7 @@ async function forceEject(lo) {
 const withEjecting = (s) => (ejecting && s && s.loadout === ejecting.loadout ? { ...s, ejecting: ejecting.force ? "force" : ejectWaitsFor(ejecting.loadout) || "memory" } : s);
 // Whether a loadout is loaded / loading / failed (null: not running).
 async function modelState(id) {
+  if (remoteOf(id)) return "loaded"; // nothing to load: the endpoint answers or the request says why not
   const s = await llama.status();
   return s.loadout === id ? (s.state === "stopped" ? null : s.state) : null;
 }
@@ -482,7 +493,7 @@ function updateChat(file, fn) {
 }
 // A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
-const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, keepImages, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => (loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model), liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, keepImages, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => { const rm = remoteOf(model); if (rm) return rm.model; return loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model; }, remoteOf, liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; },
   continuousWs: (sid) => ws.continuousOf(ws.workspaceOf(sid) || ws.DEFAULT), externalEngine: () => !!process.env.LLAMA_URL,
@@ -737,6 +748,7 @@ async function handleWorkspaces(req, res) {
 // ---- Context size of a loaded model (best effort; never triggers a load) ----
 // Only the running loadout can answer (a loadout's own process); anything else would report another model's numbers.
 async function modelProps(model, pick) {
+  if (remoteOf(model)) return null; // no /props there
   if (!process.env.LLAMA_URL && loadouts.get(model) && llama.current().loadout !== model) return null;
   for (const u of [`${llama.url()}/props`]) {
     try {
@@ -761,6 +773,8 @@ function strataCatalogNow() {
 const strataSetting = (model, key) => { const l = loadouts.get(model); return l && loadouts.isStrata(l.engine) ? Number(l.load?.[key]) || null : undefined; };
 const ctxPick = (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.default_generation_settings?.params?.n_ctx;
 async function nCtx(model) {
+  const rm = remoteOf(model);
+  if (rm) return rm.context || 131072; // its loadout's context (qqstudio run --context), else a common size: compaction needs one
   const n = await modelProps(model, ctxPick);
   return n || strataSetting(model, "ctx-size") || null;
 }

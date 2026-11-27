@@ -1,7 +1,7 @@
 // qqstudio run: one task, headless. Starts qqstudio's server in this process (a free port, a throwaway data folder,
 // a Continuous Work workspace whose folder is the task's folder), runs the task to task_complete, prints the result
 // and exits. By default it uses the loadout loaded in qqstudio (the engine on 127.0.0.1:9931); --base-url points at
-// another llama.cpp-compatible server instead.
+// an OpenAI-compatible endpoint instead (engine type "openai": a hosted model, a router, a server elsewhere).
 "use strict";
 const fs = require("fs"), os = require("os"), path = require("path"), net = require("net");
 const pkg = require("../package.json");
@@ -20,8 +20,11 @@ const HELP = [
   "      --limit-time <min>      Stop the task after this many minutes",
   "      --limit-tokens <n>      Stop the task after this many generated tokens",
   "      --instruction-file <p>  Read the task from a file",
-  "      --base-url <url>        A llama.cpp-compatible server instead of the loaded loadout (needs --model)",
+  "      --base-url <url>        An OpenAI-compatible endpoint instead of the loaded loadout, e.g.",
+  "                              https://router.example/v1 (needs --model)",
   "      --model <name>          Model name to send with --base-url",
+  "      --api-key-env <NAME>    Environment variable holding the endpoint's API key",
+  "                              (default QQSTUDIO_API_KEY, then OPENAI_API_KEY; none = no key sent)",
   "      --yolo                  Accepted for familiarity: every tool already runs without asking",
   "  -h, --help                  Show this help",
   "",
@@ -32,7 +35,7 @@ const say = (s) => process.stderr.write(s + "\n");
 function fail(msg, code = 1) { say("qqstudio run: " + msg); process.exit(code); }
 
 function parse(argv) {
-  const o = { cwd: process.cwd(), logs: null, json: false, web: true, agents: true, limitMin: 0, limitTokens: 0, file: null, baseUrl: null, model: null, task: "" };
+  const o = { cwd: process.cwd(), logs: null, json: false, web: true, agents: true, limitMin: 0, limitTokens: 0, file: null, baseUrl: null, model: null, keyEnv: null, task: "" };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     let a = argv[i], val = null;
@@ -49,8 +52,9 @@ function parse(argv) {
       case "--limit-time": o.limitMin = Number(next()) || 0; break;
       case "--limit-tokens": o.limitTokens = Number(next()) || 0; break;
       case "--instruction-file": o.file = path.resolve(next()); break;
-      case "--base-url": o.baseUrl = next().replace(/\/+$/, "").replace(/\/v1$/, ""); break;
+      case "--base-url": o.baseUrl = next().replace(/\/+$/, ""); break;
       case "--model": o.model = next(); break;
+      case "--api-key-env": o.keyEnv = next(); break;
       case "--yolo": break;
       case "-h": case "--help": console.log(HELP); process.exit(0); break;
       default: if (a.startsWith("-")) fail("unknown option " + a + "\n\nRun \"qqstudio run --help\" for the options."); rest.push(a);
@@ -110,21 +114,27 @@ const AGENTS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent
 module.exports = async function run(argv) {
   const o = parse(argv);
   const userHome = process.env.QQSTUDIO_HOME || path.join(os.homedir(), ".qqstudio");
-  let model, llamaUrl, lo = null;
-  if (o.baseUrl) { model = o.model; llamaUrl = o.baseUrl; }
-  else {
+  let model, llamaUrl = null, lo = null, endpoint = null;
+  if (o.baseUrl) { // an OpenAI-compatible endpoint: a loadout on an "openai" engine (no /health or /props there)
+    const keyEnv = o.keyEnv || (process.env.QQSTUDIO_API_KEY ? "QQSTUDIO_API_KEY" : process.env.OPENAI_API_KEY ? "OPENAI_API_KEY" : null);
+    if (o.keyEnv && !process.env[o.keyEnv]) fail(`--api-key-env ${o.keyEnv}: that environment variable is empty`);
+    endpoint = { engine: { id: "endpoint", name: "Endpoint", type: "openai", url: o.baseUrl, keyEnv },
+      loadout: { id: "endpoint", name: o.model, engine: "endpoint", remoteModel: o.model } };
+    model = "endpoint";
+  } else {
     lo = loadedLoadout(userHome);
     if (!lo) fail("no loadout is loaded in qqstudio. Load one first (Settings > Loadouts), or pass --base-url and --model.");
     model = lo.id; llamaUrl = "http://127.0.0.1:" + (Number(process.env.LLAMA_PORT) || 9931);
+    try { const r = await fetch(llamaUrl + "/health", { signal: AbortSignal.timeout(8000) }); if (!r.ok && r.status !== 503) throw new Error("HTTP " + r.status); }
+    catch (e) { fail(`the engine at ${llamaUrl} doesn't answer (${e.message}). Is the loadout still loaded?`); }
   }
-  try { const r = await fetch(llamaUrl + "/health", { signal: AbortSignal.timeout(8000) }); if (!r.ok && r.status !== 503) throw new Error("HTTP " + r.status); }
-  catch (e) { fail(`the engine at ${llamaUrl} doesn't answer (${e.message}).` + (lo ? " Is the loadout still loaded?" : "")); }
 
   // A throwaway data folder: nothing of the user's sessions, settings or tools is read or changed.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "qqstudio-run-"));
-  if (lo && lo.loadout) { // its loadout and engine entries, so qqstudio knows the engine (Strata: no model name is sent)
-    fs.writeFileSync(path.join(home, "loadouts.json"), JSON.stringify({ loadouts: [lo.loadout] }));
-    if (lo.engine) fs.writeFileSync(path.join(home, "engines.json"), JSON.stringify({ engines: [lo.engine] }));
+  const entries = endpoint || (lo && lo.loadout ? { loadout: lo.loadout, engine: lo.engine } : null);
+  if (entries) { // the loadout and engine entries, so qqstudio knows the engine (Strata: no model name; an endpoint: its URL and key)
+    fs.writeFileSync(path.join(home, "loadouts.json"), JSON.stringify({ loadouts: [entries.loadout] }));
+    if (entries.engine) fs.writeFileSync(path.join(home, "engines.json"), JSON.stringify({ engines: [entries.engine] }));
   }
   if (o.logs) fs.mkdirSync(o.logs, { recursive: true });
   const logFile = o.logs ? fs.openSync(path.join(o.logs, "qqstudio.log"), "a") : null;
@@ -132,7 +142,8 @@ module.exports = async function run(argv) {
   console.log = toLog; console.info = toLog; console.warn = toLog; console.error = toLog; // the server's own lines
 
   const port = await freePort();
-  Object.assign(process.env, { QQSTUDIO_HOME: home, PORT: String(port), HOST: "127.0.0.1", LLAMA_URL: llamaUrl, QQSTUDIO_TRAY: "0", HOT_RELOAD: "0", QQSTUDIO_SLOT: lo ? "last" : "", QQSTUDIO_OWN_SIGNALS: "1" });
+  if (llamaUrl) process.env.LLAMA_URL = llamaUrl; else delete process.env.LLAMA_URL;
+  Object.assign(process.env, { QQSTUDIO_HOME: home, PORT: String(port), HOST: "127.0.0.1", QQSTUDIO_TRAY: "0", HOT_RELOAD: "0", QQSTUDIO_SLOT: lo ? "last" : "", QQSTUDIO_OWN_SIGNALS: "1" });
   delete process.env.QQSTUDIO_OPEN;
   require("../server.js");
   const U = `http://127.0.0.1:${port}/api`;
@@ -177,8 +188,9 @@ module.exports = async function run(argv) {
     chatId = "run" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     await api("/chats/" + chatId, { method: "PUT", body: { id: chatId, workspace: ws.id, title: "qqstudio run", mode: "auto", messages: [{ role: "user", content: o.task }] } });
     await api("/runs", { method: "POST", body: { chatId, model, system: systemPrompt(tools.map((x) => x.name), ws.dir), tools: tools.map((x) => x.spec), think: { body: {}, budget: null } } });
-    out({ type: "start", version: pkg.version, model, engine: llamaUrl, cwd: ws.dir, tools: tools.map((x) => x.name) });
-    if (!o.json) say(`qqstudio run ${pkg.version} · ${model} · ${ws.dir}`);
+    const shown = endpoint ? o.model : model;
+    out({ type: "start", version: pkg.version, model: shown, engine: llamaUrl || o.baseUrl, cwd: ws.dir, tools: tools.map((x) => x.name) });
+    if (!o.json) say(`qqstudio run ${pkg.version} · ${shown} · ${ws.dir}`);
   } catch (e) { say("qqstudio run: " + e.message); return finish(1); }
 
   // Follow the run's events until it ends.
