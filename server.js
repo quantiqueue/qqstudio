@@ -251,6 +251,10 @@ async function loadImage(src) {
       const file = uploadPath(src);
       buf = await fs.promises.readFile(file);
       mime = IMG_MIME[path.extname(file).slice(1).toLowerCase()];
+    } else if (picturePath(src)) { // a session's copy of a picture a tool showed
+      const file = picturePath(src);
+      buf = await fs.promises.readFile(file);
+      mime = IMG_MIME[path.extname(file).slice(1).toLowerCase()];
     } else if (src.startsWith("/api/file?")) {
       const file = servable(new URL(src, "http://x").searchParams.get("path"));
       buf = await fs.promises.readFile(file);
@@ -395,6 +399,70 @@ async function handleRouterAction(req, res, action) {
 for (const w of ws.list()) addRoot(w.dir); // each workspace's files folder is one of qqstudio's folders (served by /api/file)
 const chatFile = (id) => ws.sessionFile(id); // sessions live in workspaces\<ws>\sessions\
 
+// Pictures a tool showed a vision model are kept per session as they were when shown: <session id>.pictures\<hash>.<ext>
+// next to the session file, and the model gets that copy from then on. Before, a message kept only the file's path and
+// every request read the file again, so a file saved again under the same name (a screenshot loop writing duck_11.png
+// each run) changed every older message that showed it: the model saw the newest picture in their place, and the
+// engine read the prompt again from the first changed picture (Strata: "its embeddings changed", 16 times in one day).
+// Named by content, so the same picture shown twice is kept once.
+const PIC_RE = /^[0-9a-f]{32}\.(png|jpg|gif|bmp)$/;
+const PIC_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp" };
+function picturesDir(id) { const f = chatFile(id); return f && path.join(path.dirname(f), id + ".pictures"); }
+// "/api/chats/<id>/pictures/<name>" -> the file (null for any other reference)
+function picturePath(src) {
+  const m = typeof src === "string" && src.split("?")[0].match(/^\/api\/chats\/([a-z0-9]{6,40})\/pictures\/([^/]+)$/);
+  if (!m || !PIC_RE.test(m[2])) return null;
+  const d = picturesDir(m[1]);
+  return d && path.join(d, m[2]);
+}
+// The images a tool returned, each with `full` (what the model gets) pointing at the session's copy, and `src` too
+// when it was the same picture (image search keeps its web thumbnail); `file` is the copy on disk (the model is told it,
+// so a script can read the picture it saw). Each copy's data URL goes into the run's image
+// cache. Pictures that can't be read or that the model can't take keep their reference (the model gets a note either
+// way), and so do data URLs (already part of the session file).
+async function keepImages(id, images, cache) {
+  const dir = picturesDir(id);
+  if (!dir) return images;
+  return Promise.all(images.map(async (im) => {
+    const ref = im.full || im.src;
+    if (typeof ref !== "string" || ref.startsWith("data:") || picturePath(ref)) return im;
+    const url = await loadImage(ref);
+    const m = url && url.match(/^data:([^;,]+);base64,/), ext = m && PIC_EXT[m[1]];
+    if (!ext) return im;
+    const buf = Buffer.from(url.slice(m[0].length), "base64");
+    const name = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 32) + "." + ext;
+    try {
+      await fs.promises.mkdir(dir, { recursive: true });
+      const file = path.join(dir, name);
+      if (!fs.existsSync(file)) {
+        const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+        await fs.promises.writeFile(tmp, buf);
+        await fs.promises.rename(tmp, file);
+      }
+    } catch (e) { console.error(`[pictures] ${id}: ${e.message}`); return im; }
+    const snap = `/api/chats/${id}/pictures/${name}`;
+    if (cache) cache.set(snap, url);
+    return { ...im, full: snap, src: !im.src || im.src === ref ? snap : im.src, file: path.join(dir, name) };
+  }));
+}
+// Copies no message refers to any more (Retry, a removed message) go when the page saves the session.
+async function prunePictures(id, messages) {
+  const dir = picturesDir(id);
+  let names; try { names = await fs.promises.readdir(dir); } catch { return; }
+  const used = new Set();
+  for (const m of messages || []) for (const im of m._images || []) for (const r of [im.src, im.full]) { const p = picturePath(r); if (p) used.add(path.basename(p)); }
+  for (const n of names) if (!used.has(n)) await fs.promises.rm(path.join(dir, n), { force: true }).catch(() => {});
+  if (!used.size) await fs.promises.rmdir(dir).catch(() => {});
+}
+function servePicture(res, file) {
+  const stream = fs.createReadStream(file);
+  stream.on("error", () => sendJson(res, 404, { error: "Not found" }));
+  stream.on("open", () => {
+    res.writeHead(200, { "Content-Type": IMG_MIME[path.extname(file).slice(1)], "Cache-Control": "private, max-age=31536000, immutable" }); // named by content: never changes
+    stream.pipe(res);
+  });
+}
+
 // All chat-file writes go through one queue per file, so a run's saves and the page's edits (title, mode, ...)
 // never read-modify-write over each other.
 const chatQueues = new Map();
@@ -414,7 +482,7 @@ function updateChat(file, fn) {
 }
 // A tool may have written into a workspace (or anywhere): file lists are read again (watchers catch it on Windows and macOS).
 const runToolSeen = async (...a) => { try { return await runTool(...a); } finally { ws.invalidateFiles(); } };
-const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => (loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model), liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
+const runs = createRuns({ llama, runTool: runToolSeen, toolList, isEnabled, chatFile, updateChat, statusOf, modelState, visionOf, loadImage, keepImages, imagePathsIn, uploadPath, getConfig, nCtx, nSlots, samplingFor: loadouts.samplingFor, templateEffortOnly, templateInfo, oneAtATime: (model) => loadouts.isStrata(loadouts.get(model)?.engine), engineModel: (model) => (loadouts.isStrata(loadouts.get(model)?.engine) ? undefined : model), liveGen: (model) => loadouts.isStrata(loadouts.get(model)?.engine), ensureEngine, newSession: newSubSession,
   filesDirOf: (sid) => ws.filesDir(ws.workspaceOf(sid) || ws.DEFAULT), mcpCwd: (server) => mcp.cwdOf(server), mcpPaths: (server) => mcp.pathsMode(server),
   memoryWs: (sid) => { const w = ws.workspaceOf(sid) || ws.DEFAULT; return ws.memoryOn(w) ? w : null; }, externalEngine: () => !!process.env.LLAMA_URL,
   workspaceSessions: async (w) => (await ws.allSessions()).filter((x) => x.ws === w).map((x) => x.chat) });
@@ -793,6 +861,8 @@ async function handleConfig(req, res) {
 }
 
 async function handleChats(req, res) {
+  const pic = req.method === "GET" && picturePath(req.url);
+  if (pic) return servePicture(res, pic);
   const id = (req.url.split("?")[0].match(/^\/api\/chats\/?([^/]*)$/) || [])[1];
   try {
     if (!id) {
@@ -818,6 +888,7 @@ async function handleChats(req, res) {
       const placed = ws.placeSession(id, c.workspace); // a new session goes into the workspace it names (else Default)
       c.workspace = ws.workspaceOf(id);
       await updateChat(placed, (disk) => { if (!Array.isArray(c.loaded) && Array.isArray(disk?.loaded)) c.loaded = disk.loaded; if (!Array.isArray(c.promoted) && Array.isArray(disk?.promoted)) c.promoted = disk.promoted; if (!Array.isArray(c.todo) && Array.isArray(disk?.todo)) c.todo = disk.todo; if (typeof c.memory !== "string" && typeof disk?.memory === "string") c.memory = disk.memory; if (disk?.titled && !c.titled) { c.title = disk.title; c.titled = true; } return c; }); // keep groups the model turned on, tools given full details
+      if (Array.isArray(c.messages)) prunePictures(id, c.messages).catch(() => {});
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === "PATCH") {
@@ -842,12 +913,14 @@ async function handleChats(req, res) {
     if (req.method === "DELETE") {
       for (const { chat: s } of await ws.listSessions()) if (s.parent === id) { // its sub-agents' sessions go with it
         runs.deleted(s.id);
-        const f = chatFile(s.id);
+        const f = chatFile(s.id), pd = picturesDir(s.id);
         if (f) await updateChat(f, async () => { await fs.promises.unlink(f).catch(() => {}); return null; });
+        if (pd) await fs.promises.rm(pd, { recursive: true, force: true }).catch(() => {});
         ws.forgetSession(s.id);
       }
       runs.deleted(id);
       await updateChat(file, async () => { await fs.promises.unlink(file).catch(() => {}); return null; }); // queued behind any save in flight
+      await fs.promises.rm(picturesDir(id), { recursive: true, force: true }).catch(() => {});
       ws.forgetSession(id);
       return sendJson(res, 200, { ok: true });
     }
