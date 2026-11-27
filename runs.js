@@ -69,7 +69,7 @@ function answerText(qs, a) {
 const AGENT_TOOLS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent"]);
 const stripUi = (m) => Object.fromEntries(Object.entries(m).filter(([k]) => !k.startsWith("_")));
 
-module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
+module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chatFile, updateChat, statusOf, modelState = async () => null, visionOf, loadImage, keepImages = null, imagePathsIn, uploadPath, getConfig, nCtx, nSlots = async () => null, samplingFor = () => ({}), templateEffortOnly = async () => false, templateInfo = async () => ({ effortOnly: false, efforts: [] }), oneAtATime = () => false, engineModel = (m) => m, liveGen = () => false, ensureEngine = async () => {}, newSession = null, filesDirOf = () => null, mcpCwd = () => null, mcpPaths = () => "workspace", memoryWs = () => null, externalEngine = () => false, workspaceSessions = async () => [] }) {
   const runs = new Map(); // chatId -> run
 
   // ---------- prompt cache ----------
@@ -1397,7 +1397,10 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
             ? `\n\n[${busy.map((x) => `${x.alias} "${x.title}"`).join(", ")} ${busy.length > 1 ? "are" : "is"} still running or pending. What ${busy.length > 1 ? "they make" : "it makes"} may not exist yet, and files with the same name may be left from an earlier attempt: don't use or show ${busy.length > 1 ? "their" : "its"} results until the report arrives here (end your turn to wait).]` : "";
           const tm = { role: "tool", tool_call_id: tc.id, content: res.text + note + (run.dropNote || ""), _status: res.status, _at: Date.now() };
           run.dropNote = "";
-          if (res.images?.length) tm._images = res.images;
+          // For a vision model: the session's own copy of each picture, so later requests send what the model saw now
+          if (res.images?.length) tm._images = run.vision && keepImages ? await keepImages(run.id, res.images, run.imgCache) : res.images;
+          const saved = (tm._images || []).map((im, k) => im.file && `- ${tm._images.length > 1 ? `${k + 1}. ` : ""}${im.caption ? im.caption + ": " : ""}${im.file}`).filter(Boolean);
+          if (saved.length) tm.content += `\n\n[Saved copies of ${saved.length > 1 ? "these pictures" : "this picture"}, exactly as you were shown ${saved.length > 1 ? "them" : "it"}. To work on ${saved.length > 1 ? "one" : "it"} (a script, an edit, a measurement), use the file below; don't download it again:\n${saved.join("\n")}]`;
           if (res.answers) tm._answers = res.answers; // the card shows them when the session is opened again
           if (res.agent) tm._agent = res.agent; // run_agent: the chip for the sub-agent it started
           run.messages.push(tm);
