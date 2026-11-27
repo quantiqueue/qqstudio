@@ -269,7 +269,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
   // An OpenAI-compatible endpoint (engine type "openai") gets only standard fields: llama.cpp's extras are dropped (routers
   // may refuse unknown fields), the effort goes top-level as reasoning_effort, and the stream ends with a usage chunk.
   function forRemote(b) {
-    const { id_slot, cache_prompt, return_progress, chat_template_kwargs, reasoning_budget_tokens, thinking_budget_tokens, timings_per_token, n_predict, ...rest } = b;
+    const { id_slot, cache_prompt, return_progress, chat_template_kwargs, reasoning_budget_tokens, thinking_budget_tokens, reasoning_budget_message, timings_per_token, n_predict, ...rest } = b;
     for (const k of Object.keys(rest)) if (k.startsWith("_")) delete rest[k];
     const eff = chat_template_kwargs && chat_template_kwargs.reasoning_effort; // "Off" (enable_thinking false) sends no effort: not every provider takes "none"
     if (eff && rest.reasoning_effort === undefined) rest.reasoning_effort = eff;
@@ -1632,7 +1632,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
       viaCall: lazyPool.size > 0 || deferred.size > 0, // tool_info / call_tool are offered
       think: { body: body.think?.body || {}, budget: body.think?.budget ?? null, message: body.think?.message || "" },
       deferred, loaded,
-      maxTokens: outputCap(budget),
+      maxTokens: remoteOf(body.model) ? Number(getConfig().replyTokens) || undefined : outputCap(budget), // an endpoint: the reply limit as given, or none (hosted models have their own caps)
       t0: Date.now(), genDone: 0, // for "N tokens in 1m 2s" under the reply
       messages: (chat.messages || []).filter((m) => !m._partial),
       startLen: (chat.messages || []).filter((m) => !m._partial).length,

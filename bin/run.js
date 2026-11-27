@@ -23,6 +23,11 @@ const HELP = [
   "      --base-url <url>        An OpenAI-compatible endpoint instead of the loaded loadout, e.g.",
   "                              https://router.example/v1 (needs --model)",
   "      --model <name>          Model name to send with --base-url",
+  "      --effort <level>        none, minimal, low, medium, high, xhigh or max (default: the model's own)",
+  "      --context <tokens>      Context window: compaction starts at 90% of it (an endpoint's default: 131072;",
+  "                              the loaded loadout's: its real size)",
+  "      --reply-tokens <n>      Output limit per model call (an endpoint's default: none sent)",
+  "      --vision                The model reads pictures (an endpoint; the loaded loadout follows its Vision setting)",
   "      --api-key-env <NAME>    Environment variable holding the endpoint's API key",
   "                              (default QQSTUDIO_API_KEY, then OPENAI_API_KEY; none = no key sent)",
   "      --yolo                  Accepted for familiarity: every tool already runs without asking",
@@ -32,10 +37,11 @@ const HELP = [
 ].join("\n");
 
 const say = (s) => process.stderr.write(s + "\n");
+const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 function fail(msg, code = 1) { say("qqstudio run: " + msg); process.exit(code); }
 
 function parse(argv) {
-  const o = { cwd: process.cwd(), logs: null, json: false, web: true, agents: true, limitMin: 0, limitTokens: 0, file: null, baseUrl: null, model: null, keyEnv: null, task: "" };
+  const o = { cwd: process.cwd(), logs: null, json: false, web: true, agents: true, limitMin: 0, limitTokens: 0, file: null, baseUrl: null, model: null, keyEnv: null, effort: null, context: 0, replyTokens: 0, vision: false, task: "" };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     let a = argv[i], val = null;
@@ -55,6 +61,10 @@ function parse(argv) {
       case "--base-url": o.baseUrl = next().replace(/\/+$/, ""); break;
       case "--model": o.model = next(); break;
       case "--api-key-env": o.keyEnv = next(); break;
+      case "--effort": o.effort = next().toLowerCase(); if (!EFFORTS.includes(o.effort)) fail("--effort must be one of " + EFFORTS.join(", ")); break;
+      case "--context": o.context = Math.round(Number(next())) || 0; if (o.context < 1024) fail("--context must be a number of tokens (at least 1024)"); break;
+      case "--reply-tokens": o.replyTokens = Math.round(Number(next())) || 0; if (o.replyTokens < 1) fail("--reply-tokens must be a positive number"); break;
+      case "--vision": o.vision = true; break;
       case "--yolo": break;
       case "-h": case "--help": console.log(HELP); process.exit(0); break;
       default: if (a.startsWith("-")) fail("unknown option " + a + "\n\nRun \"qqstudio run --help\" for the options."); rest.push(a);
@@ -113,13 +123,16 @@ const AGENTS = new Set(["run_agent", "message_agent", "stop_agent", "check_agent
 
 module.exports = async function run(argv) {
   const o = parse(argv);
+  // Output piped into something that closes early (| head): keep working and finish the task; the logs still get everything
+  let stdoutGone = false;
+  process.stdout.on("error", (e) => { if (e.code === "EPIPE") stdoutGone = true; else throw e; });
   const userHome = process.env.QQSTUDIO_HOME || path.join(os.homedir(), ".qqstudio");
   let model, llamaUrl = null, lo = null, endpoint = null;
   if (o.baseUrl) { // an OpenAI-compatible endpoint: a loadout on an "openai" engine (no /health or /props there)
     const keyEnv = o.keyEnv || (process.env.QQSTUDIO_API_KEY ? "QQSTUDIO_API_KEY" : process.env.OPENAI_API_KEY ? "OPENAI_API_KEY" : null);
     if (o.keyEnv && !process.env[o.keyEnv]) fail(`--api-key-env ${o.keyEnv}: that environment variable is empty`);
     endpoint = { engine: { id: "endpoint", name: "Endpoint", type: "openai", url: o.baseUrl, keyEnv },
-      loadout: { id: "endpoint", name: o.model, engine: "endpoint", remoteModel: o.model } };
+      loadout: { id: "endpoint", name: o.model, engine: "endpoint", remoteModel: o.model, ...(o.context ? { context: o.context } : {}), vision: o.vision } };
     model = "endpoint";
   } else {
     lo = loadedLoadout(userHome);
@@ -136,6 +149,8 @@ module.exports = async function run(argv) {
     fs.writeFileSync(path.join(home, "loadouts.json"), JSON.stringify({ loadouts: [entries.loadout] }));
     if (entries.engine) fs.writeFileSync(path.join(home, "engines.json"), JSON.stringify({ engines: [entries.engine] }));
   }
+  // Settings for this run: the reply limit (an endpoint without --reply-tokens gets none: 0 = no max_tokens).
+  fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ replyTokens: o.replyTokens || (endpoint ? 0 : 16384) }));
   if (o.logs) fs.mkdirSync(o.logs, { recursive: true });
   const logFile = o.logs ? fs.openSync(path.join(o.logs, "qqstudio.log"), "a") : null;
   const toLog = (...a) => { if (logFile !== null) fs.writeSync(logFile, a.map((x) => (typeof x === "string" ? x : require("util").inspect(x))).join(" ") + "\n"); };
@@ -143,7 +158,7 @@ module.exports = async function run(argv) {
 
   const port = await freePort();
   if (llamaUrl) process.env.LLAMA_URL = llamaUrl; else delete process.env.LLAMA_URL;
-  Object.assign(process.env, { QQSTUDIO_HOME: home, PORT: String(port), HOST: "127.0.0.1", QQSTUDIO_TRAY: "0", HOT_RELOAD: "0", QQSTUDIO_SLOT: lo ? "last" : "", QQSTUDIO_OWN_SIGNALS: "1" });
+  Object.assign(process.env, { QQSTUDIO_HOME: home, PORT: String(port), HOST: "127.0.0.1", QQSTUDIO_TRAY: "0", HOT_RELOAD: "0", QQSTUDIO_SLOT: lo ? "last" : "", QQSTUDIO_OWN_SIGNALS: "1", QQSTUDIO_CONTEXT: !endpoint && o.context ? String(o.context) : "" });
   delete process.env.QQSTUDIO_OPEN;
   require("../server.js");
   const U = `http://127.0.0.1:${port}/api`;
@@ -163,7 +178,7 @@ module.exports = async function run(argv) {
   };
   const out = (ev) => {
     if (o.logs) fs.appendFileSync(path.join(o.logs, "events.jsonl"), JSON.stringify(ev) + "\n");
-    if (o.json) process.stdout.write(JSON.stringify(ev) + "\n");
+    if (o.json && !stdoutGone) process.stdout.write(JSON.stringify(ev) + "\n");
   };
   const finish = async (code) => {
     if (finished) return; finished = true;
@@ -184,12 +199,18 @@ module.exports = async function run(argv) {
     const w = await api("/workspaces", { method: "POST", body: { name: "Headless", memory: false, continuous: true, limitMin: o.limitMin, limitTokens: o.limitTokens, dir: o.cwd } });
     const ws = w.workspace;
     const t = await api("/tools");
-    const tools = (t.tools || []).filter((x) => x.enabled && !x.server && !LEFT_OUT.has(x.name) && (o.web || !WEB.has(x.name)) && (o.agents || !AGENTS.has(x.name)));
+    const seeing = endpoint ? o.vision : !!(lo && lo.loadout && lo.loadout.vision); // a model that reads pictures keeps show_image (to look at an image file)
+    const tools = (t.tools || []).filter((x) => x.enabled && !x.server && (!LEFT_OUT.has(x.name) || (seeing && x.name === "show_image")) && (o.web || !WEB.has(x.name)) && (o.agents || !AGENTS.has(x.name)));
+    // Effort as the page sends it: a template setting for a local engine (none = thinking off), top-level for an endpoint
+    const think = !o.effort ? { body: {}, budget: null }
+      : endpoint ? { body: { reasoning_effort: o.effort }, budget: null }
+      : o.effort === "none" ? { body: { chat_template_kwargs: { enable_thinking: false }, reasoning_budget_tokens: 0, thinking_budget_tokens: 0 }, budget: 0 }
+      : { body: { chat_template_kwargs: { reasoning_effort: o.effort } }, budget: null };
     chatId = "run" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     await api("/chats/" + chatId, { method: "PUT", body: { id: chatId, workspace: ws.id, title: "qqstudio run", mode: "auto", messages: [{ role: "user", content: o.task }] } });
-    await api("/runs", { method: "POST", body: { chatId, model, system: systemPrompt(tools.map((x) => x.name), ws.dir), tools: tools.map((x) => x.spec), think: { body: {}, budget: null } } });
+    await api("/runs", { method: "POST", body: { chatId, model, system: systemPrompt(tools.map((x) => x.name), ws.dir), tools: tools.map((x) => x.spec), think } });
     const shown = endpoint ? o.model : model;
-    out({ type: "start", version: pkg.version, model: shown, engine: llamaUrl || o.baseUrl, cwd: ws.dir, tools: tools.map((x) => x.name) });
+    out({ type: "start", version: pkg.version, model: shown, engine: llamaUrl || o.baseUrl, cwd: ws.dir, effort: o.effort, context: o.context || null, reply_tokens: o.replyTokens || null, vision: seeing, tools: tools.map((x) => x.name) });
     if (!o.json) say(`qqstudio run ${pkg.version} · ${shown} · ${ws.dir}`);
   } catch (e) { say("qqstudio run: " + e.message); return finish(1); }
 
@@ -228,7 +249,7 @@ module.exports = async function run(argv) {
           const reason = summary ? "complete" : failed ? "error" : stopping ? "stopped" : halted ? (/limit/.test(halted) ? "limit" : /without task_complete/.test(halted) ? "no_complete" : "stopped") : "no_complete";
           exitCode = { complete: 0, error: 1, stopped: 2, limit: 2, no_complete: 3 }[reason];
           out({ type: "done", reason, summary: summary || lastText, tokens: ev.tokens, ms: ev.ms });
-          if (!o.json) { if (summary || lastText) process.stdout.write((summary || lastText).trim() + "\n"); if (halted || failed) say("qqstudio run: " + (halted || failed)); }
+          if (!o.json) { if ((summary || lastText) && !stdoutGone) process.stdout.write((summary || lastText).trim() + "\n"); if (halted || failed) say("qqstudio run: " + (halted || failed)); }
         }
       }
     }

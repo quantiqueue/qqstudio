@@ -775,7 +775,8 @@ const ctxPick = (j) => j.default_generation_settings?.n_ctx || j.n_ctx || j.defa
 async function nCtx(model) {
   const rm = remoteOf(model);
   if (rm) return rm.context || 131072; // its loadout's context (qqstudio run --context), else a common size: compaction needs one
-  const n = await modelProps(model, ctxPick);
+  const cap = Number(process.env.QQSTUDIO_CONTEXT) || 0; // qqstudio run --context on the loaded loadout: compact as if it were this small
+  const n0 = await modelProps(model, ctxPick), n = cap && n0 ? Math.min(cap, n0) : n0;
   return n || strataSetting(model, "ctx-size") || null;
 }
 // Parallel slots of the loaded model (llama-server --parallel); each keeps its own prompt cache.
