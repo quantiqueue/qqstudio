@@ -11,12 +11,16 @@ if (major < 18) {
   process.exit(1);
 }
 
+// qqstudio run …: one task, headless (bin/run.js).
+if (process.argv[2] === "run") { require("./run")(process.argv.slice(3)).catch((e) => { process.stderr.write("qqstudio run: " + (e.stack || e.message) + "\n"); process.exit(1); }); return; }
+
 const DEFAULT_PORT = Number(process.env.PORT) || 8003;
 
 const HELP = [
   "qqstudio " + pkg.version + " - local AI studio for llama.cpp and Strata",
   "",
   "Usage: qqstudio [options]",
+  "       qqstudio run [options] -- \"<task>\"   (one task, headless; see qqstudio run --help)",
   "",
   "Options:",
   "  -p, --port <n>          Port for the page (default 8003)",

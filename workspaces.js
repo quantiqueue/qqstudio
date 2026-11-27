@@ -17,7 +17,12 @@ const index = new Map(); // session id -> workspace id
 
 const wsDir = (id) => (ID_RE.test(id || "") ? path.join(ROOT, id) : null);
 const sessionsDir = (id) => path.join(ROOT, id, "sessions");
-const filesDir = (id) => path.join(ROOT, id, "files");
+// A workspace's files folder: its own folder, or one it was given (workspace.json "dir", e.g. qqstudio run's task folder).
+const dirOf = new Map(); // id -> the given folder (or null), read once
+const filesDir = (id) => {
+  if (!dirOf.has(id)) { const m = DATA.readJson(metaFile(id), {}); dirOf.set(id, typeof m.dir === "string" && m.dir ? m.dir : null); }
+  return dirOf.get(id) || path.join(ROOT, id, "files");
+};
 const metaFile = (id) => path.join(ROOT, id, "workspace.json");
 const exists = (id) => !!wsDir(id) && fs.existsSync(metaFile(id));
 
@@ -99,6 +104,9 @@ function create({ name, description, memory: mem }) {
   ensure(id, name);
   const m = { name, description: String(description || "").slice(0, 4000), created: Date.now(), memory: mem === true };
   workFields(m, arguments[0] || {});
+  const given = arguments[0] && arguments[0].dir; // a folder of its own (absolute, existing): files live there, not in the workspace
+  if (typeof given === "string" && path.isAbsolute(given) && fs.existsSync(given)) m.dir = given;
+  dirOf.delete(id);
   DATA.writeJson(metaFile(id), m);
   return info(id);
 }

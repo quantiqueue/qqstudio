@@ -33,7 +33,7 @@ const hooks = new Set();
 function runHooks() { for (const f of hooks) { try { f(); } catch {} } hooks.clear(); }
 function onExit(fn) { hooks.add(fn); }
 process.on("exit", runHooks);
-if (!WIN) {
+if (!WIN && !process.env.QQSTUDIO_OWN_SIGNALS) { // qqstudio run handles them itself (stops the task, saves the transcript, then exits)
   for (const [sig, n] of [["SIGINT", 2], ["SIGTERM", 15], ["SIGHUP", 1]]) {
     process.on(sig, () => { runHooks(); process.exit(128 + n); }); // what Node does by default, plus the hooks
   }

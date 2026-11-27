@@ -91,6 +91,7 @@ module.exports = function createRuns({ llama, runTool, toolList, isEnabled, chat
     const busy = new Set([...runs.values()].filter((r) => r !== run && r.slot !== undefined).map((r) => r.slot));
     if (avoid !== null) busy.add(avoid);
     let s = avoid === null ? slotOf.get(run.id) : undefined;
+    if (avoid === null && process.env.QQSTUDIO_SLOT === "last") s = n - 1; // qqstudio run on the user's loadout: a slot the page's sessions use least
     if (s === undefined || s >= n || busy.has(s)) {
       const owned = new Set([...slotOf].filter(([c]) => c !== run.id).map(([, x]) => x));
       const free = [...Array(n).keys()].filter((x) => !busy.has(x));
